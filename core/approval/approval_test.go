@@ -63,6 +63,25 @@ func TestParamsHashCanonical(t *testing.T) {
 	}
 }
 
+func TestParamsHashEmptyArrayIsNotNull(t *testing.T) {
+	empty, err := approval.ParamsHash([]byte("[]"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	null, err := approval.ParamsHash([]byte("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty == null {
+		t.Fatal(`ParamsHash("[]") == ParamsHash("null")`)
+	}
+	emptySum := sha256.Sum256([]byte("[]"))
+	nullSum := sha256.Sum256([]byte("null"))
+	if empty != hex.EncodeToString(emptySum[:]) || null != hex.EncodeToString(nullSum[:]) {
+		t.Fatalf("空数组或 null 没有按原样规范化: %s vs %s", empty, null)
+	}
+}
+
 func TestParamsHashRejectsDuplicateKeys(t *testing.T) {
 	cases := []string{
 		`{"rows":1,"rows":100000}`,
