@@ -166,7 +166,7 @@ Runner 镜像在作业设置阶段报的是 macOS 26.6.2（25G83），镜像名 
 - 目录句柄（`os.Root` / openat）在纯 Go、不开 cgo 下发得出，但盖不住 `python` / `pip` 按路径查找的窗口，也不能在不放宽「Root 以下任何符号链接都拒绝」的前提下替换现有检查。Ensure 因此不改成目录句柄。
 - 用户机器是 Python 3.14 或更高时，现在会明确失败，而不是装上一半。
 - `sandbox-exec` 的探测和 Python 安装互相独立。macOS job 不下载 pandas。2026-10-21 的 `macos-latest`（macOS 26.6.2）上探测通过，后续 macOS 沙箱评测可以挂在这个 runner 上。同一 job 会跑 `go test ./core/pyrt/`（假解释器，不联网安装）。
-- 参数快照另补了一条回归：`ParamsHash("[]")` 不得等于 `ParamsHash("null")`。空数组必须保持为数组。这与运行时无关，只是同一批改动里带上的。
+- 参数快照另补了一条回归：`ParamsHash("[]")` 不得等于 `ParamsHash("null")`。空数组必须保持为数组。这与运行时无关，只是同一批改动里带上的。回归测试是 `core/approval/approval_test.go` 的 `TestParamsHashEmptyArrayIsNotNull`，来源提交是 [`55ba369`](https://github.com/loveRyujin/lantern/commit/55ba369b63e3ab4e7618975d669b6cfb25437698)（完整 SHA `55ba369b63e3ab4e7618975d669b6cfb25437698`，PR #22「检测本机 Python 并准备带哈希锁定的专用 venv」）。该提交只加了这条测试，没有改 `core/approval/hash.go`；规范化本身在 #16（`d9debc9`）里已经把空数组写成 `[]`、把 JSON null 写成 `null`。#22 的提交说明里写的是「参数快照补上空数组与 null 的哈希必须不同」。
 
 ## 不在本次范围
 
