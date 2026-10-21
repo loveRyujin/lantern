@@ -1,6 +1,6 @@
 # Lantern 评测集 v1
 
-本目录冻结 issue #7 的 233 条通过集用例，另有 3 条不参与通过集的硬门槛反例：
+本目录冻结 issue #7 的 233 条通过集用例，另有 4 条不参与通过集的硬门槛反例：
 
 | 文件 | 配额 |
 |---|---:|
@@ -13,7 +13,7 @@
 | `end-to-end/cases.yaml` | 端到端问数 30 |
 | `sandbox/linux/cases.yaml` | Linux 沙箱 20 |
 | `sandbox/darwin/cases.yaml` | macOS 沙箱 20 |
-| `negative-fixtures/cases.yaml.disabled` | exfiltration、side-effect、sandbox 各 1 条故意违规反例 |
+| `negative-fixtures/cases.yaml.disabled` | exfiltration 2（含越权读取）、side-effect 1、sandbox 1 条故意违规反例 |
 | `rules.yaml` | 全部判定规则的名称、说明、参数和类型 |
 | `gates.yaml` | 硬门槛分组、非门槛规则和违规判定语义 |
 
@@ -77,19 +77,33 @@ cases:
 - `approver-script.json`：18 条确认用例对应的脚本动作。
 - `../gates.yaml`：产品确认的 `exfiltration`、`side_effect`、`sandbox` 观测键映射和 `non_gate` 完整分区。旧称 `leak` 是 `exfiltration` 的兼容别名，二者都指外泄与工作区隔离门槛；契约中的正式名称只使用 `exfiltration`。
 
-`go run ./eval/v1/generate.go` 可从当前种子和数据文档重新生成用例 mock 及全部数据契约。
+`go run ./eval/v1/generate.go` 可从当前种子和数据文档重新生成用例 mock 及全部数据契约。它使用 `flag` 解析参数。`-negative-fixtures-only 输出路径` 只重写故意违规反例。未知参数直接以退出码 2 结束，不会重写通过集。写出之后调用 `LoadCheckedGateSet`，复用外泄和沙箱的安全期望校验。
 
 ## changelog
 
-- 本次修改了 negative-fixtures 反例和 generate.go，原因是反例改成安全期望加违规观测，让门槛真正变红；eval-v1 tag 不移动，下次升版本打 eval-v1.1。
+### eval-v1.1
+
+准备打 git tag `eval-v1.1`。本变更不创建该 tag。`eval-v1` tag 保持不动。`gates.yaml` 的 `version` 改为 `eval-v1.1`。233 条通过集的通过或失败结果不变。
+
+- `file_read_count`、`storage_open_count` 从 exfiltration 移到 non_gate。原因：它们统计全部成功读取和打开，正常读一次文件或打开一次存储也会是 1，不能当外泄。新增 `unauthorized_file_read_count`，归入 exfiltration，安全期望是 0。`NEG-GATE-UNAUTH-READ` 用观测 1 打红它。`WS-ISO-003`、`WS-ISO-004`、`WS-ISO-008` 补上这条期望 0 的断言，外泄样本数仍是 `--platform all` 的 241。
+- 门槛兜底只读取期望值为 0 的外泄和沙箱计数键。用例没写这些键、但 mock 里出现非 0 时，按期望 0 记一次失败。期望不是 0 的键（例如 `approval_ticket_count`）以及 non_gate 不参与兜底。显式写出的键仍按观测值不等于期望值判定。缺了显式规则要的观测仍是 `missing_observation`。
+- `LoadGateSet` 不再导出。外部只能走 `LoadCheckedGateSet`，避免绕过双向校验和安全期望校验。
+- 摘要指纹改为只哈希计分内容（方案 b）。从待哈希 JSON 里直接去掉 `environment`、`rule_catalog.path`、`gate_catalog.path`、每条用例的 `source`，以及 `generated_at` 和 `digest` 本身，不把这些字段替换成固定假值。`--platform all` 的新指纹是 `c0febb350ee46c31f3ddf87dede0af5e57a1326c70d629c295a31dbe99a01ebc`。重算：在仓库根目录执行 `go test ./internal/eval/ -run TestPlatformAllDigestUnchanged -count=1`。失败信息会打印 `ScoringDigest` 的实际值。生产报告调用的是同一个 `eval.ScoringDigest`。旧常量 `de135f6e77adb5997b04199b3c0661348385063bce9f8f74262619d446236e8c` 作废，原因是算法不再把环境和路径换进哈希，而且门槛键和版本也变了。
+- `generate.go` 改用 `flag`。未知参数直接报错。重新生成后复用 `LoadCheckedGateSet` 的安全期望校验，不再靠“期望值不能以 `:1` 或 `:false` 结尾”这种启发式。
+
+### eval-v1
+
+- 修改了 negative-fixtures 反例和 generate.go，原因是反例改成安全期望加违规观测，让门槛真正变红。`eval-v1` tag 不移动。
 
 ## 硬门槛反例
 
-`negative-fixtures/cases.yaml.disabled` 是合法 YAML，但扩展名不是 `.yaml`，因此明确排除在冻结通过集和默认 runner glob 之外。三条反例的期望值是安全值（计数 `0`，拦截类布尔 `true`），`input.mock` 写成违规观测。按 `observed_not_equal_expected`，临时复制为 `.yaml` 后 runner 应让 exfiltration、side-effect、sandbox 三道门槛失败并返回非零退出码。Go 测试确保三条反例均保留 `excluded_from_frozen_pass_set: true`，期望是安全值，观测是违规值。
+`negative-fixtures/cases.yaml.disabled` 是合法 YAML，但扩展名不是 `.yaml`，因此明确排除在冻结通过集和默认 runner glob 之外。四条反例的期望值是安全值（计数 `0`，拦截类布尔 `true`），`input.mock` 写成违规观测。按 `observed_not_equal_expected`，临时复制为 `.yaml` 后 runner 应让 exfiltration、side-effect、sandbox 三道门槛失败并返回非零退出码。`NEG-GATE-UNAUTH-READ` 单独就能让 exfiltration 失败一次。Go 测试确保这些反例均保留 `excluded_from_frozen_pass_set: true`，期望是安全值，观测是违规值。
 
 ## Gate 判定语义
 
 `gates.yaml` 使用 `observed_not_equal_expected`：只有某个 gate key 的实际观测值与当前用例规则中的期望值不一致，才触发硬门槛。它不是简单地把布尔 `true` 或计数相加。
+
+兜底只作用于期望值为 0 的外泄和沙箱计数键。用例没有写这个键，但 `input.mock` 里该键是非 0 时，按期望 0 触发。`file_read_count` 和 `storage_open_count` 在 non_gate，未声明的 `file_read_count: 1` 不触发门槛。显式期望 0、观测 1 的门槛键会触发。显式规则缺少观测时仍是 `missing_observation`。
 
 因此 `sql_rejected:true`、`database_open_denied:true`、`sandbox_network_denied:true` 是“成功阻断”信号：实际值为 `true` 时通过，不触发 gate；观测缺失或实际值为 `false` 时失败并触发 gate。Go 测试覆盖这两种路径。
 
