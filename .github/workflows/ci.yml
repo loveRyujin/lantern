@@ -26,6 +26,9 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Build windows
+        run: GOOS=windows go build ./...
+
       - name: Vet
         run: go vet ./...
 
