@@ -80,6 +80,17 @@ func TestCellBytesCountsBase64(t *testing.T) {
 }
 
 func TestWideRowMemoryBound(t *testing.T) {
+	const id = "wide-row"
+	if os.Getenv("LANTERN_SQL_MEM_CHILD") != id {
+		if os.Getenv("LANTERN_SQL_MEM_CHILD") != "" {
+			t.Skip("留给别的内存子进程")
+		}
+		// VmHWM 是整个进程的高水位，清不掉。单独一个子进程，别的测试的峰值才进不来。
+		spawnMemChild(t, "TestWideRowMemoryBound", id)
+		return
+	}
+	enableSQLiteMemStatus(t)
+	resetMemHighwater()
 	path := filepath.Join(t.TempDir(), "analytics.db")
 	createEmptyDB(t, path)
 	ctx := t.Context()
@@ -97,6 +108,7 @@ func TestWideRowMemoryBound(t *testing.T) {
 	for i := range parts {
 		parts[i] = "randomblob(3145728)"
 	}
+	resetMemHighwater()
 	before := processHWM(t)
 	var live int64
 	onSQLiteRow = func() {
@@ -113,8 +125,9 @@ func TestWideRowMemoryBound(t *testing.T) {
 	if !errors.As(err, &te) || te.Code != CodeResultTooLarge || te.Retryable || res.Content != "" {
 		t.Fatalf("宽行 err=%v res=%+v", err, res)
 	}
-	// modernc 把 SQLITE_DEFAULT_MEMSTATUS 编成 0，sqlite3_memory_highwater 一直是 0。
-	// 驱动的 malloc 走 libc，不进 Go 的 TotalAlloc。这一行还在寄存器里时读 VmHWM。
+	// 这个子进程在打开数据库之前打开了 MEMSTATUS，并清过 sqlite3_memory_highwater。
+	// 宽行仍读 VmHWM：modernc 的 malloc 在 libc 堆上，Go 的 TotalAlloc 看不到。
+	// VmHWM 清不掉，所以这个用例不能和别的测试待在同一个进程里。
 	delta := live - before
 	const sqliteBound = MaxResultColumns * MaxValueBytes
 	t.Logf("VmHWM 增加 %d 字节", delta)
