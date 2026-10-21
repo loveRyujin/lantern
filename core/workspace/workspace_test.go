@@ -23,18 +23,19 @@ func TestCreateOpenLayout(t *testing.T) {
 	if h.Dir != dir || h.ID != "星禾" || h.Root != root {
 		t.Fatalf("handle = id %q root %q dir %q", h.ID, h.Root, h.Dir)
 	}
-	for _, name := range []string{fileKB, fileAnalytics, fileSensitive, fileRuns} {
+	for _, name := range []string{fileKB, fileAnalytics, fileRuns} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Fatalf("missing %s: %v", name, err)
 		}
 	}
+	assertSensitiveAbsent(t, dir)
 	for _, name := range []string{dirExports, dirTmp} {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil || !info.IsDir() {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
-	for _, db := range []*sql.DB{h.KB, h.Analytics, h.Sensitive, h.Runs} {
+	for _, db := range []*sql.DB{h.KB, h.Analytics, h.Runs} {
 		var mode string
 		if err := db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&mode); err != nil {
 			t.Fatal(err)
@@ -64,12 +65,7 @@ func TestCreateOpenLayout(t *testing.T) {
 			t.Fatalf("analytics.users has %s", forbidden)
 		}
 	}
-	contacts := columnNames(t, ctx, h.Sensitive, "user_contacts")
-	for _, want := range []string{"phone", "email"} {
-		if _, ok := contacts[want]; !ok {
-			t.Fatalf("sensitive.user_contacts missing %s", want)
-		}
-	}
+	assertSensitiveAbsent(t, dir)
 
 	if err := h.Close(); err != nil {
 		t.Fatal(err)
@@ -86,6 +82,7 @@ func TestCreateOpenLayout(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("reopen applied migrations again: %d", n)
 	}
+	assertSensitiveAbsent(t, reopened.Dir)
 }
 
 func TestOpenMissing(t *testing.T) {
@@ -230,12 +227,14 @@ func TestAnalyticsAttachCannotOpenSensitive(t *testing.T) {
 
 	const phone = "13800000000"
 	const email = "secret@example.com"
-	if _, err := h.Sensitive.ExecContext(ctx,
+	sensitive := mustOpenSensitive(t, ctx, h, "attach-seed")
+	if _, err := sensitive.ExecContext(ctx,
 		`INSERT INTO user_contacts (user_id, phone, email) VALUES (?, ?, ?)`,
 		"u1", phone, email,
 	); err != nil {
 		t.Fatal(err)
 	}
+	assertAttachDenied(t, ctx, sensitive)
 	if _, err := h.Analytics.ExecContext(ctx,
 		`INSERT INTO users (id, display_name) VALUES (?, ?)`,
 		"u1", "脱敏用户",
@@ -298,7 +297,7 @@ func TestAnalyticsAttachCannotOpenSensitive(t *testing.T) {
 	}
 
 	var still string
-	if err := h.Sensitive.QueryRowContext(ctx, `SELECT email FROM user_contacts WHERE user_id = 'u1'`).Scan(&still); err != nil {
+	if err := sensitive.QueryRowContext(ctx, `SELECT email FROM user_contacts WHERE user_id = 'u1'`).Scan(&still); err != nil {
 		t.Fatal(err)
 	}
 	if still != email {
@@ -380,6 +379,99 @@ func TestDataRoot(t *testing.T) {
 	if _, err := dataRoot("linux", "", "", ""); err == nil {
 		t.Fatal("linux without home succeeded")
 	}
+}
+
+func mustOpenSensitive(t *testing.T, ctx context.Context, h *Handle, approvalID string) *sql.DB {
+	t.Helper()
+	grant, err := h.ConfirmExport(approvalID)
+	if err != nil {
+		t.Fatalf("ConfirmExport(%q): %v", approvalID, err)
+	}
+	db, err := h.OpenSensitive(ctx, grant)
+	if err != nil {
+		t.Fatalf("OpenSensitive: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func assertAttachDenied(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	limit, err := sqlite.Limit(conn, sqlite3.SQLITE_LIMIT_ATTACHED, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limit != 0 {
+		t.Fatalf("SQLITE_LIMIT_ATTACHED = %d, want 0", limit)
+	}
+	if _, err := conn.ExecContext(ctx, `ATTACH DATABASE ':memory:' AS leak`); err == nil {
+		t.Fatal("ATTACH on guarded connection succeeded")
+	} else if !strings.Contains(strings.ToLower(err.Error()), "not authorized") {
+		t.Fatalf("ATTACH: %v", err)
+	}
+}
+
+func assertSensitiveAbsent(t *testing.T, dir string) {
+	t.Helper()
+	for _, name := range []string{fileSensitive, fileSensitive + "-wal", fileSensitive + "-shm"} {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s exists after startup: %v", name, err)
+		}
+	}
+	assertNoSensitiveFD(t, dir)
+}
+
+func assertNoSensitiveFD(t *testing.T, dir string) {
+	t.Helper()
+	targets, ok := openFDTargets(t)
+	if !ok {
+		return
+	}
+	needle := filepath.Join(dir, fileSensitive)
+	for _, target := range targets {
+		if target == needle || strings.HasPrefix(target, needle) {
+			t.Fatalf("sensitive.db is open: %s", target)
+		}
+	}
+}
+
+func openFDTargets(t *testing.T) ([]string, bool) {
+	t.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return nil, false
+	}
+	targets := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		target, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name()))
+		if err != nil {
+			continue
+		}
+		targets = append(targets, target)
+	}
+	return targets, true
+}
+
+func countSensitiveFDs(t *testing.T, dir string) int {
+	t.Helper()
+	targets, ok := openFDTargets(t)
+	if !ok {
+		return -1
+	}
+	needle := filepath.Join(dir, fileSensitive)
+	n := 0
+	for _, target := range targets {
+		if target == needle || strings.HasPrefix(target, needle) {
+			n++
+		}
+	}
+	return n
 }
 
 func mustCreate(t *testing.T, ctx context.Context, root, id string) *Handle {

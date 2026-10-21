@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -25,13 +26,16 @@ const (
 
 // 工作区标识和路径错误。调用方用 errors.Is 判断。
 var (
-	ErrInvalidID  = errors.New("workspace: invalid id")
-	ErrPathEscape = errors.New("workspace: path escapes workspace root")
-	ErrExists     = errors.New("workspace: already exists")
-	ErrNotFound   = errors.New("workspace: not found")
+	ErrInvalidID         = errors.New("workspace: invalid id")
+	ErrPathEscape        = errors.New("workspace: path escapes workspace root")
+	ErrExists            = errors.New("workspace: already exists")
+	ErrNotFound          = errors.New("workspace: not found")
+	ErrInvalidApproval   = errors.New("workspace: invalid approval id")
+	ErrExportUnconfirmed = errors.New("workspace: export not confirmed")
 )
 
-// Handle 是一个已经打开的工作区。四个库各自一条连接池，互不 ATTACH。
+// Handle 是一个已经打开的工作区。
+// 启动时只打开 kb、analytics、runs。sensitive.db 不在这里，见 [Handle.OpenSensitive]。
 type Handle struct {
 	ID   string // 工作区标识
 	Root string // 应用数据目录的绝对路径
@@ -39,8 +43,13 @@ type Handle struct {
 
 	KB        *sql.DB
 	Analytics *sql.DB
-	Sensitive *sql.DB
 	Runs      *sql.DB
+
+	mu        sync.Mutex
+	closed    bool
+	nextGrant uint64
+	grants    map[uint64]*exportGrant
+	sensitive []*sql.DB
 }
 
 // DefaultRoot 返回本机应用数据目录。
@@ -84,7 +93,8 @@ func dataRoot(goos, home, xdg, appData string) (string, error) {
 	}
 }
 
-// Create 创建工作区目录、exports、tmp，并建好四个库、跑完迁移。
+// Create 创建工作区目录、exports、tmp，并建好 kb、analytics、runs，再跑完这三个库的迁移。
+// 不创建也不打开 sensitive.db。
 // id 里出现 `../` 或其他会逃出 workspaces 的路径时返回 [ErrPathEscape]，不创建任何目录。
 func Create(ctx context.Context, root, id string) (*Handle, error) {
 	absRoot, dir, err := resolve(root, id)
@@ -122,7 +132,8 @@ func Create(ctx context.Context, root, id string) (*Handle, error) {
 	return h, nil
 }
 
-// Open 打开已有工作区并补跑尚未应用的迁移。目录或任一库文件不存在时返回 [ErrNotFound]。
+// Open 打开已有工作区并补跑 kb、analytics、runs 上尚未应用的迁移。
+// 目录或这三个库的文件不存在时返回 [ErrNotFound]。sensitive.db 缺失不算缺失，也不会被打开。
 // 工作区目录若是指向 workspaces 之外的符号链接，返回 [ErrPathEscape]。
 func Open(ctx context.Context, root, id string) (*Handle, error) {
 	absRoot, dir, err := resolve(root, id)
@@ -142,7 +153,7 @@ func Open(ctx context.Context, root, id string) (*Handle, error) {
 	if err := ensureInside(filepath.Dir(dir), dir); err != nil {
 		return nil, fmt.Errorf("workspace: id %q: %w", id, err)
 	}
-	for _, name := range []string{fileKB, fileAnalytics, fileSensitive, fileRuns} {
+	for _, name := range []string{fileKB, fileAnalytics, fileRuns} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			if os.IsNotExist(err) {
 				return nil, fmt.Errorf("workspace: id %q: missing %s: %w", id, name, ErrNotFound)
@@ -158,13 +169,28 @@ func Open(ctx context.Context, root, id string) (*Handle, error) {
 	return openAll(ctx, id, absRoot, dir)
 }
 
-// Close 关闭四个库。
+// Close 关闭启动时打开的三个库，以及还没关掉的 sensitive 连接，并作废尚未使用的导出凭证。
 func (h *Handle) Close() error {
 	if h == nil {
 		return nil
 	}
+	h.mu.Lock()
+	h.closed = true
+	sensitive := h.sensitive
+	h.sensitive = nil
+	h.grants = nil
+	h.mu.Unlock()
+
 	var errs []error
-	for _, db := range []*sql.DB{h.KB, h.Analytics, h.Sensitive, h.Runs} {
+	for _, db := range []*sql.DB{h.KB, h.Analytics, h.Runs} {
+		if db == nil {
+			continue
+		}
+		if err := db.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, db := range sensitive {
 		if db == nil {
 			continue
 		}

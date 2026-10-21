@@ -16,14 +16,15 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
-// 技术设计 §14：analytics 连接要设 SQLITE_LIMIT_ATTACHED=0，并用 authorizer 拒绝
-// SQLITE_ATTACH。modernc 的 Driver 文档写明它不暴露 authorizer；sqlite.Limit 又要
+// 技术设计 §14：每条由本包打开的连接都要设 SQLITE_LIMIT_ATTACHED=0，并用 authorizer
+// 拒绝 SQLITE_ATTACH。modernc 的 Driver 文档写明它不暴露 authorizer；sqlite.Limit 又要
 // 已经包进 database/sql 的 *sql.Conn，连接钩子里还拿不到。钩子拿到的是驱动自己的
 // 连接，这里在交还给连接池之前直接调用 lib 里的 sqlite3_limit 和 sqlite3_set_authorizer。
 // 读不到连接内部字段就拒绝打开，避免静默退回到没有防护的连接。
 //
-// 四个库走同一个驱动，所以 kb、sensitive、runs 也拒绝 ATTACH。外部 SQL 只会落到
-// analytics 上，这是验收要挡住的那条连接。
+// kb、analytics、runs 在启动时打开，sensitive 要等 [Handle.OpenSensitive]。它们走同一个
+// 驱动，所以确认导出之后打开的连接也拒绝 ATTACH。外部 SQL 只会落到 analytics 上，
+// 这是验收要挡住的那条连接。
 
 var (
 	driverOnce sync.Once
@@ -70,10 +71,6 @@ func openAll(ctx context.Context, id, root, dir string) (*Handle, error) {
 	h.Analytics, err = openDB(ctx, filepath.Join(dir, fileAnalytics), analyticsMigrations, "migrations/analytics", nil)
 	if err != nil {
 		return nil, fmt.Errorf("workspace: analytics: %w", err)
-	}
-	h.Sensitive, err = openDB(ctx, filepath.Join(dir, fileSensitive), sensitiveMigrations, "migrations/sensitive", nil)
-	if err != nil {
-		return nil, fmt.Errorf("workspace: sensitive: %w", err)
 	}
 	h.Runs, err = openDB(ctx, filepath.Join(dir, fileRuns), runsMigrations, "migrations/runs", nil)
 	if err != nil {
