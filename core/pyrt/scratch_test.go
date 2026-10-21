@@ -71,11 +71,14 @@ func TestEnsureSweepsRenameCrashLeftovers(t *testing.T) {
 	if got := snapshotTree(t, outside); got != before {
 		t.Fatalf("符号链接指向的目录被改动了\n之前:\n%s\n之后:\n%s", before, got)
 	}
-	python := filepath.Join(real, "pyenv", "venv", "bin", "python")
+	python := filepath.Join(lexical, "pyenv", "venv", "bin", "python")
 	if rt.Python != python {
 		t.Fatalf("Python=%s，想要 %s", rt.Python, python)
 	}
-	if _, err := os.Stat(python); err != nil {
+	if _, err := os.Stat(filepath.Join(real, "pyenv", "venv", "bin", "python")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(rt.Python); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Lstat(ancestor)

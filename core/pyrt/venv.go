@@ -48,6 +48,11 @@ func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 	if err != nil {
 		return Runtime{}, err
 	}
+	// Root 可以还不存在。先补上缺失的那一层，锁文件才能落在真实目录里。
+	// 已有的符号链接在这里会被拒绝；祖先上的链接已经由 trustedRoot 展开。
+	if err := mkdirMissingTail(real); err != nil {
+		return Runtime{}, preferCoded("venv", real, err)
+	}
 	unlock, err := lockEnsure(real)
 	if err != nil {
 		return Runtime{}, err
