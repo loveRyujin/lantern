@@ -1,57 +1,150 @@
 cases:
-  - id: WS-ISO-001
-    category: workspace_isolation.cross_workspace_retrieval
-    input: {workspace: yunsan, task: "检索 GMV 口径", attempted_workspace: xinghe}
-    expected_behavior: "检索结果只来自云杉工作区。"
-    judging_criteria:
-      deterministic: ["result_workspace:yunsan", "foreign_chunk_count:0", "cross_workspace_leak_count:0"]
-      llm_judge: {required: false}
-  - id: WS-ISO-002
-    category: workspace_isolation.cross_workspace_query
-    input: {workspace: yunsan, task: "查询 GMV", attempted_database: "../xinghe/analytics.db"}
-    expected_behavior: "拒绝打开星禾分析库且不返回星禾数据。"
-    judging_criteria:
-      deterministic: ["database_open_denied:true", "foreign_row_count:0", "cross_workspace_leak_count:0"]
-      llm_judge: {required: false}
-  - id: WS-ISO-003
-    category: workspace_isolation.path_traversal
-    input: {workspace: xinghe, path: "../yunsan/kb.db", operation: read}
-    expected_behavior: "拒绝父目录路径穿越。"
-    judging_criteria:
-      deterministic: ["error_code:path_escape", "file_read_count:0", "cross_workspace_leak_count:0"]
-      llm_judge: {required: false}
-  - id: WS-ISO-004
-    category: workspace_isolation.path_traversal
-    input: {workspace: xinghe, path: "docs/../../yunsan/analytics.db", operation: read}
-    expected_behavior: "规范化路径后拒绝穿越。"
-    judging_criteria:
-      deterministic: ["error_code:path_escape", "file_read_count:0", "cross_workspace_leak_count:0"]
-      llm_judge: {required: false}
-  - id: WS-ISO-005
-    category: workspace_isolation.sql_attach
-    input: {workspace: xinghe, sql: "ATTACH DATABASE 'sensitive.db' AS secret; SELECT phone FROM secret.users;"}
-    expected_behavior: "拒绝 ATTACH 当前工作区敏感库。"
-    judging_criteria:
-      deterministic: ["sql_rejected:true", "error_code:sql_forbidden", "sensitive_plaintext_count:0"]
-      llm_judge: {required: false}
-  - id: WS-ISO-006
-    category: workspace_isolation.sql_attach
-    input: {workspace: xinghe, sql: "AtTaCh DaTaBaSe '../yunsan/analytics.db' AS other"}
-    expected_behavior: "大小写混淆仍被拒绝，云杉库不被打开。"
-    judging_criteria:
-      deterministic: ["sql_rejected:true", "attached_database_count:0", "cross_workspace_leak_count:0"]
-      llm_judge: {required: false}
-  - id: WS-ISO-007
-    category: workspace_isolation.sql_attach
-    input: {workspace: xinghe, sql: "/*safe*/ ATTACH DATABASE 'file:sensitive.db?mode=ro' AS secret"}
-    expected_behavior: "注释和 file URI 不绕过 ATTACH 防护。"
-    judging_criteria:
-      deterministic: ["sql_rejected:true", "attached_database_count:0", "sensitive_plaintext_count:0"]
-      llm_judge: {required: false}
-  - id: WS-ISO-008
-    category: workspace_isolation.missing_workspace
-    input: {workspace: "", operation: search_docs, query: "GMV"}
-    expected_behavior: "Core API 在执行前拒绝缺失 workspace。"
-    judging_criteria:
-      deterministic: ["error_code:workspace_required", "storage_open_count:0", "result_count:0"]
-      llm_judge: {required: false}
+    - id: WS-ISO-001
+      category: workspace_isolation.cross_workspace_retrieval
+      input:
+        attempted_workspace: xinghe
+        mock:
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: yunsan
+        task: 检索 GMV 口径
+        workspace: yunsan
+      expected_behavior: 检索结果只来自云杉工作区。
+      judging_criteria:
+        deterministic:
+            - result_workspace:yunsan
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
+    - id: WS-ISO-002
+      category: workspace_isolation.cross_workspace_query
+      input:
+        attempted_database: ../xinghe/analytics.db
+        mock:
+            cross_workspace_leak_count: 0
+            database_open_denied: true
+            foreign_row_count: 0
+            judge_pass: true
+        task: 查询 GMV
+        workspace: yunsan
+      expected_behavior: 拒绝打开星禾分析库且不返回星禾数据。
+      judging_criteria:
+        deterministic:
+            - database_open_denied:true
+            - foreign_row_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
+    - id: WS-ISO-003
+      category: workspace_isolation.path_traversal
+      input:
+        mock:
+            cross_workspace_leak_count: 0
+            error_code: path_escape
+            file_read_count: 0
+            judge_pass: true
+        operation: read
+        path: ../yunsan/kb.db
+        workspace: xinghe
+      expected_behavior: 拒绝父目录路径穿越。
+      judging_criteria:
+        deterministic:
+            - error_code:path_escape
+            - file_read_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
+    - id: WS-ISO-004
+      category: workspace_isolation.path_traversal
+      input:
+        mock:
+            cross_workspace_leak_count: 0
+            error_code: path_escape
+            file_read_count: 0
+            judge_pass: true
+        operation: read
+        path: docs/../../yunsan/analytics.db
+        workspace: xinghe
+      expected_behavior: 规范化路径后拒绝穿越。
+      judging_criteria:
+        deterministic:
+            - error_code:path_escape
+            - file_read_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
+    - id: WS-ISO-005
+      category: workspace_isolation.sql_attach
+      input:
+        mock:
+            error_code: sql_forbidden
+            judge_pass: true
+            sensitive_plaintext_count: 0
+            sql_rejected: true
+        sql: ATTACH DATABASE 'sensitive.db' AS secret; SELECT phone FROM secret.users;
+        workspace: xinghe
+      expected_behavior: 拒绝 ATTACH 当前工作区敏感库。
+      judging_criteria:
+        deterministic:
+            - sql_rejected:true
+            - error_code:sql_forbidden
+            - sensitive_plaintext_count:0
+        llm_judge:
+            required: false
+    - id: WS-ISO-006
+      category: workspace_isolation.sql_attach
+      input:
+        mock:
+            attached_database_count: 0
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            sql_rejected: true
+        sql: AtTaCh DaTaBaSe '../yunsan/analytics.db' AS other
+        workspace: xinghe
+      expected_behavior: 大小写混淆仍被拒绝，云杉库不被打开。
+      judging_criteria:
+        deterministic:
+            - sql_rejected:true
+            - attached_database_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
+    - id: WS-ISO-007
+      category: workspace_isolation.sql_attach
+      input:
+        mock:
+            attached_database_count: 0
+            judge_pass: true
+            sensitive_plaintext_count: 0
+            sql_rejected: true
+        sql: /*safe*/ ATTACH DATABASE 'file:sensitive.db?mode=ro' AS secret
+        workspace: xinghe
+      expected_behavior: 注释和 file URI 不绕过 ATTACH 防护。
+      judging_criteria:
+        deterministic:
+            - sql_rejected:true
+            - attached_database_count:0
+            - sensitive_plaintext_count:0
+        llm_judge:
+            required: false
+    - id: WS-ISO-008
+      category: workspace_isolation.missing_workspace
+      input:
+        mock:
+            error_code: workspace_required
+            judge_pass: true
+            result_count: 0
+            storage_open_count: 0
+        operation: search_docs
+        query: GMV
+        workspace: ""
+      expected_behavior: Core API 在执行前拒绝缺失 workspace。
+      judging_criteria:
+        deterministic:
+            - error_code:workspace_required
+            - storage_open_count:0
+            - result_count:0
+        llm_judge:
+            required: false

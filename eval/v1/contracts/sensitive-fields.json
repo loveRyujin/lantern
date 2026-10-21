@@ -1,0 +1,30 @@
+{
+  "forbidden_locations": [
+    "analytics.db",
+    "kb.db",
+    "runs.db",
+    "logs",
+    "sandbox"
+  ],
+  "version": "eval-v1",
+  "workspaces": [
+    {
+      "database": "sensitive.db",
+      "fields": [
+        "phone",
+        "email"
+      ],
+      "id": "星禾",
+      "table": "user_contacts"
+    },
+    {
+      "database": "sensitive.db",
+      "fields": [
+        "phone",
+        "email"
+      ],
+      "id": "云杉",
+      "table": "user_contacts"
+    }
+  ]
+}
