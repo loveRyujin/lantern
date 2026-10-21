@@ -495,7 +495,7 @@ gates:
 	assertNoReport(t, out)
 }
 
-func TestMergedGateFileShape(t *testing.T) {
+func TestFrozenV1IsNotFalseGreen(t *testing.T) {
 	t.Parallel()
 	suite := filepath.Join(moduleRoot(t), "eval", "v1")
 	gates, err := eval.LoadGateSet(filepath.Join(suite, "gates.yaml"))
@@ -508,6 +508,9 @@ func TestMergedGateFileShape(t *testing.T) {
 	}
 	if err := eval.ValidateGates(gates, catalog); err != nil {
 		t.Fatal(err)
+	}
+	if catalog.Version != "" {
+		t.Fatal("仓库里的 rules.yaml 没有 version，不能因此拒绝加载")
 	}
 	if gates.Version != "eval-v1" || gates.Violation != "observed_not_equal_expected" {
 		t.Fatalf("版本 %q，违规判定 %q", gates.Version, gates.Violation)
@@ -535,6 +538,57 @@ func TestMergedGateFileShape(t *testing.T) {
 		if !containsName(gates.NonGate, name) {
 			t.Fatalf("non_gate 缺少 %s", name)
 		}
+	}
+
+	res, err := eval.Execute(context.Background(), eval.Options{
+		Root:     suite,
+		OutDir:   t.TempDir(),
+		Platform: "all",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := res.Report.Summary
+	if sum.Cases == 0 {
+		t.Fatal("仓库里的 eval/v1 没有用例")
+	}
+	wantExit := eval.ExitOK
+	if sum.Failed > 0 || sum.MissingObservation > 0 || !sum.HardGatesPassed {
+		wantExit = eval.ExitFailed
+	}
+	if res.ExitCode != wantExit {
+		t.Fatalf("退出码 %d 与摘要不符: %+v", res.ExitCode, sum)
+	}
+	denom := sum.Passed + sum.Failed + sum.MissingObservation
+	if denom == 0 {
+		if sum.PassRate != nil {
+			t.Fatalf("没有计入分母的用例却写出了通过率: %v", *sum.PassRate)
+		}
+	} else if sum.PassRate == nil || *sum.PassRate != float64(sum.Passed)/float64(denom) {
+		t.Fatalf("通过率与计数不符: %+v", sum)
+	}
+	if len(res.Report.HardGates) != 3 {
+		t.Fatalf("门槛 = %+v", res.Report.HardGates)
+	}
+	for _, gate := range res.Report.HardGates {
+		if gate.SampleCount == 0 {
+			if gate.Passed || gate.Value != nil || !strings.Contains(gate.Note, "无样本") {
+				t.Fatalf("零样本被写成通过: %+v", gate)
+			}
+			continue
+		}
+		if gate.Value == nil || (*gate.Value == 0) != gate.Passed || (*gate.Value > 0) == gate.Passed {
+			t.Fatalf("门槛结果和失败次数不一致: %+v", gate)
+		}
+	}
+	md := readText(t, res.MarkdownPath)
+	for _, banned := range []string{"视作通过", "grok", "ollama", "bge-m3"} {
+		if strings.Contains(md, banned) {
+			t.Fatalf("报告含有 %s\n%s", banned, md)
+		}
+	}
+	if res.Report.Environment.Model != "mock" || res.Report.Environment.EmbeddingModel != "mock" {
+		t.Fatalf("环境 = %+v", res.Report.Environment)
 	}
 }
 
