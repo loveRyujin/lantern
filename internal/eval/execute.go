@@ -35,6 +35,9 @@ type Options struct {
 	ModuleRoot string
 	Now        func() time.Time
 	Judge      Judge
+	// Environment 非 nil 时，用其中的 Model、EmbedderID、EmbeddingModel、SandboxImpl
+	// 盖住报告环境，空字符串也会盖住。用来确认缺字段时不写报告。
+	Environment *Environment
 }
 
 // Result 是写出的报告和进程退出码。
@@ -167,6 +170,15 @@ func Execute(ctx context.Context, opt Options) (Result, error) {
 	report.SuiteVersion = version
 	report.GeneratedAt = generated.Format(time.RFC3339Nano)
 	report.Environment = collectEnvironment(model, version, suite.Root, moduleRoot)
+	if opt.Environment != nil {
+		report.Environment.Model = opt.Environment.Model
+		report.Environment.EmbedderID = opt.Environment.EmbedderID
+		report.Environment.EmbeddingModel = opt.Environment.EmbeddingModel
+		report.Environment.SandboxImpl = opt.Environment.SandboxImpl
+	}
+	if err := CheckReportEnvironment(report.Environment); err != nil {
+		return Result{}, err
+	}
 	report.RuleCatalog = CatalogInfo{
 		Path:    rulesPath,
 		Loaded:  catalog.Loaded,

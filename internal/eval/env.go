@@ -3,6 +3,7 @@ package eval
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,16 @@ import (
 
 func currentPlatform() string {
 	return runtime.GOOS
+}
+
+// CheckReportEnvironment 拒绝空的模型、embedder 或沙箱实现。
+// embedder_id 和 embedding_model 有一个非空白即可。
+func CheckReportEnvironment(env Environment) error {
+	if strings.TrimSpace(env.Model) == "" || strings.TrimSpace(env.SandboxImpl) == "" ||
+		(strings.TrimSpace(env.EmbedderID) == "" && strings.TrimSpace(env.EmbeddingModel) == "") {
+		return fmt.Errorf("eval: 报告环境缺少 model、embedder 或 sandbox_impl")
+	}
+	return nil
 }
 
 func collectEnvironment(judgeModel, suiteVersion, suiteRoot, moduleRoot string) Environment {

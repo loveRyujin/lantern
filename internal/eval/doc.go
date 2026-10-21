@@ -52,4 +52,9 @@
 // 摘要指纹只哈希计分内容：直接排除 environment、rule_catalog.path、gate_catalog.path、
 // 用例 source、generated_at 和 digest，不把它们替换成固定假值，再对剩余 JSON 做 sha256。
 // 外部加载门槛只能走 LoadCheckedGateSet；未导出的读取函数不会做双向校验和安全期望校验。
+//
+// 写出报告前会检查 model、sandbox_impl，以及 embedder_id 和 embedding_model 至少有一个。
+// 空串或只有空白时返回错误，不写文件。Options.Environment 可以盖住这四个字段。
+// CaseFingerprint 只哈希用例的 id、category、input、expected、rules、judge、platform，
+// 不包含 environment、source 和路径。只改环境或 YAML 键序不会改变这枚指纹。
 package eval

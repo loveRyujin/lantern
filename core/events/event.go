@@ -71,6 +71,9 @@ type Token struct {
 }
 
 // Step 是步骤摘要。ID 和 Status 必填。
+//
+// 工具步骤带 ToolName 和 ParamsHash。ParamsHash 是规范化参数的 SHA-256，
+// 参数原文不进事件流。
 type Step struct {
 	// ID 是步骤标识。
 	ID string
@@ -82,6 +85,10 @@ type Step struct {
 	Tokens int
 	// Duration 是这一步的耗时。
 	Duration time.Duration
+	// ToolName 是这一步调用的工具。不是工具步骤时为空。
+	ToolName string
+	// ParamsHash 是参数快照哈希。没有合法参数时为空，不拿残缺参数来凑。
+	ParamsHash string
 }
 
 // ApprovalRequest 只携带确认单的关联信息。
