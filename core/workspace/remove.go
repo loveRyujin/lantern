@@ -107,6 +107,9 @@ func ScratchDir(root string) (string, error) {
 // 返回 [ErrPathEscape]。检查都通过之前不会改动目标。
 // 替换时先把旧目录挪到临时目录，再把新目录换上。中途失败会把已经换上的目录移回去。
 // 成功后这些工作区不再留在 srcRoot。返回装好之后的目录，顺序与 ids 相同。
+//
+// 检查通过之后、renamePath 之前有一段时间窗。这是本机单用户的开发工具，接受这个前提：
+// 如果这中间有人把 workspaces 换成符号链接，rename 会跟着链接走，这里不再复查。
 func Install(dstRoot, srcRoot string, ids []string) (dirs []string, err error) {
 	plans, err := planInstall(dstRoot, srcRoot, ids)
 	if err != nil {
