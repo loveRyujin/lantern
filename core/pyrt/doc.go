@@ -9,9 +9,11 @@
 // 调用 pip 时去掉 PIP_TARGET、PIP_PREFIX、PIP_USER，避免包装到 venv 外面。
 // 写成功标记之前会在 venv 里 import pandas 和 matplotlib。
 // 标记对不上时，在 Root 内的临时目录生成新 venv，再原子 rename 替换旧目录，不对已有目录使用 --clear。
+// 启动时清掉 pyenv 下残留的 .venv-new-* / .venv-old-* 真实目录；同名符号链接不跟随、不删除。
 // 先用 EvalSymlinks 解析 Root。只拒绝这个真实目录以下（pyenv、venv）的符号链接；
 // 祖先目录可以是符号链接。解析后不在 Root 内时返回 path_escape。
-// 同一个 Root 上不要并发调用 Ensure。
+// Unix 上同一 Root 用 .pyrt.lock 互斥，拿不到锁就失败。非 Unix 没有 flock，Ensure 直接失败。
+// 目录句柄盖不住 python 子进程的路径查找，见 ADR 0003。
 //
 // 解释器缺失、版本不符、venv 创建失败、锁定依赖装不上或 import 失败时，返回的错误实现 errcode.Coded，
 // Code() 为 runtime_unavailable。调用方不得因此改为不经沙箱直接执行。

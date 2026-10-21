@@ -27,10 +27,12 @@ type Runtime struct {
 // Ensure 探测解释器，在 <Root>/pyenv/venv 创建 venv，并安装哈希锁定的依赖。
 // 标记里的锁哈希、基础解释器路径和版本都一致，且 venv 解释器仍在锁定范围内时，不再联网。
 // 标记缺失或不一致时，在 Root 里的临时目录生成新 venv，再原子 rename 替换旧目录。不对已有目录使用 --clear。
+// 每次启动先清掉 pyenv 下残留的 .venv-new-* / .venv-old-* 真实目录，不跟随符号链接。
 // 先 EvalSymlinks 解析 Root，只拒绝这个真实目录以下的符号链接。祖先目录上的链接不算 path_escape。
 // 写标记前会在 venv 里 import pandas 和 matplotlib。
-// 这一步在沙箱外执行。同一个 Root 上不要并发调用；本函数不加文件锁。
-// 失败且属于运行时问题时，错误码是 runtime_unavailable。路径逃逸不是这个码。
+// 这一步在沙箱外执行。Unix 上用 Root 里的 .pyrt.lock 互斥；拿不到锁就返回错误，不清理、不替换。
+// 非 Unix 没有 flock，Ensure 直接失败。文件锁不替代符号链接检查。
+// 失败且属于运行时问题时，错误码是 runtime_unavailable。路径逃逸和锁冲突不是这个码。
 func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 	if err := ctx.Err(); err != nil {
 		return Runtime{}, err
@@ -41,6 +43,23 @@ func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 	root, err := filepath.Abs(c.Root)
 	if err != nil {
 		return Runtime{}, fmt.Errorf("pyrt: Root: %w", err)
+	}
+	real, err := trustedRoot(root)
+	if err != nil {
+		return Runtime{}, err
+	}
+	// Root 可以还不存在。先补上缺失的那一层，锁文件才能落在真实目录里。
+	// 已有的符号链接在这里会被拒绝；祖先上的链接已经由 trustedRoot 展开。
+	if err := mkdirMissingTail(real); err != nil {
+		return Runtime{}, preferCoded("venv", real, err)
+	}
+	unlock, err := lockEnsure(real)
+	if err != nil {
+		return Runtime{}, err
+	}
+	defer unlock()
+	if err := sweepScratch(real); err != nil {
+		return Runtime{}, preferCoded("venv", real, err)
 	}
 	if err := guardWorkspace(root); err != nil {
 		return Runtime{}, err
@@ -61,10 +80,6 @@ func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 	}
 	if !spec.supports(base.Version) {
 		return Runtime{}, unavailable("lock", base.Path, "版本 "+base.Version.String()+" 不在锁定范围 "+spec.rangeString()+" 内")
-	}
-	real, err := trustedRoot(root)
-	if err != nil {
-		return Runtime{}, err
 	}
 	pyenv, err := ensureBelow(real, "pyenv")
 	if err != nil {
@@ -108,6 +123,55 @@ func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 		return Runtime{}, preferCoded("install", venv, err)
 	}
 	return Runtime{Base: base, Venv: venv, Python: py}, nil
+}
+
+// sweepScratch 删掉 pyenv 里上次替换中断留下的临时目录。
+// 只删除真实 Root 内、名字以 .venv-new- 或 .venv-old- 开头的真实目录。
+// 同名的符号链接和普通文件留着，不跟随链接，也不对它们 RemoveAll。
+func sweepScratch(realRoot string) error {
+	pyenv := filepath.Join(realRoot, "pyenv")
+	info, err := os.Lstat(pyenv)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil
+	}
+	if err := resolvedInside(realRoot, pyenv); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(pyenv)
+	if err != nil {
+		return err
+	}
+	for _, ent := range entries {
+		name := ent.Name()
+		if !isVenvScratch(name) {
+			continue
+		}
+		path := filepath.Join(pyenv, name)
+		st, err := os.Lstat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if st.Mode()&os.ModeSymlink != 0 || !st.IsDir() {
+			continue
+		}
+		if err := removeRealDir(realRoot, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isVenvScratch(name string) bool {
+	return strings.HasPrefix(name, ".venv-new-") || strings.HasPrefix(name, ".venv-old-")
 }
 
 func venvPython(venv string) string {
