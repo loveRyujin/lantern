@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -112,6 +113,11 @@ func TestRemoveRejectsFileAndEscape(t *testing.T) {
 }
 
 func TestCleanScratch(t *testing.T) {
+	var log bytes.Buffer
+	orig := scratchLog
+	scratchLog = &log
+	t.Cleanup(func() { scratchLog = orig })
+
 	root := t.TempDir()
 	stale := filepath.Join(root, ".lantern-seed-stale", "secret.txt")
 	writeTiny(t, stale, "phone")
@@ -145,6 +151,15 @@ func TestCleanScratch(t *testing.T) {
 	}
 	if err := CleanScratch(filepath.Join(root, "missing")); err != nil {
 		t.Fatal(err)
+	}
+	text := log.String()
+	for _, name := range []string{".lantern-seed-stale", ".lantern-seed-link"} {
+		if !strings.Contains(text, name) {
+			t.Fatalf("log %q missing %s", text, name)
+		}
+	}
+	if strings.Contains(text, "notes.txt") || strings.Contains(text, "workspaces") {
+		t.Fatalf("log mentioned a kept path: %s", text)
 	}
 }
 

@@ -3,6 +3,7 @@ package workspace
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,9 @@ const scratchPrefix = ".lantern-seed-"
 
 // renamePath 换目录。测试替换它，用来模拟替换进行到一半时失败。
 var renamePath = os.Rename
+
+// scratchLog 接收被清掉的临时目录路径。默认写到标准错误，测试可以换掉。
+var scratchLog io.Writer = os.Stderr
 
 // Remove 删除 <root>/workspaces/<id>。
 // 目录不存在时返回 nil，也不创建 workspaces。
@@ -43,6 +47,7 @@ func Replaceable(root, id string) error {
 // CleanScratch 删除 root 下上次中断留下的临时目录。
 // 只处理以 `.lantern-seed-` 开头的名字，不会动 workspaces。
 // 名字本身是符号链接时只去掉链接，不跟着进目标目录。
+// 删掉的目录会把路径写到标准错误。里面的 runs.db 不会再生成回来，所以要留下名字。
 // 不要在 [Install] 进行中调用，否则会把正在使用的临时目录一起删掉。
 func CleanScratch(root string) error {
 	entries, err := os.ReadDir(root)
@@ -70,17 +75,28 @@ func CleanScratch(root string) error {
 		if info.Mode()&os.ModeSymlink != 0 {
 			if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
 				errs = append(errs, rmErr)
+			} else if rmErr == nil {
+				reportRemoved(path)
 			}
 			continue
 		}
 		if rmErr := os.RemoveAll(path); rmErr != nil {
 			errs = append(errs, rmErr)
+		} else {
+			reportRemoved(path)
 		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("workspace: 清理临时目录: %w", errors.Join(errs...))
 	}
 	return nil
+}
+
+func reportRemoved(path string) {
+	if scratchLog == nil {
+		return
+	}
+	fmt.Fprintf(scratchLog, "workspace: 删掉临时目录 %s\n", path)
 }
 
 // ScratchDir 在 root 下新建一个临时目录。root 不存在时会创建。
