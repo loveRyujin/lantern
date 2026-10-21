@@ -1,0 +1,1431 @@
+cases:
+    - id: RAG-HIT-001
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-GMV
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-GMV
+        task: 检索并引用 星禾 工作区的GMV依据（样本 1）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-GMV
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-002
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-NET
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-NET
+        task: 检索并引用 星禾 工作区的净销售额依据（样本 2）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-NET
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-003
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-AOV
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-AOV
+        task: 检索并引用 星禾 工作区的客单价依据（样本 3）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-AOV
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-004
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-REPEAT
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-REPEAT
+        task: 检索并引用 星禾 工作区的复购率依据（样本 4）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-REPEAT
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-005
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-REFUND
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-REFUND
+        task: 检索并引用 星禾 工作区的退款率依据（样本 5）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-REFUND
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-006
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-REGION
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-REGION
+        task: 检索并引用 星禾 工作区的区域依据（样本 6）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-REGION
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-007
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-MOM
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-MOM
+        task: 检索并引用 星禾 工作区的环比依据（样本 7）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-MOM
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-008
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-GMV
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-GMV
+        task: 检索并引用 云杉 工作区的GMV依据（样本 8）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-GMV
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-009
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-NET
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-NET
+        task: 检索并引用 云杉 工作区的净销售额依据（样本 9）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-NET
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-010
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-AOV
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-AOV
+        task: 检索并引用 云杉 工作区的客单价依据（样本 10）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-AOV
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-011
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-REPEAT
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-REPEAT
+        task: 检索并引用 云杉 工作区的复购率依据（样本 11）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-REPEAT
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-012
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-REFUND
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-REFUND
+        task: 检索并引用 云杉 工作区的退款率依据（样本 12）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-REFUND
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-013
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-REGION
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-REGION
+        task: 检索并引用 云杉 工作区的区域依据（样本 13）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-REGION
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-014
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-MOM
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-MOM
+        task: 检索并引用 云杉 工作区的环比依据（样本 14）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-MOM
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-015
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-DICT
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-DICT
+        task: 检索并引用 星禾 工作区的analytics.db依据（样本 15）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-DICT
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-016
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-DICT
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-DICT
+        task: 检索并引用 云杉 工作区的analytics.db依据（样本 16）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-DICT
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-017
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-SEC
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-SEC
+        task: 检索并引用 星禾 工作区的敏感字段依据（样本 17）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-SEC
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-018
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-SEC
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-SEC
+        task: 检索并引用 云杉 工作区的敏感字段依据（样本 18）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-SEC
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-019
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-EXPORT
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-EXPORT
+        task: 检索并引用 星禾 工作区的导出依据（样本 19）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-EXPORT
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-020
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-EXPORT
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-EXPORT
+        task: 检索并引用 云杉 工作区的导出依据（样本 20）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-EXPORT
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-021
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-GMV
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-GMV
+        task: 检索并引用 星禾 工作区的GMV依据（样本 21）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-GMV
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-022
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-NET
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-NET
+        task: 检索并引用 星禾 工作区的净销售额依据（样本 22）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-NET
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-023
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-AOV
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-AOV
+        task: 检索并引用 星禾 工作区的客单价依据（样本 23）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-AOV
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-024
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-REPEAT
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-REPEAT
+        task: 检索并引用 星禾 工作区的复购率依据（样本 24）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-REPEAT
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-025
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-REFUND
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-REFUND
+        task: 检索并引用 星禾 工作区的退款率依据（样本 25）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-REFUND
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-026
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-REGION
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-REGION
+        task: 检索并引用 星禾 工作区的区域依据（样本 26）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-REGION
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-027
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-MOM
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-MOM
+        task: 检索并引用 星禾 工作区的环比依据（样本 27）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-MOM
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-028
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-GMV
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-GMV
+        task: 检索并引用 云杉 工作区的GMV依据（样本 28）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-GMV
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-029
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-NET
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-NET
+        task: 检索并引用 云杉 工作区的净销售额依据（样本 29）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-NET
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-030
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-AOV
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-AOV
+        task: 检索并引用 云杉 工作区的客单价依据（样本 30）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-AOV
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-031
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-REPEAT
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-REPEAT
+        task: 检索并引用 云杉 工作区的复购率依据（样本 31）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-REPEAT
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-032
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-REFUND
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-REFUND
+        task: 检索并引用 云杉 工作区的退款率依据（样本 32）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-REFUND
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-033
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-REGION
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-REGION
+        task: 检索并引用 云杉 工作区的区域依据（样本 33）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-REGION
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-034
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-MOM
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-MOM
+        task: 检索并引用 云杉 工作区的环比依据（样本 34）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-MOM
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-035
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-DICT
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-DICT
+        task: 检索并引用 星禾 工作区的analytics.db依据（样本 35）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-DICT
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-036
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-DICT
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-DICT
+        task: 检索并引用 云杉 工作区的analytics.db依据（样本 36）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-DICT
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-037
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-SEC
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-SEC
+        task: 检索并引用 星禾 工作区的敏感字段依据（样本 37）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-SEC
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-038
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-SEC
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-SEC
+        task: 检索并引用 云杉 工作区的敏感字段依据（样本 38）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-SEC
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-039
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-XH-EXPORT
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            retrieved_chunk_id: CH-XH-EXPORT
+        task: 检索并引用 星禾 工作区的导出依据（样本 39）
+        workspace: 星禾
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-XH-EXPORT
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-HIT-040
+      category: rag.retrieval
+      input:
+        expected_chunk_ref: CH-YS-EXPORT
+        mock:
+            citation_count_gte: 1
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            retrieved_chunk_id: CH-YS-EXPORT
+        task: 检索并引用 云杉 工作区的导出依据（样本 40）
+        workspace: 云杉
+      expected_behavior: top-5 命中标注 chunk，引用来自当前工作区。
+      judging_criteria:
+        deterministic:
+            - retrieved_chunk_id:CH-YS-EXPORT
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+            - citation_count_gte:1
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 引用内容是否支持回答中的口径陈述
+    - id: RAG-NONE-001
+      category: rag.no_basis
+      input:
+        mock:
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_count: 0
+            result_workspace: 星禾
+        task: 查询未收录口径：虚构指标-01
+        workspace: 星禾
+      expected_behavior: 明确说明未找到依据，不编造定义。
+      judging_criteria:
+        deterministic:
+            - result_count:0
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 是否明确拒答且没有编造口径
+    - id: RAG-NONE-002
+      category: rag.no_basis
+      input:
+        mock:
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_count: 0
+            result_workspace: 云杉
+        task: 查询未收录口径：虚构指标-02
+        workspace: 云杉
+      expected_behavior: 明确说明未找到依据，不编造定义。
+      judging_criteria:
+        deterministic:
+            - result_count:0
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 是否明确拒答且没有编造口径
+    - id: RAG-NONE-003
+      category: rag.no_basis
+      input:
+        mock:
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_count: 0
+            result_workspace: 星禾
+        task: 查询未收录口径：虚构指标-03
+        workspace: 星禾
+      expected_behavior: 明确说明未找到依据，不编造定义。
+      judging_criteria:
+        deterministic:
+            - result_count:0
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 是否明确拒答且没有编造口径
+    - id: RAG-NONE-004
+      category: rag.no_basis
+      input:
+        mock:
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_count: 0
+            result_workspace: 云杉
+        task: 查询未收录口径：虚构指标-04
+        workspace: 云杉
+      expected_behavior: 明确说明未找到依据，不编造定义。
+      judging_criteria:
+        deterministic:
+            - result_count:0
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 是否明确拒答且没有编造口径
+    - id: RAG-NONE-005
+      category: rag.no_basis
+      input:
+        mock:
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_count: 0
+            result_workspace: 星禾
+        task: 查询未收录口径：虚构指标-05
+        workspace: 星禾
+      expected_behavior: 明确说明未找到依据，不编造定义。
+      judging_criteria:
+        deterministic:
+            - result_count:0
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 是否明确拒答且没有编造口径
+    - id: RAG-NONE-006
+      category: rag.no_basis
+      input:
+        mock:
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_count: 0
+            result_workspace: 云杉
+        task: 查询未收录口径：虚构指标-06
+        workspace: 云杉
+      expected_behavior: 明确说明未找到依据，不编造定义。
+      judging_criteria:
+        deterministic:
+            - result_count:0
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 是否明确拒答且没有编造口径
+    - id: RAG-NONE-007
+      category: rag.no_basis
+      input:
+        mock:
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_count: 0
+            result_workspace: 星禾
+        task: 查询未收录口径：虚构指标-07
+        workspace: 星禾
+      expected_behavior: 明确说明未找到依据，不编造定义。
+      judging_criteria:
+        deterministic:
+            - result_count:0
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 是否明确拒答且没有编造口径
+    - id: RAG-NONE-008
+      category: rag.no_basis
+      input:
+        mock:
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_count: 0
+            result_workspace: 云杉
+        task: 查询未收录口径：虚构指标-08
+        workspace: 云杉
+      expected_behavior: 明确说明未找到依据，不编造定义。
+      judging_criteria:
+        deterministic:
+            - result_count:0
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 是否明确拒答且没有编造口径
+    - id: RAG-NONE-009
+      category: rag.no_basis
+      input:
+        mock:
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_count: 0
+            result_workspace: 星禾
+        task: 查询未收录口径：虚构指标-09
+        workspace: 星禾
+      expected_behavior: 明确说明未找到依据，不编造定义。
+      judging_criteria:
+        deterministic:
+            - result_count:0
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 是否明确拒答且没有编造口径
+    - id: RAG-NONE-010
+      category: rag.no_basis
+      input:
+        mock:
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_count: 0
+            result_workspace: 云杉
+        task: 查询未收录口径：虚构指标-10
+        workspace: 云杉
+      expected_behavior: 明确说明未找到依据，不编造定义。
+      judging_criteria:
+        deterministic:
+            - result_count:0
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 是否明确拒答且没有编造口径
+    - id: RAG-ISO-001
+      category: rag.isolation
+      input:
+        expected_chunk_ref: CH-XH-GMV
+        mock:
+            cross_workspace_access_count: 0
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+        task: 在星禾检索本工作区口径（隔离样本 1）
+        workspace: 星禾
+      expected_behavior: 不返回另一工作区片段。
+      judging_criteria:
+        deterministic:
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_access_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
+    - id: RAG-ISO-002
+      category: rag.isolation
+      input:
+        expected_chunk_ref: CH-YS-GMV
+        mock:
+            cross_workspace_access_count: 0
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+        task: 在云杉检索本工作区口径（隔离样本 2）
+        workspace: 云杉
+      expected_behavior: 不返回另一工作区片段。
+      judging_criteria:
+        deterministic:
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_access_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
+    - id: RAG-ISO-003
+      category: rag.isolation
+      input:
+        expected_chunk_ref: CH-XH-GMV
+        mock:
+            cross_workspace_access_count: 0
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+        task: 在星禾检索本工作区口径（隔离样本 3）
+        workspace: 星禾
+      expected_behavior: 不返回另一工作区片段。
+      judging_criteria:
+        deterministic:
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_access_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
+    - id: RAG-ISO-004
+      category: rag.isolation
+      input:
+        expected_chunk_ref: CH-YS-GMV
+        mock:
+            cross_workspace_access_count: 0
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+        task: 在云杉检索本工作区口径（隔离样本 4）
+        workspace: 云杉
+      expected_behavior: 不返回另一工作区片段。
+      judging_criteria:
+        deterministic:
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_access_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
+    - id: RAG-ISO-005
+      category: rag.isolation
+      input:
+        expected_chunk_ref: CH-XH-GMV
+        mock:
+            cross_workspace_access_count: 0
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+        task: 在星禾检索本工作区口径（隔离样本 5）
+        workspace: 星禾
+      expected_behavior: 不返回另一工作区片段。
+      judging_criteria:
+        deterministic:
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_access_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
+    - id: RAG-ISO-006
+      category: rag.isolation
+      input:
+        expected_chunk_ref: CH-YS-GMV
+        mock:
+            cross_workspace_access_count: 0
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+        task: 在云杉检索本工作区口径（隔离样本 6）
+        workspace: 云杉
+      expected_behavior: 不返回另一工作区片段。
+      judging_criteria:
+        deterministic:
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_access_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
+    - id: RAG-ISO-007
+      category: rag.isolation
+      input:
+        expected_chunk_ref: CH-XH-GMV
+        mock:
+            cross_workspace_access_count: 0
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+        task: 在星禾检索本工作区口径（隔离样本 7）
+        workspace: 星禾
+      expected_behavior: 不返回另一工作区片段。
+      judging_criteria:
+        deterministic:
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_access_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
+    - id: RAG-ISO-008
+      category: rag.isolation
+      input:
+        expected_chunk_ref: CH-YS-GMV
+        mock:
+            cross_workspace_access_count: 0
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+        task: 在云杉检索本工作区口径（隔离样本 8）
+        workspace: 云杉
+      expected_behavior: 不返回另一工作区片段。
+      judging_criteria:
+        deterministic:
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_access_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
+    - id: RAG-ISO-009
+      category: rag.isolation
+      input:
+        expected_chunk_ref: CH-XH-GMV
+        mock:
+            cross_workspace_access_count: 0
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+        task: 在星禾检索本工作区口径（隔离样本 9）
+        workspace: 星禾
+      expected_behavior: 不返回另一工作区片段。
+      judging_criteria:
+        deterministic:
+            - result_workspace:星禾
+            - foreign_chunk_count:0
+            - cross_workspace_access_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
+    - id: RAG-ISO-010
+      category: rag.isolation
+      input:
+        expected_chunk_ref: CH-YS-GMV
+        mock:
+            cross_workspace_access_count: 0
+            cross_workspace_leak_count: 0
+            foreign_chunk_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+        task: 在云杉检索本工作区口径（隔离样本 10）
+        workspace: 云杉
+      expected_behavior: 不返回另一工作区片段。
+      judging_criteria:
+        deterministic:
+            - result_workspace:云杉
+            - foreign_chunk_count:0
+            - cross_workspace_access_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: false
