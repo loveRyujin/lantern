@@ -165,8 +165,8 @@ func TestEnsureInstallsHashLockedRequirements(t *testing.T) {
 	if strings.Count(log, " -m pip ") != 1 || !strings.Contains(log, "--require-hashes") || !strings.Contains(log, "--only-binary=:all:") {
 		t.Fatalf("pip 调用不符合预期:\n%s", log)
 	}
-	if strings.Count(log, " -m venv --clear ") != 1 {
-		t.Fatalf("第一次安装应该用 --clear:\n%s", log)
+	if strings.Count(log, " -m venv ") != 1 || strings.Contains(log, "--clear") {
+		t.Fatalf("第一次安装应该建一次 venv，且不带 --clear:\n%s", log)
 	}
 	if strings.Count(log, "import pandas, matplotlib") != 1 {
 		t.Fatalf("写标记前应该 import 一次:\n%s", log)
@@ -215,10 +215,10 @@ func TestEnsureClearsVenvWhenMarkerMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
-		t.Fatal("标记缺失时应该 --clear 掉旧 venv 里的文件")
+		t.Fatal("标记缺失时应该换成新 venv，旧目录里的文件要删掉")
 	}
 	log := readLog(t, logPath)
-	if strings.Count(log, " -m venv --clear ") != 2 || strings.Count(log, " -m pip ") != 2 {
+	if strings.Count(log, " -m venv ") != 2 || strings.Contains(log, "--clear") || strings.Count(log, " -m pip ") != 2 {
 		t.Fatalf("重建次数不对:\n%s", log)
 	}
 }
@@ -241,8 +241,8 @@ func TestEnsureRebuildsWhenBaseChanges(t *testing.T) {
 		t.Fatalf("base=%+v", rt.Base)
 	}
 	log := readLog(t, logPath)
-	if strings.Count(log, " -m venv --clear ") != 2 || strings.Count(log, " -m pip ") != 2 {
-		t.Fatalf("换解释器后应该重建:\n%s", log)
+	if strings.Count(log, " -m venv ") != 2 || strings.Contains(log, "--clear") || strings.Count(log, " -m pip ") != 2 {
+		t.Fatalf("换解释器后应该重建，且不带 --clear:\n%s", log)
 	}
 }
 

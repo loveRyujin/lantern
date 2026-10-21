@@ -26,9 +26,11 @@ type Runtime struct {
 
 // Ensure 探测解释器，在 <Root>/pyenv/venv 创建 venv，并安装哈希锁定的依赖。
 // 标记里的锁哈希、基础解释器路径和版本都一致，且 venv 解释器仍在锁定范围内时，不再联网。
-// 标记缺失或不一致时用 python -m venv --clear 重建。写标记前会在 venv 里 import pandas 和 matplotlib。
+// 标记缺失或不一致时，在 Root 里的临时目录生成新 venv，再原子 rename 替换旧目录。不对已有目录使用 --clear。
+// Root、Root/pyenv 或路径上任一层是符号链接时返回 path_escape，不创建也不删除。
+// 写标记前会在 venv 里 import pandas 和 matplotlib。
 // 这一步在沙箱外执行。同一个 Root 上不要并发调用；本函数不加文件锁。
-// 失败且属于运行时问题时，错误码是 runtime_unavailable。
+// 失败且属于运行时问题时，错误码是 runtime_unavailable。路径逃逸不是这个码。
 func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 	if err := ctx.Err(); err != nil {
 		return Runtime{}, err
@@ -39,6 +41,15 @@ func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 	root, err := filepath.Abs(c.Root)
 	if err != nil {
 		return Runtime{}, fmt.Errorf("pyrt: Root: %w", err)
+	}
+	if err := guardWorkspace(root); err != nil {
+		return Runtime{}, err
+	}
+	if testAfterPathCheck != nil {
+		testAfterPathCheck()
+	}
+	if err := guardWorkspace(root); err != nil {
+		return Runtime{}, err
 	}
 	base, err := c.Detect(ctx)
 	if err != nil {
@@ -52,8 +63,11 @@ func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 		return Runtime{}, unavailable("lock", base.Path, "版本 "+base.Version.String()+" 不在锁定范围 "+spec.rangeString()+" 内")
 	}
 	pyenv := filepath.Join(root, "pyenv")
-	if err := os.MkdirAll(pyenv, 0o755); err != nil {
-		return Runtime{}, unavailable("venv", pyenv, err.Error())
+	if err := ensureRealTree(pyenv); err != nil {
+		return Runtime{}, preferCoded("venv", pyenv, err)
+	}
+	if err := guardWorkspace(root); err != nil {
+		return Runtime{}, err
 	}
 	venv := filepath.Join(pyenv, "venv")
 	py := venvPython(venv)
@@ -66,12 +80,13 @@ func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 	if ready {
 		return Runtime{Base: base, Venv: venv, Python: py}, nil
 	}
-	if err := createVenv(ctx, base.Path, venv, py); err != nil {
+	venv, py, err = installVenv(ctx, root, base.Path, pyenv)
+	if err != nil {
 		return Runtime{}, err
 	}
 	reqPath := filepath.Join(pyenv, "requirements.txt")
 	if err := writeFileAtomic(reqPath, requirementsLock, 0o644); err != nil {
-		return Runtime{}, unavailable("install", reqPath, err.Error())
+		return Runtime{}, preferCoded("install", reqPath, err)
 	}
 	if err := pipInstall(ctx, py, reqPath); err != nil {
 		return Runtime{}, err
@@ -80,7 +95,7 @@ func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 		return Runtime{}, err
 	}
 	if err := writeFileAtomic(filepath.Join(venv, markerName), formatMarker(lockHash, base), 0o644); err != nil {
-		return Runtime{}, unavailable("install", venv, err.Error())
+		return Runtime{}, preferCoded("install", venv, err)
 	}
 	return Runtime{Base: base, Venv: venv, Python: py}, nil
 }
@@ -132,12 +147,70 @@ func parseMarker(text string) (lockHash, base, version string, ok bool) {
 	return lockHash, base, version, true
 }
 
-// createVenv 总是带 --clear。标记缺失时目录里可能有装了一半的包，留下会污染下一次安装。
-// 目标目录还不存在时，Python 的 --clear 也会直接建一个新环境。
+// installVenv 在 pyenv 里建一个空的临时目录，对其执行不带 --clear 的 venv，再 rename 成 venv。
+// 旧目录先改名挪开。删除前再次确认整条路径都不是符号链接，并且仍在 Root 内。
+func installVenv(ctx context.Context, root, base, pyenv string) (venv, py string, err error) {
+	if err := guardWorkspace(root); err != nil {
+		return "", "", err
+	}
+	tmp, err := os.MkdirTemp(pyenv, ".venv-new-")
+	if err != nil {
+		return "", "", preferCoded("venv", pyenv, err)
+	}
+	discard := true
+	defer func() {
+		if !discard {
+			return
+		}
+		// 临时目录若已落到 Root 外，removeRealDir 会拒绝 RemoveAll。
+		if rmErr := removeRealDir(root, tmp); rmErr != nil && err == nil {
+			err = rmErr
+		}
+	}()
+	if err = resolvedInside(root, tmp); err != nil {
+		return "", "", err
+	}
+	py = venvPython(tmp)
+	if err = createVenv(ctx, base, tmp, py); err != nil {
+		return "", "", err
+	}
+	venv = filepath.Join(pyenv, "venv")
+	info, statErr := os.Lstat(venv)
+	bak := ""
+	switch {
+	case os.IsNotExist(statErr):
+	case statErr != nil:
+		return "", "", statErr
+	default:
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", "", pathEscape(venv, "已有 venv 不是普通目录")
+		}
+		bak = filepath.Join(pyenv, fmt.Sprintf(".venv-old-%d", time.Now().UnixNano()))
+		if err = os.Rename(venv, bak); err != nil {
+			return "", "", preferCoded("venv", venv, err)
+		}
+	}
+	if err = os.Rename(tmp, venv); err != nil {
+		if bak != "" {
+			_ = os.Rename(bak, venv)
+		}
+		return "", "", preferCoded("venv", venv, err)
+	}
+	discard = false
+	if bak != "" {
+		if err = removeRealDir(root, bak); err != nil {
+			return "", "", err
+		}
+	}
+	return venv, venvPython(venv), nil
+}
+
+// createVenv 只在空的临时目录上创建环境，不传 --clear。
+// --clear 会在沙箱外删除目标目录；目标若是指向 Root 外的符号链接，删的就是外面的文件。
 func createVenv(ctx context.Context, base, venv, py string) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	res, err := runCmd(ctx, base, "-I", "-m", "venv", "--clear", venv)
+	res, err := runCmd(ctx, base, "-I", "-m", "venv", venv)
 	if err != nil {
 		if ctxErr(err) {
 			return err
@@ -213,8 +286,15 @@ func withoutEnvKeys(env []string, keys ...string) []string {
 
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	info, err := os.Lstat(dir)
+	if err != nil {
 		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return pathEscape(dir, "父目录是符号链接")
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("pyrt: %s 不是目录", dir)
 	}
 	f, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {

@@ -26,6 +26,9 @@ const (
 	// StreamTruncated 表示模型流在结束前断开：既没有 data: [DONE]，也没有 finish_reason。
 	// 已经到达的正文和 tool_call 参数都不完整。调用方应重试，不能把它们当成成功结果。
 	StreamTruncated Code = "stream_truncated"
+	// PathEscape 表示要操作的路径上有符号链接，或解析之后不在调用方给出的根目录里。
+	// 调用方不得顺着链接删除或改写根目录外面的文件。
+	PathEscape Code = "path_escape"
 )
 
 // String 返回码值本身。
@@ -34,7 +37,7 @@ func (c Code) String() string { return string(c) }
 // Known 报告 c 是不是本包定义的稳定错误码。
 func (c Code) Known() bool {
 	switch c {
-	case Timeout, OOM, Killed, Exec, RuntimeUnavailable, SandboxUnavailable, EmbeddingMismatch, StreamTruncated:
+	case Timeout, OOM, Killed, Exec, RuntimeUnavailable, SandboxUnavailable, EmbeddingMismatch, StreamTruncated, PathEscape:
 		return true
 	default:
 		return false

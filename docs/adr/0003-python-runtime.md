@@ -47,19 +47,23 @@ python -I -m pip install --disable-pip-version-check --no-input --require-hashes
 
 锁文件头里的 `lantern-python: >=3.10,<3.14` 是安装范围。numpy 2.2.6 没有 cp314 wheel，所以 **3.14 及以上检测得到解释器，但 Ensure 直接返回 `runtime_unavailable`，不联网安装**。把最低版本抬到 3.11 以便改用 pandas 3，要另开一次决策，这次不改 PRD 里的 ≥ 3.10。
 
-venv 根目录下有 `.lantern-requirements.sha256`。标记同时写下锁文件哈希、基础解释器绝对路径和版本。三者一致，且 venv 解释器版本仍在锁定范围内时，`Ensure` 不再调用 pip。标记缺失、哈希变化或基础解释器变了，都用 `python -m venv --clear` 重建，不复用里面已经装过的包。
+venv 根目录下有 `.lantern-requirements.sha256`。标记同时写下锁文件哈希、基础解释器绝对路径和版本。三者一致，且 venv 解释器版本仍在锁定范围内时，`Ensure` 不再调用 pip。标记缺失、哈希变化或基础解释器变了，就在 `<Root>/pyenv` 里新建临时目录，对这个空目录执行 `python -I -m venv`（不带 `--clear`），再 `rename` 成 `venv`。旧目录先改名挪开，删除前再逐级 Lstat：任一层是符号链接，或解析后不在 Root 内，就返回 `path_escape`，不对它 `RemoveAll`。`--clear` 在沙箱外执行，目标若是指向 Root 外的符号链接，删掉的是外面的文件，所以不再使用。
+
+`Root`、`<Root>/pyenv` 以及这两条路径上的每一层都用 `Lstat` 检查。任何一层是符号链接就拒绝。`EvalSymlinks` 解析已有前缀之后，路径必须仍在调用方给出的 Root 里。缺的目录逐级 `Mkdir`，不用 `MkdirAll`（后者会跟着中间的符号链接走）。
 
 调用 pip 时去掉 `PIP_TARGET`、`PIP_PREFIX`、`PIP_USER`，避免包装到 venv 外面。`index-url` 等镜像配置保留。pip 退出码为 0 之后，还要在 venv 里执行 `python -I -c "import pandas, matplotlib"`（`MPLBACKEND=Agg`）。import 失败不写标记，错误码仍是 `runtime_unavailable`。
 
-同一个 `<Root>` 上不要并发调用 `Ensure`。这里不加文件锁；两个进程同时 `--clear` 会互相踩目录。调用方（设置页动作）保证一次只有一个。
+同一个 `<Root>` 上不要并发调用 `Ensure`。这里不加文件锁。调用方（设置页动作）保证一次只有一个。
 
 ### 错误码
 
-失败类型是 `*pyrt.UnavailableError`。`Code()` 返回 `errcode.RuntimeUnavailable`（字符串 `runtime_unavailable`）。`errors.Is(err, pyrt.ErrUnavailable)` 为真。调用方用 `errcode.CodeOf` 或 `errors.Is` 判断，不要解析 `Error()` 的文案。
+运行时失败的类型是 `*pyrt.UnavailableError`。`Code()` 返回 `errcode.RuntimeUnavailable`（字符串 `runtime_unavailable`）。`errors.Is(err, pyrt.ErrUnavailable)` 为真。调用方用 `errcode.CodeOf` 或 `errors.Is` 判断，不要解析 `Error()` 的文案。
 
-下面这些情况用这个码：找不到解释器、版本低于 3.10、版本超出锁文件范围、解释器无法运行、`venv` 创建失败、哈希安装失败、装完后 import pandas 或 matplotlib 失败。
+下面这些情况用 `runtime_unavailable`：找不到解释器、版本低于 3.10、版本超出锁文件范围、解释器无法运行、`venv` 创建失败、哈希安装失败、装完后 import pandas 或 matplotlib 失败。
 
-下面这些不用这个码：`ctx` 已取消或超时（原样返回上下文错误）、`Root` 为空、嵌入的锁文件本身不合法（`ErrLockfile`，属于构建产物损坏）。
+路径逃逸是另一类错误：`*pyrt.PathError`，`Code()` 返回 `errcode.PathEscape`（字符串 `path_escape`）。`errors.Is(err, pyrt.ErrPathEscape)` 为真。它不是 `runtime_unavailable`。Root、pyenv、venv 或路径上任一层是符号链接，或解析后跑到 Root 外面，都用这个码，并且不删改 Root 外的文件。
+
+下面这些不带上述两个码：`ctx` 已取消或超时（原样返回上下文错误）、`Root` 为空、嵌入的锁文件本身不合法（`ErrLockfile`，属于构建产物损坏）。
 
 本包不执行用户脚本，也没有「安装失败就在沙箱外把脚本跑掉」的分支。沙箱实现以后若发现运行时不可用，必须把同一个码交回去，不能降级。
 
