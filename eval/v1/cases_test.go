@@ -122,7 +122,14 @@ func caseYAMLFiles(root string) ([]string, error) {
 		if walkErr != nil {
 			return walkErr
 		}
-		if !entry.IsDir() && entry.Name() != "rules.yaml" && strings.HasSuffix(entry.Name(), ".yaml") {
+		// rules.yaml 是规则清单，gates.yaml 是硬门槛，都不是用例文件。
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+			return nil
+		}
+		switch entry.Name() {
+		case "rules.yaml", "gates.yaml":
+			return nil
+		default:
 			paths = append(paths, path)
 		}
 		return nil
