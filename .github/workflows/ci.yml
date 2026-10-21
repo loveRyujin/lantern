@@ -54,6 +54,7 @@ jobs:
             echo "make eval-negative 必须非零退出"
             exit 1
           fi
+          python3 scripts/check-eval-negative.py "${RUNNER_TEMP}/eval-negative"
 
   # W1：确认 GitHub 托管的 macOS runner 还能不能调用 sandbox-exec。
   # 结论写在 docs/adr/0003-python-runtime.md，不在这里安装 Python 依赖。

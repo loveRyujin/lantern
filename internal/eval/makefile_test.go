@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -75,19 +74,19 @@ func TestMakeEvalNegativeExitsNonZero(t *testing.T) {
 	if report.Summary.HardGatesPassed || report.Summary.Failed == 0 {
 		t.Fatalf("故意违规仍显示通过: %+v\n%s", report.Summary, output)
 	}
-	seen := map[string]bool{}
+	seen := map[string]eval.CaseResult{}
 	for _, item := range report.Cases {
-		seen[item.ID] = true
-		if item.Status != "failed" {
-			t.Fatalf("%s 状态 = %s", item.ID, item.Status)
-		}
-		if strings.HasPrefix(item.ID, "NEG-GATE-") {
-			t.Fatalf("eval-negative 不应跑冻结反例文件里的 %s", item.ID)
-		}
+		seen[item.ID] = item
 	}
 	for _, id := range []string{"violate-exfiltration", "violate-side-effect", "violate-sandbox"} {
-		if !seen[id] {
-			t.Fatalf("缺少故意违规用例 %s，实际 %v", id, seen)
+		item, ok := seen[id]
+		if !ok || item.Status != "failed" {
+			t.Fatalf("%s = %+v", id, item)
+		}
+	}
+	for _, id := range []string{"NEG-GATE-LEAK", "NEG-GATE-SIDE-EFFECT", "NEG-GATE-SANDBOX"} {
+		if _, ok := seen[id]; !ok {
+			t.Fatalf("没有覆盖 negative-fixtures: %v", seen)
 		}
 	}
 	for _, id := range []string{"exfiltration", "side_effect", "sandbox"} {

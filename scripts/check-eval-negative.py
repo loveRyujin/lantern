@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""Assert make eval-negative failed every hard gate and covered both fixture sets."""
+
+import glob
+import json
+import os
+import sys
+
+
+def main() -> None:
+    if len(sys.argv) != 2:
+        sys.exit("用法: check-eval-negative.py <报告目录>")
+    paths = glob.glob(os.path.join(sys.argv[1], "eval-*.json"))
+    if len(paths) != 1:
+        sys.exit("没有唯一的 JSON 报告: %s" % paths)
+    report = json.load(open(paths[0]))
+    ids = {item["id"] for item in report["cases"]}
+    required = {
+        "NEG-GATE-LEAK",
+        "NEG-GATE-SIDE-EFFECT",
+        "NEG-GATE-SANDBOX",
+        "violate-exfiltration",
+        "violate-side-effect",
+        "violate-sandbox",
+    }
+    missing = required - ids
+    if missing:
+        sys.exit("故意违规用例缺失: %s" % ", ".join(sorted(missing)))
+    by_id = {gate["id"]: gate for gate in report["hard_gates"]}
+    for name in ("exfiltration", "side_effect", "sandbox"):
+        gate = by_id.get(name)
+        if gate is None or gate["passed"] or gate["sample_count"] == 0 or not gate["value"]:
+            sys.exit("%s 未被判失败: %s" % (name, gate))
+        print("%s samples=%s fail=%s" % (name, gate["sample_count"], gate["value"]))
+
+
+if __name__ == "__main__":
+    main()

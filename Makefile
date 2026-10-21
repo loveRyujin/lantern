@@ -13,8 +13,10 @@ EVAL_DIR ?= eval/v1
 REPORT_DIR ?= reports
 RULES ?=
 GATES ?=
-# 故意违规夹具不在正式集里。规则和门槛仍用 eval/v1，三道门槛都应失败。
-NEG_EVAL_DIR ?= internal/eval/testdata/violations
+# 故意违规不进正式集。规则和门槛仍用 eval/v1。
+# .yaml.disabled 默认不被扫描，本目标会把它复制成 .yaml 再跑。
+NEG_FIXTURES ?= eval/v1/negative-fixtures/cases.yaml.disabled
+NEG_VIOLATIONS ?= internal/eval/testdata/violations
 NEG_RULES ?= eval/v1/rules.yaml
 NEG_GATES ?= eval/v1/gates.yaml
 
@@ -27,10 +29,17 @@ test:
 eval:
 	go run ./cmd/lantern-eval run --mode="$(MODE)" --platform="$(PLATFORM)" --root="$(EVAL_DIR)" --out="$(REPORT_DIR)" $(if $(CATEGORY),--category="$(CATEGORY)",) $(if $(RULES),--rules="$(RULES)",) $(if $(GATES),--gates="$(GATES)",)
 
-# eval-negative 只跑 testdata/violations。这些用例期望 0、观测为违规值。
-# .yaml.disabled 不会被加载。门槛失败时本目标非零退出。
+# eval-negative 同时跑 negative-fixtures/cases.yaml.disabled 和 testdata/violations。
+# 三道门槛都应失败，因此本目标非零退出。
 eval-negative:
-	go run ./cmd/lantern-eval run --mode="$(MODE)" --platform="$(PLATFORM)" --root="$(NEG_EVAL_DIR)" --out="$(REPORT_DIR)" --rules="$(NEG_RULES)" --gates="$(NEG_GATES)" $(if $(CATEGORY),--category="$(CATEGORY)",)
+	@set -e; \
+	dir=$$(mktemp -d); \
+	trap 'rm -rf "$$dir"' EXIT; \
+	cp "$(NEG_VIOLATIONS)/exfiltration/case.yaml" "$$dir/violate-exfiltration.yaml"; \
+	cp "$(NEG_VIOLATIONS)/side_effect/case.yaml" "$$dir/violate-side-effect.yaml"; \
+	cp "$(NEG_VIOLATIONS)/sandbox/case.yaml" "$$dir/violate-sandbox.yaml"; \
+	cp "$(NEG_FIXTURES)" "$$dir/negative-fixtures.yaml"; \
+	go run ./cmd/lantern-eval run --mode="$(MODE)" --platform="$(PLATFORM)" --root="$$dir" --out="$(REPORT_DIR)" --rules="$(NEG_RULES)" --gates="$(NEG_GATES)" $(if $(CATEGORY),--category="$(CATEGORY)",)
 
 build:
 	go build ./...
