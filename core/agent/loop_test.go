@@ -325,22 +325,72 @@ func TestLoopFailureCountResetsOnlyOnSuccess(t *testing.T) {
 	})
 }
 
-func TestLoopUnknownToolDoesNotChangeFailureCount(t *testing.T) {
-	h := newHarness(t, echoSpec(),
-		badStep("b1"),
-		llm.CallTools(llm.ToolCall{ID: "u", Name: "Echo", Arguments: `{"q":"a"}`}),
-		badStep("b2"),
-		badStep("b3"),
-		llm.Say("不该走到这里"),
-	)
-	out, err := h.run()
-	if out.ModelCalls != 4 || out.State != StateFailed || !retryable(err) || h.echo.n() != 0 {
-		t.Fatalf("calls=%d exec=%d state=%s err=%v", out.ModelCalls, h.echo.n(), out.State, err)
-	}
-	text := requestText(h.provider.requests()[2])
-	if !strings.Contains(text, tools.CodeToolNotFound) {
-		t.Fatalf("未知工具没有回到模型: %s", text)
-	}
+func TestLoopUnknownToolCountsAsFailure(t *testing.T) {
+	t.Run("和参数失败一起凑满三次", func(t *testing.T) {
+		// 若不计入，第四次参数失败才会结束，模型会被调用 4 次。
+		h := newHarness(t, echoSpec(),
+			badStep("b1"),
+			llm.CallTools(llm.ToolCall{ID: "u", Name: "Echo", Arguments: `{"q":"a"}`}),
+			badStep("b2"),
+			badStep("b3"),
+			llm.Say("不该走到这里"),
+		)
+		out, err := h.run()
+		if out.ModelCalls != 3 || h.provider.n() != 3 || out.State != StateFailed || !retryable(err) || h.echo.n() != 0 {
+			t.Fatalf("calls=%d exec=%d state=%s err=%v", out.ModelCalls, h.echo.n(), out.State, err)
+		}
+		if !strings.Contains(requestText(h.provider.requests()[2]), tools.CodeToolNotFound) {
+			t.Fatal("未知工具没有回到模型")
+		}
+		if strings.Contains(out.Text, "不该走到这里") || len(h.audit.Records()) != 1 {
+			t.Fatalf("text=%q audit=%d", out.Text, len(h.audit.Records()))
+		}
+	})
+
+	t.Run("三次未知工具用原来的错误码结束", func(t *testing.T) {
+		unknown := llm.CallTools(llm.ToolCall{ID: "u", Name: "Echo", Arguments: `{"q":"a"}`})
+		h := newHarness(t, echoSpec(), unknown, unknown, unknown, llm.Say("不该走到这里"))
+		out, err := h.run()
+		if out.ModelCalls != 3 || out.State != StateFailed || !retryable(err) || errorCode(err) != tools.CodeToolNotFound {
+			t.Fatalf("%+v %v", out, err)
+		}
+		if errorCode(err) != "tool_not_found" || h.echo.n() != 0 {
+			t.Fatalf("code=%s exec=%d", errorCode(err), h.echo.n())
+		}
+	})
+
+	t.Run("同一步里未知工具和非法参数只计一次", func(t *testing.T) {
+		h := newHarness(t, echoSpec(),
+			llm.CallTools(
+				llm.ToolCall{ID: "u", Name: "Echo", Arguments: `{"q":"a"}`},
+				echoCall("b", `{}`),
+			),
+			badStep("b2"),
+			badStep("b3"),
+			llm.Say("不该走到这里"),
+		)
+		out, err := h.run()
+		if out.ModelCalls != 3 || out.State != StateFailed || !retryable(err) || h.echo.n() != 0 {
+			t.Fatalf("calls=%d exec=%d state=%s err=%v", out.ModelCalls, h.echo.n(), out.State, err)
+		}
+	})
+
+	t.Run("执行失败仍不计数，未知工具继续累加", func(t *testing.T) {
+		h := newHarness(t, echoSpec(),
+			badStep("b1"),
+			badStep("b2"),
+			goodStep("ok", "x"),
+			llm.CallTools(llm.ToolCall{ID: "u", Name: "Echo", Arguments: `{"q":"a"}`}),
+			llm.Say("不该走到这里"),
+		)
+		h.echo.fn = func(context.Context, tools.Call) (tools.Result, error) {
+			return tools.Result{}, errors.New("数据库暂时不可用")
+		}
+		out, err := h.run()
+		if out.ModelCalls != 4 || h.echo.n() != 1 || out.State != StateFailed || !retryable(err) {
+			t.Fatalf("calls=%d exec=%d state=%s err=%v", out.ModelCalls, h.echo.n(), out.State, err)
+		}
+	})
 }
 
 func TestLoopMultiCallAllOrNothing(t *testing.T) {
@@ -356,6 +406,29 @@ func TestLoopMultiCallAllOrNothing(t *testing.T) {
 		}
 		got := toolContents(h.provider.requests()[1])
 		want := []string{tools.CodeCallSkipped, tools.CodeArgumentsInvalid, tools.CodeCallSkipped}
+		if len(got) != len(want) {
+			t.Fatalf("工具消息 %v", got)
+		}
+		for i := range want {
+			if !strings.Contains(got[i], want[i]) {
+				t.Fatalf("消息 %d = %s，想要 %s", i, got[i], want[i])
+			}
+		}
+	})
+
+	t.Run("未知工具取消同一步里本来合法的调用", func(t *testing.T) {
+		h := newHarness(t, echoSpec(), llm.CallTools(
+			llm.ToolCall{ID: "e", Name: "export_data", Arguments: `{"object":"contacts"}`},
+			llm.ToolCall{ID: "u", Name: "Echo", Arguments: `{"q":"a"}`},
+			echoCall("c", `{"q":"3"}`),
+		), llm.Say("结束"))
+		exp := h.add(tools.SpecExportData)
+		out, err := h.run()
+		if err != nil || out.State != StateCompleted || exp.n() != 0 || h.echo.n() != 0 || len(h.tickets.list()) != 0 || len(h.approver.Tickets()) != 0 {
+			t.Fatalf("%+v %v export=%d echo=%d tickets=%d approver=%d", out, err, exp.n(), h.echo.n(), len(h.tickets.list()), len(h.approver.Tickets()))
+		}
+		got := toolContents(h.provider.requests()[1])
+		want := []string{tools.CodeCallSkipped, tools.CodeToolNotFound, tools.CodeCallSkipped}
 		if len(got) != len(want) {
 			t.Fatalf("工具消息 %v", got)
 		}
@@ -623,10 +696,52 @@ func TestLoopMaxSteps(t *testing.T) {
 		h := newHarness(t, echoSpec(), steps...)
 		h.loop.Config.MaxSteps = -1
 		out, err := h.run()
-		if err == nil || out.ModelCalls != 0 || h.provider.n() != 0 || h.echo.n() != 0 {
+		if err == nil || out.State != StateFailed || out.ModelCalls != 0 || h.provider.n() != 0 || h.echo.n() != 0 {
 			t.Fatalf("%+v %v calls=%d", out, err, h.provider.n())
 		}
+		if !strings.Contains(err.Error(), "max_steps") || !strings.Contains(err.Error(), "不能为负") {
+			t.Fatalf("错误不够明确: %v", err)
+		}
 	})
+}
+
+func TestNegativeConfigFailsAtStartup(t *testing.T) {
+	cases := []struct {
+		name string
+		set  func(*Config)
+		want string
+	}{
+		{name: "max_steps", set: func(c *Config) { c.MaxSteps = -1 }, want: "max_steps"},
+		{name: "单步超时", set: func(c *Config) { c.StepTimeout = -time.Nanosecond }, want: "单步超时"},
+		{name: "总超时", set: func(c *Config) { c.TotalTimeout = -time.Millisecond }, want: "总超时"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, echoSpec(), llm.Say("不该走到这里"))
+			tc.set(&h.loop.Config)
+			status := &statusSpy{}
+			h.loop.Status = status
+			out, err := h.run()
+			if err == nil || out.State != StateFailed || out.ModelCalls != 0 || h.provider.n() != 0 {
+				t.Fatalf("%+v %v", out, err)
+			}
+			if !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "不能为负") {
+				t.Fatalf("错误不够明确: %v", err)
+			}
+			if len(status.states) != 0 {
+				t.Fatalf("还没启动就写了状态 %v", status.states)
+			}
+		})
+	}
+}
+
+func TestZeroConfigUsesDefaults(t *testing.T) {
+	h := newHarness(t, echoSpec(), llm.Say("完成"))
+	h.loop.Config = Config{}
+	out, err := h.run()
+	if err != nil || out.State != StateCompleted || out.ModelCalls != 1 || h.provider.n() != 1 {
+		t.Fatalf("0 应使用默认值，而不是拒绝启动: %+v %v", out, err)
+	}
 }
 
 func TestLoopTimeouts(t *testing.T) {
@@ -673,16 +788,28 @@ func TestLoopTimeouts(t *testing.T) {
 		h := newHarness(t, echoSpec(), llm.Say("不该走到这里"))
 		h.loop.Config.StepTimeout = -1
 		out, err := h.run()
-		if err == nil || h.provider.n() != 0 || out.ModelCalls != 0 {
+		if err == nil || out.State != StateFailed || h.provider.n() != 0 || out.ModelCalls != 0 || !strings.Contains(err.Error(), "不能为负") {
 			t.Fatalf("%+v %v", out, err)
 		}
 		h = newHarness(t, echoSpec(), llm.Say("不该走到这里"))
 		h.loop.Config.TotalTimeout = -1
 		out, err = h.run()
-		if err == nil || h.provider.n() != 0 {
+		if err == nil || h.provider.n() != 0 || !strings.Contains(err.Error(), "总超时") {
 			t.Fatalf("%+v %v", out, err)
 		}
 	})
+}
+
+type statusSpy struct {
+	states []string
+}
+
+func (s *statusSpy) Set(ctx context.Context, runID, status string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.states = append(s.states, status)
+	return nil
 }
 
 type fnTool struct {

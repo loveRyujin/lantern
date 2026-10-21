@@ -12,7 +12,8 @@ const (
 	CodeArgumentsInvalid = "tool_arguments_invalid"
 	// CodeCallSkipped 表示同一步里有调用不合法，这个本来合法的调用没有执行。
 	CodeCallSkipped = "tool_call_skipped"
-	// CodeToolNotFound 表示注册表里没有这个名字。可重试，但不算参数校验失败。
+	// CodeToolNotFound 表示注册表里没有这个名字。可重试。
+	// 它和参数校验失败一样计入连续失败，码值仍是 tool_not_found。
 	CodeToolNotFound = "tool_not_found"
 )
 
@@ -63,14 +64,15 @@ func CodeOf(err error) (string, bool) {
 	return e.Code, true
 }
 
-// ArgumentFailure 报告这是不是计入连续失败的参数校验错误。
-// 只有截断、非法 JSON 和 Schema 不符。tool_call_skipped 和未知工具不算。
+// ArgumentFailure 报告这是不是计入连续失败的调用校验错误。
+// 截断、非法 JSON、Schema 不符，以及未知工具都算。
+// tool_call_skipped 只是同一步被连带取消，不单独计数。
 func ArgumentFailure(err error) bool {
 	code, ok := CodeOf(err)
 	if !ok {
 		return false
 	}
-	return code == CodeArgumentsIncomplete || code == CodeArgumentsInvalid
+	return code == CodeArgumentsIncomplete || code == CodeArgumentsInvalid || code == CodeToolNotFound
 }
 
 func incomplete(message string) *Error {

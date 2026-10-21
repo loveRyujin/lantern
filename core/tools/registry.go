@@ -127,7 +127,7 @@ func (r *Registry) Specs() []Spec {
 
 // Prepare 按固定顺序检查一次调用：截断 → JSON → 对象 → Schema。
 // 截断时不解析，即使参数文本碰巧是合法 JSON。
-// 未知工具名在 JSON 合法之后返回，不算参数校验失败。
+// 未知工具名在 JSON 合法之后返回 tool_not_found。它计入连续失败，但不执行。
 func (r *Registry) Prepare(in CallInput) (Prepared, error) {
 	if in.Truncated || TruncatedFinish(in.FinishReason) {
 		return Prepared{}, incomplete("参数因输出截断而不完整")

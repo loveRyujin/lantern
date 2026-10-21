@@ -191,11 +191,14 @@ func TestPrepareSizeDepthUTF8AndNumbers(t *testing.T) {
 }
 
 func TestPrepareUnknownToolExactName(t *testing.T) {
+	if CodeToolNotFound != "tool_not_found" {
+		t.Fatalf("错误码被改成了 %s", CodeToolNotFound)
+	}
 	reg := newEcho(t)
 	for _, name := range []string{"Echo", "echo ", " echo", "echo\n"} {
 		_, err := reg.Prepare(CallInput{Name: name, Arguments: `{"q":"a"}`})
 		code, ok := CodeOf(err)
-		if !ok || code != CodeToolNotFound || ArgumentFailure(err) {
+		if !ok || code != CodeToolNotFound || !ArgumentFailure(err) {
 			t.Fatalf("名字 %q 的错误 = %v", name, err)
 		}
 		var te *Error

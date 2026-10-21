@@ -8,6 +8,7 @@
 //
 //	tool_arguments_incomplete  输出被截断，参数不完整
 //	tool_arguments_invalid     JSON 不合法，或不符合 Schema
+//	tool_not_found             没有这个工具。计入连续失败，码值不变
 //	tool_call_skipped          同一步里有别的调用不合法，本调用被取消
 //
 // run_sql、run_python、export_data、write_action、search_docs 用同一套

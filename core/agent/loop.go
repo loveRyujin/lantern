@@ -473,7 +473,7 @@ func (l *Loop) noteArgumentAlreadyCounted(ctx context.Context, in Input, modelCa
 		code = tools.CodeArgumentsInvalid
 	}
 	_ = l.writeAudit(ctx, in.RunID, "argument_failures_exhausted", code)
-	err := wrapf(code, "连续 3 次参数校验失败，运行结束", true, nil)
+	err := wrapf(code, "连续 3 次校验失败，运行结束", true, nil)
 	out, _ := l.finish(ctx, in, modelCalls, StateFailed, err)
 	return out, true
 }
