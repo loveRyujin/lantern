@@ -1014,12 +1014,12 @@ func TestRunSQLTwoMiBIntermediate(t *testing.T) {
 
 func TestRunSQLIntermediateOverValueLimit(t *testing.T) {
 	_, _, tool, _, _ := newFixture(t)
-	// hex 的结果超过 16 MiB。length() 本身很小，但中间值过线，整次失败，前面的行也不留。
-	query := `SELECT 'keep-me' UNION ALL SELECT length(hex(zeroblob(8388609)))`
+	// hex 的结果超过 4 MiB。length() 本身很小，但中间值过线，整次失败，前面的行也不留。
+	query := `SELECT 'keep-me' UNION ALL SELECT length(hex(zeroblob(2097153)))`
 	res, err := tool.Execute(t.Context(), callSQL(query, nil))
 	assertResultTooLarge(t, res, err)
 	if strings.Contains(res.Content, "keep-me") || strings.Contains(err.Error(), "keep-me") {
-		t.Fatalf("中间值超过 16 MiB 仍返回了前面的行: %+v %v", res, err)
+		t.Fatalf("中间值超过 4 MiB 仍返回了前面的行: %+v %v", res, err)
 	}
 }
 
@@ -1090,38 +1090,29 @@ func TestRunSQLWideTableOpens(t *testing.T) {
 	if gotN.Truncated || gotN.RowCount != 1 || len(gotN.Columns) != 2 || gotN.Rows[0][1] != "ok" {
 		t.Fatalf("窄表 = %+v", gotN)
 	}
-	wide, err := tool.Execute(ctx, callSQL(`SELECT * FROM wide`, nil))
+	wide, err := tool.Execute(ctx, callSQL(`SELECT c0, c1 FROM wide`, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	gotW := decodeResult(t, wide)
-	if gotW.Truncated || gotW.RowCount != 1 || len(gotW.Columns) != wideCols || cellInt(gotW.Rows[0][wideCols-1]) != wideCols-1 {
-		t.Fatalf("宽表 = %+v", gotW)
+	if gotW.Truncated || gotW.RowCount != 1 || len(gotW.Columns) != 2 || cellInt(gotW.Rows[0][0]) != 0 || cellInt(gotW.Rows[0][1]) != 1 {
+		t.Fatalf("宽表里没超限的列 = %+v", gotW)
 	}
 }
 
-func TestRunSQLWideRowByteCap(t *testing.T) {
+func TestRunSQLTooManyColumns(t *testing.T) {
 	_, _, tool, _, _ := newFixture(t)
-	const cols = 400
-	parts := make([]string, cols)
+	parts := make([]string, sqlx.MaxResultColumns+1)
 	for i := range parts {
-		parts[i] = "hex(zeroblob(500000))"
+		parts[i] = "1"
 	}
-	query := "SELECT " + strings.Join(parts, ", ")
-	runtime.GC()
-	var before runtime.MemStats
-	runtime.ReadMemStats(&before)
-	res, err := tool.Execute(t.Context(), callSQL(query, nil))
-	var after runtime.MemStats
-	runtime.ReadMemStats(&after)
-	assertResultTooLarge(t, res, err)
-	if strings.Count(res.Content, "0") > 64 || strings.Count(err.Error(), "0") > 64 {
-		t.Fatalf("宽行进了结果: %+v %v", res, err)
+	res, err := tool.Execute(t.Context(), callSQL("SELECT "+strings.Join(parts, ", "), nil))
+	var te *tools.Error
+	if !errors.As(err, &te) || te.Code != sqlx.CodeRejected || te.Retryable {
+		t.Fatalf("33 列 err = %v res = %+v", err, res)
 	}
-	// 一次调用最坏是一个 16 MiB 的值，加上已经收下、不到 1 MiB 的列。400 列如果全算出来会远超这个数。
-	const bound = sqlx.MaxValueBytes + sqlx.MaxResultBytes
-	if delta := after.TotalAlloc - before.TotalAlloc; delta > bound {
-		t.Fatalf("这一行分配了 %d 字节，上限 %d", delta, bound)
+	if res.Content != "" || !strings.Contains(err.Error(), "32") || !strings.Contains(err.Error(), "少选几列") {
+		t.Fatalf("列数超限没有让模型改写: %+v %v", res, err)
 	}
 }
 

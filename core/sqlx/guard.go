@@ -82,8 +82,9 @@ func denyReadOnly(_ *libc.TLS, _ uintptr, action int32, arg1, arg2, _, _ uintptr
 }
 
 // limitResultLength 把单个值和表达式中间值限制在 MaxValueBytes。
-// 这不是结果行的上限。结果行仍按 MaxResultBytes 累计，超了整次失败。
-// 不按列数把这个上限再除小，否则 length、group_concat 的中间值会把小结果误伤成 TOOBIG。
+// 这不是结果行的上限。结果行仍按 MaxResultBytes 在拷贝前累计，超了整次失败。
+// 不按列数把这个上限再除小，否则 length、substr 的中间值会把小结果误伤成 TOOBIG。
+// 不设置 SQLITE_LIMIT_COLUMN。它在加载表结构时也生效，宽表会让整个库打不开。
 func limitResultLength(conn sqlite.ExecQuerierContext) error {
 	db, tls, err := sqliteConn(conn)
 	if err != nil {

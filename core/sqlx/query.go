@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/loveRyujin/lantern/core/errcode"
 	"modernc.org/sqlite"
@@ -24,10 +23,13 @@ type Queryer interface {
 const (
 	// MaxResultBytes 是交回模型的一行最多能有的字节。中间值不算在这里。
 	MaxResultBytes = 1 << 20
-	// MaxValueBytes 是 SQLite 里单个值和表达式中间值的上限。比结果行松，
-	// 这样 length(一个 2 MiB 的值) 仍能返回那个很小的长度。不按列数再除。
-	MaxValueBytes = 16 << 20
-	TruncateBytes = "bytes"
+	// MaxValueBytes 是 SQLite 里单个值和表达式中间值的上限。
+	// 2 MiB 的中间值还能返回 length()。不按列数再除，也不用 SQLITE_LIMIT_COLUMN。
+	MaxValueBytes = 4 << 20
+	// MaxResultColumns 是最终结果最多能有的列数。准备语句之后、第一步之前检查。
+	// 超过就拒绝，让模型改写。不写进 SQLITE_LIMIT_COLUMN，否则宽表会让整个库打不开。
+	MaxResultColumns = 32
+	TruncateBytes    = "bytes"
 )
 
 // Result 是截断之后的查询结果。RowCount 是实际返回的行数，不是库里的总行数。
@@ -42,10 +44,13 @@ type Result struct {
 
 // Query 执行一条已经通过扫描的语句，最多取 limit 行，并且不超过 MaxResultBytes。
 // 多读一行只为了判断要不要标 truncated。limit 必须在 1 和 MaxLimit 之间。
-// 最终结果的每一列在算出来时就计入这一行。一行超过 MaxResultBytes，或者 SQLite 报 TOOBIG，
+// 准备完成就先看结果列数，超过 [MaxResultColumns] 返回 [errTooManyColumns]，此时还没有 step。
+// 每一行按 sqlite3_column_bytes 逐列累加，拷贝之前就停。一行超过 MaxResultBytes，或者 SQLite 报 TOOBIG，
 // 返回 [errRowTooLarge]，这次已读出的行也不返回。
 // 多行各自没超限、加在一起超了，才截断并保留已经放下的完整行。
 // 表达式的中间值不受这 1 MiB 约束，只受连接上的 MaxValueBytes 约束。
+// SQLite 在返回一行之前会把每一列都算进寄存器，所以单值 4 MiB、结果 32 列时，SQLite 侧最坏大约 128 MiB。
+// Go 这边停在 1 MiB，不再把超出的列拷进来。
 func Query(ctx context.Context, db Queryer, query string, limit int) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, &codedTimeout{err: err}
@@ -56,86 +61,48 @@ func Query(ctx context.Context, db Queryer, query string, limit int) (Result, er
 	if limit < 1 || limit > MaxLimit {
 		return Result{}, errors.New("sqlx: 行数上限不在允许范围内")
 	}
-	return queryRows(ctx, db, wrapResultCells(query), limit)
+	return queryRows(ctx, db, query, limit)
+}
+
+type connOpener interface {
+	Conn(context.Context) (*sql.Conn, error)
 }
 
 func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result, error) {
-	rows, err := db.QueryContext(ctx, query)
-	if err != nil {
-		if isTimeout(ctx, err) {
-			return Result{}, &codedTimeout{err: err}
-		}
-		if rowTooLarge(err) {
-			return Result{}, errRowTooLarge
-		}
-		return Result{}, err
+	opener, ok := db.(connOpener)
+	if !ok {
+		return Result{}, errors.New("sqlx: 连接不能准备语句")
 	}
-	defer rows.Close()
-	rawCols, err := rows.Columns()
+	conn, err := opener.Conn(ctx)
 	if err != nil {
 		if isTimeout(ctx, err) {
 			return Result{}, &codedTimeout{err: err}
 		}
 		return Result{}, err
 	}
-	cols := append([]string(nil), rawCols...)
-	out := make([][]any, 0)
-	truncated := false
-	reason := ""
-	used := 0
-	for rows.Next() {
-		if err := ctx.Err(); err != nil {
-			return Result{}, &codedTimeout{err: err}
+	defer conn.Close()
+	var result Result
+	var qerr error
+	rawErr := conn.Raw(func(driverConn any) error {
+		result, qerr = stepQuery(ctx, driverConn, query, limit)
+		return nil
+	})
+	if rawErr != nil {
+		if isTimeout(ctx, rawErr) {
+			return Result{}, &codedTimeout{err: rawErr}
 		}
-		if len(out) == limit {
-			truncated = true
-			break
-		}
-		row, err := scanRow(rows, len(cols))
-		if err != nil {
-			if isTimeout(ctx, err) {
-				return Result{}, &codedTimeout{err: err}
-			}
-			if rowTooLarge(err) {
-				return Result{}, errRowTooLarge
-			}
-			return Result{}, err
-		}
-		n := rowBytes(row)
-		if n > MaxResultBytes {
-			return Result{}, errRowTooLarge
-		}
-		if used+n > MaxResultBytes {
-			// 已经放下的行都没超限，才截断。一行都还没放下时，不能返回 0 行的 truncated。
-			if len(out) == 0 {
-				return Result{}, errRowTooLarge
-			}
-			return cutByBytes(cols, out), nil
-		}
-		used += n
-		out = append(out, row)
+		return Result{}, rawErr
 	}
-	if err := rows.Err(); err != nil {
-		if isTimeout(ctx, err) {
-			return Result{}, &codedTimeout{err: err}
-		}
-		if rowTooLarge(err) {
-			return Result{}, errRowTooLarge
-		}
-		return Result{}, err
-	}
-	if err := rows.Close(); err != nil {
-		if isTimeout(ctx, err) {
-			return Result{}, &codedTimeout{err: err}
-		}
-		return Result{}, err
-	}
-	return Result{Columns: cols, Rows: out, RowCount: len(out), Truncated: truncated, TruncateReason: reason}, nil
+	return result, qerr
 }
 
 // errRowTooLarge 表示单独一行放不进字节上限。调用方丢掉这次已经读出的行。
 // 覆盖两条路：拷贝前按列累计超过 MaxResultBytes，以及 SQLite 报 TOOBIG。
 var errRowTooLarge = errors.New("sqlx: 单行结果超过字节上限")
+
+// errTooManyColumns 表示结果列数超过 MaxResultColumns。调用方把它当成 sql_rejected。
+// 这是在第一步之前发现的，语句还没有执行。
+var errTooManyColumns = errors.New("sqlx: 结果超过 32 列")
 
 func cutByBytes(cols []string, rows [][]any) Result {
 	if cols == nil {
@@ -151,14 +118,6 @@ func cutByBytes(cols []string, rows [][]any) Result {
 		Truncated:      true,
 		TruncateReason: TruncateBytes,
 	}
-}
-
-func rowBytes(row []any) int {
-	n := 0
-	for _, cell := range row {
-		n += cellBytes(cell)
-	}
-	return n
 }
 
 func cellBytes(v any) int {
@@ -182,15 +141,6 @@ func cellBytes(v any) int {
 	default:
 		return len(fmt.Sprint(x))
 	}
-}
-
-// columnBytesBeforeCopy 对应 sqlite3_column_bytes / sqlite3_value_bytes。
-// 这时值还在 SQLite 里，只读长度，不把正文拷进结果。BLOB 按原始字节计，和 column_bytes 一样。
-func columnBytesBeforeCopy(v any) int {
-	if b, ok := v.([]byte); ok {
-		return len(b)
-	}
-	return cellBytes(v)
 }
 
 func isTooBig(err error) bool {
@@ -223,36 +173,6 @@ func isBusy(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "sqlite_busy") || strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlite_locked")
-}
-
-func scanRow(rows *sql.Rows, n int) ([]any, error) {
-	raw := make([]any, n)
-	ptrs := make([]any, n)
-	for i := range raw {
-		ptrs[i] = &raw[i]
-	}
-	if err := rows.Scan(ptrs...); err != nil {
-		return nil, err
-	}
-	out := make([]any, n)
-	for i, v := range raw {
-		out[i] = normalizeValue(v)
-	}
-	return out, nil
-}
-
-func normalizeValue(v any) any {
-	b, ok := v.([]byte)
-	if !ok {
-		return v
-	}
-	if utf8.Valid(b) {
-		return string(b)
-	}
-	// 非法 UTF-8 不能当成文本，否则 JSON 会换成替换字符。保留字节，编码时走 base64。
-	cp := make([]byte, len(b))
-	copy(cp, b)
-	return cp
 }
 
 type codedTimeout struct {

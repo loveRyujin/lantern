@@ -20,22 +20,13 @@ import (
 
 // 只读池和可写的工作区池不是同一个 Driver。工作区池要跑迁移，不能打开 query_only。
 var (
-	roOnce   sync.Once
-	roDrv    *sqlite.Driver
-	roRegErr error
+	roOnce sync.Once
+	roDrv  *sqlite.Driver
 )
 
 func readOnlyDriver() *sqlite.Driver {
 	roOnce.Do(func() {
 		roDrv = &sqlite.Driver{}
-		roRegErr = roDrv.RegisterFunction(resultCellName, &sqlite.FunctionImpl{
-			NArgs:        2,
-			VolatileArgs: true,
-			Scalar:       resultCell,
-		})
-		if roRegErr != nil {
-			return
-		}
 		roDrv.RegisterConnectionHook(func(conn sqlite.ExecQuerierContext, _ string) error {
 			return installReadOnly(conn)
 		})
@@ -83,11 +74,7 @@ func Open(ctx context.Context, path, allowed string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	drv := readOnlyDriver()
-	if roRegErr != nil {
-		return nil, fmt.Errorf("sqlx: 注册结果列门闩: %w", roRegErr)
-	}
-	db := sql.OpenDB(roConnector{dsn: dsn, drv: drv})
+	db := sql.OpenDB(roConnector{dsn: dsn, drv: readOnlyDriver()})
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlx: 打开分析库: %w", err)

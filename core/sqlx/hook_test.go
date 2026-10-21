@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -58,12 +60,93 @@ func TestCellBytesCountsBase64(t *testing.T) {
 	if got, want := cellBytes(raw), base64.StdEncoding.EncodedLen(len(raw)); got != want {
 		t.Fatalf("[]byte 按原始长度计了 %d，编码后是 %d", got, want)
 	}
-	if MaxValueBytes <= MaxResultBytes {
-		t.Fatalf("中间值上限 %d 没有比结果行 %d 松", MaxValueBytes, MaxResultBytes)
+	if MaxValueBytes != 4<<20 {
+		t.Fatalf("单值上限 = %d，想要 4 MiB", MaxValueBytes)
 	}
-	if MaxValueBytes+MaxResultBytes != 17<<20 {
-		t.Fatalf("一次调用的内存上限应是 17 MiB，现在是 %d", MaxValueBytes+MaxResultBytes)
+	if MaxResultColumns != 32 {
+		t.Fatalf("结果列数上限 = %d，想要 32", MaxResultColumns)
 	}
+	if got := MaxResultColumns * MaxValueBytes; got != 128<<20 {
+		t.Fatalf("SQLite 侧最坏 = %d，想要 128 MiB", got)
+	}
+}
+
+func TestWideRowMemoryBound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "analytics.db")
+	createEmptyDB(t, path)
+	ctx := t.Context()
+	db, err := Open(ctx, path, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	tool, err := NewTool(db, path, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const blob = 3 << 20
+	parts := make([]string, MaxResultColumns)
+	for i := range parts {
+		parts[i] = "randomblob(3145728)"
+	}
+	before := processRSS(t)
+	var live int64
+	onSQLiteRow = func() {
+		if n := mustRSS(t); n > live {
+			live = n
+		}
+	}
+	t.Cleanup(func() { onSQLiteRow = nil })
+	runtime.GC()
+	var heapBefore runtime.MemStats
+	runtime.ReadMemStats(&heapBefore)
+	res, err := tool.Execute(ctx, tools.Call{Args: []byte(`{"sql":"SELECT ` + strings.Join(parts, ", ") + `"}`)})
+	var heapAfter runtime.MemStats
+	runtime.ReadMemStats(&heapAfter)
+	var te *tools.Error
+	if !errors.As(err, &te) || te.Code != CodeResultTooLarge || te.Retryable || res.Content != "" {
+		t.Fatalf("宽行 err=%v res=%+v", err, res)
+	}
+	// modernc 把 SQLITE_DEFAULT_MEMSTATUS 编成 0，sqlite3_memory_highwater 一直是 0。
+	// 驱动的 malloc 走 mmap。这一行还在寄存器里时读进程驻留内存，就是驱动侧的高水位。
+	delta := live - before
+	const sqliteBound = MaxResultColumns * MaxValueBytes
+	t.Logf("驻留内存增加 %d 字节，Go 分配 %d 字节", delta, heapAfter.TotalAlloc-heapBefore.TotalAlloc)
+	if delta < MaxResultColumns*blob-4<<20 || delta > sqliteBound+32<<20 {
+		t.Fatalf("这一行驻留内存增加 %d，应盖住 %d 且不超过大约 128 MiB（%d）", delta, MaxResultColumns*blob, sqliteBound)
+	}
+	if got := heapAfter.TotalAlloc - heapBefore.TotalAlloc; got > MaxResultBytes {
+		t.Fatalf("Go 分配了 %d 字节，上限 %d", got, MaxResultBytes)
+	}
+}
+
+func processRSS(t *testing.T) int64 {
+	t.Helper()
+	return mustRSS(t)
+}
+
+func mustRSS(t *testing.T) int64 {
+	t.Helper()
+	body, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatalf("读驻留内存: %v", err)
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		if !strings.HasPrefix(line, "VmRSS:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			break
+		}
+		kb, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return kb << 10
+	}
+	t.Fatal("没有 VmRSS")
+	return 0
 }
 
 func createEmptyDB(t *testing.T, path string) {
