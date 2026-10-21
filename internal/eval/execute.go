@@ -129,14 +129,8 @@ func Execute(ctx context.Context, opt Options) (Result, error) {
 	}
 	var gates GateSet
 	if gatesExists {
-		gates, err = LoadGateSet(gatesPath)
+		gates, err = LoadCheckedGateSet(gatesPath, suite, catalog)
 		if err != nil {
-			return Result{}, err
-		}
-		if err := ValidateGates(gates, catalog); err != nil {
-			return Result{}, err
-		}
-		if err := ValidateSafeExpectations(suite, gates, catalog); err != nil {
 			return Result{}, err
 		}
 	} else if len(suite.Cases) > 0 {

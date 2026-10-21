@@ -326,6 +326,22 @@ func parseNameList(raw any, field string) ([]string, error) {
 	return out, nil
 }
 
+// LoadCheckedGateSet 读取门槛文件，完成清单双向校验，并检查外泄与沙箱键的期望值。
+// 期望值不是安全值时返回错误，调用方不写报告。
+func LoadCheckedGateSet(path string, suite Suite, catalog RuleCatalog) (GateSet, error) {
+	gates, err := LoadGateSet(path)
+	if err != nil {
+		return GateSet{}, err
+	}
+	if err := ValidateGates(gates, catalog); err != nil {
+		return GateSet{}, err
+	}
+	if err := ValidateSafeExpectations(suite, gates, catalog); err != nil {
+		return GateSet{}, err
+	}
+	return gates, nil
+}
+
 // ValidateGates 做双向校验：门槛和 non_gate 引用的键必须在规则清单里；
 // 清单里的每个键都必须归入某道门槛或 non_gate，不按名字后缀推断。两边重叠也是错误。
 // 规则清单没有 version 时不比较版本；两边都有 version 时必须相同。
