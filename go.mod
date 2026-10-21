@@ -5,6 +5,7 @@ go 1.27.1
 require (
 	// v0.6.0 = commit 081639f2a55d62a09aca742684827937dac6cb39。8 周内不主动升级。
 	github.com/egoist/mygo v0.6.0
+	go.yaml.in/yaml/v3 v3.0.5
 	modernc.org/libc v1.77.1
 	modernc.org/sqlite v1.60.1
 )
