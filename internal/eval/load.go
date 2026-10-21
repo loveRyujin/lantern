@@ -37,8 +37,9 @@ type Case struct {
 }
 
 // LoadSuite 递归读取 root 下的 YAML 和 JSONL。
-// rulesPath 指向规则清单时，该文件不会被当成用例；名为 rules.yaml 或 rules.yml 的文件同样跳过。
-func LoadSuite(root, rulesPath string) (Suite, error) {
+// skipPaths 指向规则清单或门槛文件时，这些文件不会被当成用例。
+// 名为 rules.yaml、rules.yml、gates.yaml、gates.yml 的文件同样跳过。
+func LoadSuite(root string, skipPaths ...string) (Suite, error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return Suite{}, fmt.Errorf("eval: 用例目录不存在: %s", root)
@@ -50,12 +51,16 @@ func LoadSuite(root, rulesPath string) (Suite, error) {
 	if err != nil {
 		return Suite{}, fmt.Errorf("eval: 用例目录: %w", err)
 	}
-	absRules := ""
-	if rulesPath != "" {
-		absRules, err = filepath.Abs(rulesPath)
-		if err != nil {
-			return Suite{}, fmt.Errorf("eval: 规则清单路径: %w", err)
+	var absSkip []string
+	for _, skip := range skipPaths {
+		if skip == "" {
+			continue
 		}
+		abs, absErr := filepath.Abs(skip)
+		if absErr != nil {
+			return Suite{}, fmt.Errorf("eval: 跳过路径: %w", absErr)
+		}
+		absSkip = append(absSkip, filepath.Clean(abs))
 	}
 
 	var files []string
@@ -73,7 +78,7 @@ func LoadSuite(root, rulesPath string) (Suite, error) {
 		if strings.HasPrefix(entry.Name(), ".") {
 			return nil
 		}
-		if skipSuiteFile(path, absRules) {
+		if skipSuiteFile(path, absSkip) {
 			return nil
 		}
 		switch strings.ToLower(filepath.Ext(entry.Name())) {
@@ -116,19 +121,23 @@ func LoadSuite(root, rulesPath string) (Suite, error) {
 	return Suite{Root: absRoot, Version: inferSuiteVersion(absRoot), Cases: cases}, nil
 }
 
-func skipSuiteFile(path, rulesPath string) bool {
+func skipSuiteFile(path string, extra []string) bool {
 	base := strings.ToLower(filepath.Base(path))
-	if base == "rules.yaml" || base == "rules.yml" {
+	switch base {
+	case "rules.yaml", "rules.yml", "gates.yaml", "gates.yml":
 		return true
-	}
-	if rulesPath == "" {
-		return false
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return false
 	}
-	return filepath.Clean(abs) == filepath.Clean(rulesPath)
+	abs = filepath.Clean(abs)
+	for _, skip := range extra {
+		if abs == skip {
+			return true
+		}
+	}
+	return false
 }
 
 func inferSuiteVersion(root string) string {

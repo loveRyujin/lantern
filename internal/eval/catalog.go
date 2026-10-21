@@ -17,12 +17,50 @@ type RuleCatalog struct {
 	Keys    []string
 	Loaded  bool
 	set     map[string]struct{}
+	rules   []ruleMeta
+}
+
+type ruleMeta struct {
+	Name       string
+	Kind       string
+	ParamTypes []string
+}
+
+// isCount 判断规则是不是计数类。名字以 _count 结尾，或者确定性参数类型是
+// integer / integer_or_symbol（例如 citation_count_gte、requested_timeout_seconds）。
+// llm_judge 的参数不参与这个判断。
+func (r ruleMeta) isCount() bool {
+	if strings.HasSuffix(r.Name, "_count") {
+		return true
+	}
+	if r.Kind == "llm_judge" {
+		return false
+	}
+	for _, typ := range r.ParamTypes {
+		switch typ {
+		case "integer", "integer_or_symbol":
+			return true
+		}
+	}
+	return false
 }
 
 // Has 报告 key 是否在清单中。
 func (c RuleCatalog) Has(key string) bool {
 	_, ok := c.set[key]
 	return ok
+}
+
+// CountKeys 返回计数类规则键，按名字排序。
+func (c RuleCatalog) CountKeys() []string {
+	out := make([]string, 0)
+	for _, rule := range c.rules {
+		if rule.isCount() {
+			out = append(out, rule.Name)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // IsNotForm 报告 key 是不是“禁止”形式。禁止形式的键以 _not 结尾，且前面还有内容。
@@ -94,15 +132,23 @@ func catalogFromValue(raw any, version string) (RuleCatalog, error) {
 	case []any:
 		return catalogFromList(t, version)
 	case map[string]any:
-		keys := make([]string, 0, len(t))
+		names := make([]string, 0, len(t))
 		for key := range t {
 			if strings.TrimSpace(key) == "" {
 				return RuleCatalog{}, fmt.Errorf("规则键不能为空")
 			}
-			keys = append(keys, key)
+			names = append(names, key)
 		}
-		slices.Sort(keys)
-		return newCatalog(keys, version)
+		slices.Sort(names)
+		rules := make([]ruleMeta, 0, len(names))
+		for _, name := range names {
+			rule, err := ruleFromValue(name, t[name])
+			if err != nil {
+				return RuleCatalog{}, err
+			}
+			rules = append(rules, rule)
+		}
+		return newCatalog(rules, version)
 	case nil:
 		return RuleCatalog{}, fmt.Errorf("rules 不能为空")
 	default:
@@ -111,53 +157,113 @@ func catalogFromValue(raw any, version string) (RuleCatalog, error) {
 }
 
 func catalogFromList(list []any, version string) (RuleCatalog, error) {
-	keys := make([]string, 0, len(list))
+	rules := make([]ruleMeta, 0, len(list))
 	for _, item := range list {
-		key, err := catalogKey(item)
+		rule, err := ruleFromItem(item)
 		if err != nil {
 			return RuleCatalog{}, err
 		}
-		keys = append(keys, key)
+		rules = append(rules, rule)
 	}
-	slices.Sort(keys)
-	return newCatalog(keys, version)
+	return newCatalog(rules, version)
 }
 
-func catalogKey(item any) (string, error) {
+func ruleFromItem(item any) (ruleMeta, error) {
 	switch t := item.(type) {
 	case string:
 		key := strings.TrimSpace(t)
 		if key == "" {
-			return "", fmt.Errorf("规则键不能为空")
+			return ruleMeta{}, fmt.Errorf("规则键不能为空")
 		}
-		return key, nil
+		return ruleMeta{Name: key}, nil
 	case map[string]any:
-		for _, field := range []string{"name", "key", "id"} {
-			if raw, ok := t[field]; ok {
-				text, ok := raw.(string)
-				if !ok || strings.TrimSpace(text) == "" {
-					return "", fmt.Errorf("规则键 %s 必须是非空字符串", field)
-				}
-				return strings.TrimSpace(text), nil
-			}
+		name, err := catalogKey(t)
+		if err != nil {
+			return ruleMeta{}, err
 		}
-		return "", fmt.Errorf("规则项缺少 name、key 或 id")
+		return ruleFromValue(name, t)
 	default:
-		return "", fmt.Errorf("规则项必须是字符串或带 name/key/id 的映射")
+		return ruleMeta{}, fmt.Errorf("规则项必须是字符串或带 name/key/id 的映射")
 	}
 }
 
-func newCatalog(keys []string, version string) (RuleCatalog, error) {
-	set := make(map[string]struct{}, len(keys))
-	out := make([]string, 0, len(keys))
-	for _, key := range keys {
-		if _, ok := set[key]; ok {
-			return RuleCatalog{}, fmt.Errorf("规则键 %q 重复", key)
-		}
-		set[key] = struct{}{}
-		out = append(out, key)
+func ruleFromValue(name string, raw any) (ruleMeta, error) {
+	rule := ruleMeta{Name: name}
+	if raw == nil {
+		return rule, nil
 	}
-	return RuleCatalog{Version: version, Keys: out, set: set}, nil
+	m, ok := asMap(raw)
+	if !ok {
+		return ruleMeta{}, fmt.Errorf("规则 %s 的说明必须是映射", name)
+	}
+	kind, err := optionalString(m, "kind")
+	if err != nil {
+		return ruleMeta{}, err
+	}
+	types, err := parameterTypes(m["parameters"])
+	if err != nil {
+		return ruleMeta{}, err
+	}
+	rule.Kind = kind
+	rule.ParamTypes = types
+	return rule, nil
+}
+
+func parameterTypes(raw any) ([]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("parameters 必须是列表")
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		m, ok := asMap(item)
+		if !ok {
+			return nil, fmt.Errorf("parameters 项必须是映射")
+		}
+		typ, err := optionalString(m, "type")
+		if err != nil {
+			return nil, err
+		}
+		if typ != "" {
+			out = append(out, typ)
+		}
+	}
+	return out, nil
+}
+
+func catalogKey(item map[string]any) (string, error) {
+	for _, field := range []string{"name", "key", "id"} {
+		if raw, ok := item[field]; ok {
+			text, ok := raw.(string)
+			if !ok || strings.TrimSpace(text) == "" {
+				return "", fmt.Errorf("规则键 %s 必须是非空字符串", field)
+			}
+			return strings.TrimSpace(text), nil
+		}
+	}
+	return "", fmt.Errorf("规则项缺少 name、key 或 id")
+}
+
+func newCatalog(rules []ruleMeta, version string) (RuleCatalog, error) {
+	set := make(map[string]struct{}, len(rules))
+	out := make([]ruleMeta, 0, len(rules))
+	names := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		if _, ok := set[rule.Name]; ok {
+			return RuleCatalog{}, fmt.Errorf("规则键 %q 重复", rule.Name)
+		}
+		set[rule.Name] = struct{}{}
+		out = append(out, rule)
+		names = append(names, rule.Name)
+	}
+	slices.Sort(names)
+	slices.SortFunc(out, func(a, b ruleMeta) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return RuleCatalog{Version: version, Keys: names, set: set, rules: out}, nil
 }
 
 func optionalString(m map[string]any, key string) (string, error) {

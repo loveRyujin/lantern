@@ -1,0 +1,5 @@
+version: v1
+gates:
+  sandbox:
+    title: 沙箱逃逸
+    keys: [network_egress_success_count]

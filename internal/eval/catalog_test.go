@@ -3,6 +3,7 @@ package eval_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/loveRyujin/lantern/internal/eval"
@@ -77,6 +78,57 @@ func TestLoadRuleCatalogShapes(t *testing.T) {
 	if _, err := eval.LoadRuleCatalog(dupPath); err == nil {
 		t.Fatal("重复规则键应拒绝")
 	}
+}
+
+func TestCountKeysUseSuffixOrIntegerParameters(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rules.yaml")
+	body := `
+rules:
+  - name: citation_count_gte
+    parameters: [{name: minimum, type: integer}]
+    kind: deterministic
+  - name: requested_timeout_seconds
+    parameters: [{name: expected, type: integer}]
+    kind: deterministic
+  - name: attempt_count
+    parameters: [{name: expected, type: integer_or_symbol}]
+    kind: deterministic
+  - name: panic_count
+    parameters: [{name: expected, type: integer}]
+    kind: deterministic
+  - name: tool_call
+    parameters: [{name: expected_tool, type: string}]
+    kind: deterministic
+  - name: llm_judge
+    parameters: [{name: required, type: boolean}, {name: model, type: string}]
+    kind: llm_judge
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cat, err := eval.LoadRuleCatalog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(cat.CountKeys(), ",")
+	want := "attempt_count,citation_count_gte,panic_count,requested_timeout_seconds"
+	if got != want {
+		t.Fatalf("计数类键 = %s", got)
+	}
+	if cat.Has("llm_judge") && containsCount(cat.CountKeys(), "llm_judge") {
+		t.Fatal("llm_judge 不是计数类")
+	}
+}
+
+func containsCount(keys []string, want string) bool {
+	for _, key := range keys {
+		if key == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCatalogDoesNotImplyNotForm(t *testing.T) {

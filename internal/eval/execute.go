@@ -22,10 +22,12 @@ const (
 )
 
 // Options 控制一次评测。RulesPath 为空时读取用例目录下的 rules.yaml。
+// GatesPath 为空时读取用例目录下的 gates.yaml。
 type Options struct {
 	Root       string
 	OutDir     string
 	RulesPath  string
+	GatesPath  string
 	Mode       string
 	Category   string
 	Platform   string
@@ -43,8 +45,9 @@ type Result struct {
 	ExitCode     int
 }
 
-// Execute 加载用例、对照规则清单计分，并写出 Markdown 与 JSON 报告。
+// Execute 加载用例、对照规则清单和门槛文件计分，并写出 Markdown 与 JSON 报告。
 // 清单外的确定性规则（含 _not 形式）会使对应用例失败，退出码为 ExitFailed。
+// 缺观测、硬门槛失败或样本数为 0 同样是 ExitFailed。live 在接入前直接返回错误，不写报告。
 func Execute(ctx context.Context, opt Options) (Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -61,6 +64,9 @@ func Execute(ctx context.Context, opt Options) (Result, error) {
 	}
 	if mode != ModeMock && mode != ModeLive {
 		return Result{}, fmt.Errorf("eval: mode 必须是 mock 或 live")
+	}
+	if mode == ModeLive {
+		return Result{}, fmt.Errorf("eval: live 未接入")
 	}
 	opt.Mode = mode
 	switch opt.Platform {
@@ -86,6 +92,14 @@ func Execute(ctx context.Context, opt Options) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("eval: 规则清单路径: %w", err)
 	}
+	gatesPath := opt.GatesPath
+	if gatesPath == "" {
+		gatesPath = filepath.Join(root, "gates.yaml")
+	}
+	gatesPath, err = filepath.Abs(gatesPath)
+	if err != nil {
+		return Result{}, fmt.Errorf("eval: 门槛文件路径: %w", err)
+	}
 	outDir := opt.OutDir
 	if outDir == "" {
 		outDir = "reports"
@@ -95,16 +109,35 @@ func Execute(ctx context.Context, opt Options) (Result, error) {
 		return Result{}, fmt.Errorf("eval: 报告目录: %w", err)
 	}
 
-	suite, err := LoadSuite(root, rulesPath)
+	suite, err := LoadSuite(root, rulesPath, gatesPath)
 	if err != nil {
 		return Result{}, err
 	}
-	catalog, err := loadCatalog(rulesPath, len(suite.Cases) > 0)
+	gatesExists, err := fileExists(gatesPath)
+	if err != nil {
+		return Result{}, err
+	}
+	if opt.GatesPath != "" && !gatesExists {
+		return Result{}, fmt.Errorf("eval: 门槛文件不存在: %s", gatesPath)
+	}
+	catalog, err := loadCatalog(rulesPath, len(suite.Cases) > 0 || gatesExists)
 	if err != nil {
 		return Result{}, err
 	}
 	if catalog.Keys == nil {
 		catalog.Keys = []string{}
+	}
+	var gates GateSet
+	if gatesExists {
+		gates, err = LoadGateSet(gatesPath)
+		if err != nil {
+			return Result{}, err
+		}
+		if err := ValidateGates(gates, catalog); err != nil {
+			return Result{}, err
+		}
+	} else if len(suite.Cases) > 0 {
+		return Result{}, fmt.Errorf("eval: 用例目录有用例，但门槛文件不存在: %s", gatesPath)
 	}
 
 	judge := opt.Judge
@@ -116,6 +149,9 @@ func Execute(ctx context.Context, opt Options) (Result, error) {
 	}
 
 	version := suite.Version
+	if gates.Version != "" {
+		version = gates.Version
+	}
 	if catalog.Version != "" {
 		version = catalog.Version
 	}
@@ -130,15 +166,25 @@ func Execute(ctx context.Context, opt Options) (Result, error) {
 	}
 	generated := now().UTC()
 
-	report := scoreSuite(ctx, suite, catalog, opt, judge, model)
+	report := scoreSuite(ctx, suite, catalog, gates, opt, judge, model)
 	report.SuiteVersion = version
 	report.GeneratedAt = generated.Format(time.RFC3339Nano)
-	report.Environment = collectEnvironment(mode, model, version, suite.Root, moduleRoot)
+	report.Environment = collectEnvironment(model, version, suite.Root, moduleRoot)
 	report.RuleCatalog = CatalogInfo{
 		Path:    rulesPath,
 		Loaded:  catalog.Loaded,
 		Version: catalog.Version,
 		Keys:    catalog.Keys,
+	}
+	ungated := gates.Ungated
+	if ungated == nil {
+		ungated = []string{}
+	}
+	report.GateCatalog = GateInfo{
+		Path:    gatesPath,
+		Loaded:  gates.Loaded,
+		Version: gates.Version,
+		Ungated: ungated,
 	}
 	report, err = report.withDigest()
 	if err != nil {
@@ -149,7 +195,7 @@ func Execute(ctx context.Context, opt Options) (Result, error) {
 		return Result{}, err
 	}
 	code := ExitOK
-	if !report.Summary.HardGatesPassed || report.Summary.Failed > 0 {
+	if !report.Summary.HardGatesPassed || report.Summary.Failed > 0 || report.Summary.MissingObservation > 0 {
 		code = ExitFailed
 	}
 	return Result{
@@ -165,7 +211,7 @@ func loadCatalog(path string, required bool) (RuleCatalog, error) {
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			if required {
-				return RuleCatalog{}, fmt.Errorf("eval: 用例目录有用例，但规则清单不存在: %s", path)
+				return RuleCatalog{}, fmt.Errorf("eval: 规则清单不存在: %s", path)
 			}
 			return RuleCatalog{Path: path, Keys: []string{}}, nil
 		}
@@ -175,6 +221,20 @@ func loadCatalog(path string, required bool) (RuleCatalog, error) {
 		return RuleCatalog{}, fmt.Errorf("eval: 规则清单不是文件: %s", path)
 	}
 	return LoadRuleCatalog(path)
+}
+
+func fileExists(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("eval: 门槛文件 %s: %w", path, err)
+	}
+	if info.IsDir() {
+		return false, fmt.Errorf("eval: 门槛文件不是文件: %s", path)
+	}
+	return true, nil
 }
 
 func detectModuleRoot() string {

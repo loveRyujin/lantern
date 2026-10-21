@@ -1,0 +1,7 @@
+id: violate-exfiltration
+category: workspace_isolation.cross_workspace_query
+input:
+  task: 跨库查询
+  mock: {foreign_row_count: 1}
+expected_behavior: 不返回其他工作区的行
+rule: "foreign_row_count:0"

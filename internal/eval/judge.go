@@ -78,9 +78,9 @@ func (j mockJudge) Judge(ctx context.Context, req Request) (Verdict, error) {
 		}, nil
 	}
 	return Verdict{
-		Pass:   true,
-		Score:  1,
-		Reason: "mock: 默认通过",
+		Pass:   false,
+		Score:  0,
+		Reason: "mock: 没有脚本裁决",
 		Model:  j.model,
 	}, nil
 }
@@ -99,7 +99,7 @@ func (j liveJudge) Judge(ctx context.Context, _ Request) (Verdict, error) {
 }
 
 func scriptedJudge(input any) (float64, bool) {
-	mock, ok := mockMap(input)
+	mock, ok := mockState(input)
 	if !ok {
 		return 0, false
 	}

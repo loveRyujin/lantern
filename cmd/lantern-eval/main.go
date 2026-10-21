@@ -39,10 +39,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", "eval/v1", "用例目录，递归读取 YAML 和 JSONL")
 	out := fs.String("out", "reports", "报告目录，写出 eval-<时间>.md 和 .json")
 	rules := fs.String("rules", "", "规则清单路径，默认是用例目录下的 rules.yaml")
+	gates := fs.String("gates", "", "门槛文件路径，默认是用例目录下的 gates.yaml")
 	judgeModel := fs.String("judge-model", eval.DefaultJudgeModel, "LLM 裁判模型")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "用法: lantern-eval run [选项]")
-		fmt.Fprintln(stderr, "读取 YAML/JSONL 用例并写出 Markdown 和 JSON 报告。用例失败或硬门槛未达标时退出码为 1。")
+		fmt.Fprintln(stderr, "读取 YAML/JSONL 用例并写出 Markdown 和 JSON 报告。用例失败、缺观测或硬门槛未达标（含无样本）时退出码为 1。live 尚未接入。")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -60,6 +61,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		Root:       *root,
 		OutDir:     *out,
 		RulesPath:  *rules,
+		GatesPath:  *gates,
 		Mode:       *mode,
 		Category:   *category,
 		Platform:   *platform,
@@ -72,7 +74,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, res.JSONPath)
 	fmt.Fprintln(stdout, res.MarkdownPath)
 	if res.ExitCode != 0 {
-		fmt.Fprintf(stderr, "评测未通过（硬门槛通过=%t，失败用例=%d）\n", res.Report.Summary.HardGatesPassed, res.Report.Summary.Failed)
+		fmt.Fprintf(stderr, "评测未通过（硬门槛通过=%t，失败用例=%d，缺观测=%d）\n", res.Report.Summary.HardGatesPassed, res.Report.Summary.Failed, res.Report.Summary.MissingObservation)
 	}
 	return res.ExitCode
 }

@@ -85,6 +85,18 @@ func asFloat(v any) (float64, bool) {
 	}
 }
 
+func isNumeric(v any) bool {
+	switch n := v.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return true
+	case string:
+		_, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		return err == nil
+	default:
+		return false
+	}
+}
+
 func scalarString(v any) string {
 	switch t := v.(type) {
 	case string:
@@ -146,8 +158,4 @@ func floatPtr(v float64) *float64 {
 	p := new(float64)
 	*p = v
 	return p
-}
-
-func nearlyEqual(a, b float64) bool {
-	return math.Abs(a-b) <= 1e-9
 }

@@ -14,13 +14,16 @@ func currentPlatform() string {
 	return runtime.GOOS
 }
 
-func collectEnvironment(mode, judgeModel, suiteVersion, suiteRoot, moduleRoot string) Environment {
+func collectEnvironment(judgeModel, suiteVersion, suiteRoot, moduleRoot string) Environment {
 	env := Environment{
 		OS:             runtime.GOOS,
 		Arch:           runtime.GOARCH,
 		Platform:       runtime.GOOS,
 		JudgeModel:     judgeModel,
-		EmbeddingModel: "bge-m3",
+		Model:          "mock",
+		EmbeddingModel: "mock",
+		EmbedderID:     "mock",
+		SandboxImpl:    "mock",
 		EmbedderDim:    1024,
 		VectorStore:    "sqlite-blob",
 		ChunkStrategy:  "fixed",
@@ -29,15 +32,6 @@ func collectEnvironment(mode, judgeModel, suiteVersion, suiteRoot, moduleRoot st
 		MygoVersion:    "unknown",
 		GoVersion:      runtime.Version(),
 		SuiteRoot:      suiteRoot,
-	}
-	if mode == ModeLive {
-		env.Model = "grok4.6"
-		env.EmbedderID = "ollama:bge-m3"
-		env.SandboxImpl = "unconfigured"
-	} else {
-		env.Model = "mock"
-		env.EmbedderID = "mock"
-		env.SandboxImpl = "mock"
 	}
 	if moduleRoot != "" {
 		env.MygoVersion = readMygoVersion(moduleRoot)

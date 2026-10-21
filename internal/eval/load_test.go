@@ -23,6 +23,7 @@ cases:
 `)
 	writeFile(t, filepath.Join(root, "a.jsonl"), `{"id":"a","category":"document_poisoning","input":{"task":"a"},"expected":"不泄露","rule":"sensitive_plaintext_count:0"}`+"\n\n")
 	writeFile(t, filepath.Join(root, "rules.yaml"), "rules: [tool_call]\nnot a case\n")
+	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\nnot a case\n")
 	writeFile(t, filepath.Join(root, "notes.md"), "ignore\n")
 
 	suite, err := eval.LoadSuite(root, filepath.Join(root, "rules.yaml"))
