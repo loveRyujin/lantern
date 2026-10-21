@@ -52,13 +52,11 @@ func TestScoringDigestChangesWithContent(t *testing.T) {
 	t.Parallel()
 	pass := runDigestCase(t, "0")
 	fail := runDigestCase(t, "1")
-	if pass.Report.Digest == fail.Report.Digest {
-		t.Fatalf("计分内容变了，指纹仍是 %s", pass.Report.Digest)
+	if pass.Report.Digest == "" || pass.Report.Digest == fail.Report.Digest {
+		t.Fatalf("报告计分内容变了，指纹仍是 %s", pass.Report.Digest)
 	}
-	assertMarkdownDigestMatchesJSON(t, pass)
-	assertMarkdownDigestMatchesJSON(t, fail)
 
-	samePath := pass.Report
+	samePath := cloneReport(pass.Report)
 	samePath.GeneratedAt = "1999-01-01T00:00:00Z"
 	samePath.Digest = "not-the-digest"
 	samePath.Environment.OS = "plan9"
@@ -69,8 +67,8 @@ func TestScoringDigestChangesWithContent(t *testing.T) {
 	samePath.Environment.SuiteRoot = "/tmp/not-the-suite"
 	samePath.RuleCatalog.Path = "/tmp/not-rules.yaml"
 	samePath.GateCatalog.Path = "/tmp/not-gates.yaml"
-	if len(samePath.Cases) == 0 {
-		t.Fatal("没有用例")
+	if len(samePath.Cases) == 0 || len(samePath.HardGates) == 0 {
+		t.Fatalf("报告缺少计分内容: %+v", pass.Report.Summary)
 	}
 	samePath.Cases[0].Source = "/tmp/not-case.yaml:1"
 	got, err := eval.ScoringDigest(samePath)
@@ -81,19 +79,58 @@ func TestScoringDigestChangesWithContent(t *testing.T) {
 		t.Fatalf("环境和路径不应改变指纹，原 %s，改后 %s", pass.Report.Digest, got)
 	}
 
-	changed := pass.Report
-	changed.Summary.Passed--
-	changed.Summary.Failed++
-	changed.Cases[0].Status = "failed"
-	changed.Cases[0].Passed = false
-	changed.Cases[0].Failures = append(changed.Cases[0].Failures, "计分内容已变")
-	next, err := eval.ScoringDigest(changed)
+	// 计分内容里每一处单独改动都必须换指纹。一次改多个字段不能证明“一变就变”。
+	edits := []struct {
+		name string
+		edit func(*eval.Report)
+	}{
+		{"mode", func(r *eval.Report) { r.Mode = "changed" }},
+		{"category", func(r *eval.Report) { r.Category = "changed" }},
+		{"selected_platform", func(r *eval.Report) { r.SelectedPlatform = "changed" }},
+		{"suite_version", func(r *eval.Report) { r.SuiteVersion = "changed" }},
+		{"note", func(r *eval.Report) { r.Note = "changed" }},
+		{"rule_catalog", func(r *eval.Report) { r.RuleCatalog.Keys = append(r.RuleCatalog.Keys, "changed") }},
+		{"gate_catalog", func(r *eval.Report) { r.GateCatalog.Version = "changed" }},
+		{"summary", func(r *eval.Report) { r.Summary.Passed++ }},
+		{"hard_gate", func(r *eval.Report) { r.HardGates[0].Passed = !r.HardGates[0].Passed }},
+		{"metric", func(r *eval.Report) { r.Metrics[0].Title = "changed" }},
+		{"sandbox", func(r *eval.Report) {
+			r.Sandbox = append(r.Sandbox, eval.SandboxPlatform{Platform: "changed"})
+		}},
+		{"case", func(r *eval.Report) { r.Cases[0].Status = "changed" }},
+	}
+	for _, item := range edits {
+		t.Run(item.name, func(t *testing.T) {
+			changed := cloneReport(pass.Report)
+			item.edit(&changed)
+			next, err := eval.ScoringDigest(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if next == pass.Report.Digest {
+				t.Fatalf("%s 变了，指纹仍是 %s", item.name, next)
+			}
+		})
+	}
+}
+
+func TestMarkdownDigestMatchesJSON(t *testing.T) {
+	t.Parallel()
+	for _, observed := range []string{"0", "1"} {
+		t.Run("observed "+observed, func(t *testing.T) {
+			assertMarkdownDigestMatchesJSON(t, runDigestCase(t, observed))
+		})
+	}
+	suite := filepath.Join(moduleRoot(t), "eval", "v1")
+	res, err := eval.Execute(context.Background(), eval.Options{
+		Root:     suite,
+		OutDir:   t.TempDir(),
+		Platform: "all",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next == pass.Report.Digest {
-		t.Fatalf("报告计分内容变了，指纹仍是 %s", next)
-	}
+	assertMarkdownDigestMatchesJSON(t, res)
 }
 
 func runDigestCase(t *testing.T, observed string) eval.Result {
@@ -135,6 +172,63 @@ func assertMarkdownDigestMatchesJSON(t *testing.T, res eval.Result) {
 	if line == "" || line != doc.Digest || line != res.Report.Digest {
 		t.Fatalf("Markdown 指纹 %q，JSON %q，报告 %q", line, doc.Digest, res.Report.Digest)
 	}
+}
+
+// cloneReport 深拷贝计分切片和浮点指针。浅拷贝会让子测试改到同一块底层数组，
+// 后面的字段改动就不再独立。
+func cloneReport(in eval.Report) eval.Report {
+	out := in
+	out.RuleCatalog.Keys = cloneStrings(in.RuleCatalog.Keys)
+	out.GateCatalog.NonGate = cloneStrings(in.GateCatalog.NonGate)
+	out.Summary.PassRate = cloneFloat(in.Summary.PassRate)
+	if in.HardGates != nil {
+		out.HardGates = make([]eval.HardGate, len(in.HardGates))
+		for i, gate := range in.HardGates {
+			gate.Value = cloneFloat(gate.Value)
+			out.HardGates[i] = gate
+		}
+	}
+	if in.Metrics != nil {
+		out.Metrics = make([]eval.Metric, len(in.Metrics))
+		for i, metric := range in.Metrics {
+			metric.Value = cloneFloat(metric.Value)
+			metric.Threshold = cloneFloat(metric.Threshold)
+			out.Metrics[i] = metric
+		}
+	}
+	if in.Sandbox != nil {
+		out.Sandbox = make([]eval.SandboxPlatform, len(in.Sandbox))
+		for i, row := range in.Sandbox {
+			row.FailureCount = cloneFloat(row.FailureCount)
+			out.Sandbox[i] = row
+		}
+	}
+	if in.Cases != nil {
+		out.Cases = make([]eval.CaseResult, len(in.Cases))
+		for i, item := range in.Cases {
+			item.Failures = cloneStrings(item.Failures)
+			item.NotScoredReasons = cloneStrings(item.NotScoredReasons)
+			out.Cases[i] = item
+		}
+	}
+	return out
+}
+
+func cloneStrings(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
+}
+
+func cloneFloat(in *float64) *float64 {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
 }
 
 func TestNegativeGateFixturesReddenTheirOwnGates(t *testing.T) {
