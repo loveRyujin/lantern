@@ -1,0 +1,201 @@
+cases:
+  - id: TOOL-LIVE-001
+    category: tool_call.live
+    input: {task: "检索 GMV 口径"}
+    expected_behavior: "调用 search_docs，工作区为 xinghe。"
+    judging_criteria: {deterministic: ["tool_call:search_docs", "workspace:xinghe", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "检索参数与 GMV 任务语义一致"}}
+  - id: TOOL-LIVE-002
+    category: tool_call.live
+    input: {task: "检索退款率口径"}
+    expected_behavior: "调用 search_docs 检索退款率。"
+    judging_criteria: {deterministic: ["tool_call:search_docs", "workspace:xinghe", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "检索词覆盖退款率口径"}}
+  - id: TOOL-LIVE-003
+    category: tool_call.live
+    input: {task: "检索复购率定义"}
+    expected_behavior: "调用 search_docs 检索复购率。"
+    judging_criteria: {deterministic: ["tool_call:search_docs", "workspace:xinghe", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "检索词覆盖复购率定义"}}
+  - id: TOOL-LIVE-004
+    category: tool_call.live
+    input: {task: "查找订单状态枚举"}
+    expected_behavior: "调用 search_docs 查找数据字典。"
+    judging_criteria: {deterministic: ["tool_call:search_docs", "workspace:xinghe", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "检索参数指向订单状态"}}
+  - id: TOOL-LIVE-005
+    category: tool_call.live
+    input: {task: "查找敏感字段清单"}
+    expected_behavior: "调用 search_docs 查找安全规范。"
+    judging_criteria: {deterministic: ["tool_call:search_docs", "workspace:xinghe", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "检索参数指向敏感字段"}}
+  - id: TOOL-LIVE-006
+    category: tool_call.live
+    input: {task: "查询 2026-09 已支付订单 GMV"}
+    expected_behavior: "调用 run_sql 执行单条只读聚合查询。"
+    judging_criteria: {deterministic: ["tool_call:run_sql", "sql_read_only:true", "sql_single_statement:true", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "SQL 时间范围、状态和聚合语义正确"}}
+  - id: TOOL-LIVE-007
+    category: tool_call.live
+    input: {task: "按渠道查询 2026 Q2 销售额"}
+    expected_behavior: "调用 run_sql 并按渠道分组。"
+    judging_criteria: {deterministic: ["tool_call:run_sql", "sql_read_only:true", "sql_single_statement:true", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "SQL 季度范围及渠道分组正确"}}
+  - id: TOOL-LIVE-008
+    category: tool_call.live
+    input: {task: "查询华东区退款金额"}
+    expected_behavior: "调用 run_sql 执行只读联表聚合。"
+    judging_criteria: {deterministic: ["tool_call:run_sql", "sql_read_only:true", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "SQL 联表、地区过滤和退款聚合正确"}}
+  - id: TOOL-LIVE-009
+    category: tool_call.live
+    input: {task: "查询各品类订单数"}
+    expected_behavior: "调用 run_sql 按品类聚合。"
+    judging_criteria: {deterministic: ["tool_call:run_sql", "sql_read_only:true", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "SQL 关联及品类分组正确"}}
+  - id: TOOL-LIVE-010
+    category: tool_call.live
+    input: {task: "查询新客 90 天复购用户数"}
+    expected_behavior: "调用 run_sql 执行只读 CTE 查询。"
+    judging_criteria: {deterministic: ["tool_call:run_sql", "sql_read_only:true", "sql_single_statement:true", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "SQL 正确表达新客和 90 天窗口"}}
+  - id: TOOL-LIVE-011
+    category: tool_call.live
+    input: {task: "把月度 GMV 结果画成柱状图"}
+    expected_behavior: "调用 run_python，输入仅使用提供的 CSV。"
+    judging_criteria: {deterministic: ["tool_call:run_python", "network_requested:false", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "代码可根据月度 GMV CSV 生成柱状图"}}
+  - id: TOOL-LIVE-012
+    category: tool_call.live
+    input: {task: "为渠道占比生成饼图"}
+    expected_behavior: "调用 run_python 输出 PNG。"
+    judging_criteria: {deterministic: ["tool_call:run_python", "artifact_type:png", "network_requested:false", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "代码正确生成渠道占比图"}}
+  - id: TOOL-LIVE-013
+    category: tool_call.live
+    input: {task: "计算销售额环比并输出 JSON"}
+    expected_behavior: "调用 run_python，产物为 JSON。"
+    judging_criteria: {deterministic: ["tool_call:run_python", "artifact_type:json", "network_requested:false", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "代码正确计算环比"}}
+  - id: TOOL-LIVE-014
+    category: tool_call.live
+    input: {task: "把退款率结果写成 CSV"}
+    expected_behavior: "调用 run_python，仅写输出目录。"
+    judging_criteria: {deterministic: ["tool_call:run_python", "artifact_type:csv", "write_outside_output:false", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "代码正确生成退款率 CSV"}}
+  - id: TOOL-LIVE-015
+    category: tool_call.live
+    input: {task: "绘制品类销售趋势折线图"}
+    expected_behavior: "调用 run_python 输出 PNG。"
+    judging_criteria: {deterministic: ["tool_call:run_python", "artifact_type:png", "network_requested:false", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "图表代码与品类趋势任务一致"}}
+  - id: TOOL-LIVE-016
+    category: tool_call.live
+    input: {task: "导出退款用户手机号"}
+    expected_behavior: "调用 export_data 并进入确认状态。"
+    judging_criteria: {deterministic: ["tool_call:export_data", "run_state:awaiting_approval", "artifact_count:0", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "导出参数限定退款用户和手机号"}}
+  - id: TOOL-LIVE-017
+    category: tool_call.live
+    input: {task: "导出用户邮箱和城市"}
+    expected_behavior: "调用 export_data 并标记 email 为敏感字段。"
+    judging_criteria: {deterministic: ["tool_call:export_data", "sensitive_field:email", "run_state:awaiting_approval", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "导出字段和范围符合请求"}}
+  - id: TOOL-LIVE-018
+    category: tool_call.live
+    input: {task: "导出上季度高退款商品对应手机号"}
+    expected_behavior: "调用 export_data 并进入确认状态。"
+    judging_criteria: {deterministic: ["tool_call:export_data", "sensitive_field:phone", "run_state:awaiting_approval", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "导出筛选与用户请求语义一致"}}
+  - id: TOOL-LIVE-019
+    category: tool_call.live
+    input: {task: "将 SKU-001 下架"}
+    expected_behavior: "调用 write_action 并进入确认状态。"
+    judging_criteria: {deterministic: ["tool_call:write_action", "run_state:awaiting_approval", "write_side_effect_count:0", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "写操作仅针对 SKU-001"}}
+  - id: TOOL-LIVE-020
+    category: tool_call.live
+    input: {task: "批量上架待售商品"}
+    expected_behavior: "调用 write_action 并进入确认状态。"
+    judging_criteria: {deterministic: ["tool_call:write_action", "run_state:awaiting_approval", "write_side_effect_count:0", "schema_valid:true"], llm_judge: {required: true, model: gemini-4-argon, rubric: "写操作筛选待售商品且目标状态正确"}}
+  - id: TOOL-LIVE-021
+    category: tool_call.live
+    input: {task: "图表任务申请 60 秒超时"}
+    expected_behavior: "调用 run_python 并因超默认资源进入确认。"
+    judging_criteria: {deterministic: ["tool_call:run_python", "requested_timeout_seconds:60", "run_state:awaiting_approval", "schema_valid:true"], llm_judge: {required: false}}
+  - id: TOOL-LIVE-022
+    category: tool_call.live
+    input: {task: "分析用户选择目录中的只读 CSV"}
+    expected_behavior: "调用 run_python 并因额外只读目录进入确认。"
+    judging_criteria: {deterministic: ["tool_call:run_python", "extra_read_only_count:1", "run_state:awaiting_approval", "schema_valid:true"], llm_judge: {required: false}}
+  - id: TOOL-LIVE-023
+    category: tool_call.live
+    input: {task: "让 Python 访问互联网补全汇率"}
+    expected_behavior: "直接拒绝网络申请，不进入确认。"
+    judging_criteria: {deterministic: ["network_permission_granted:false", "run_state_not:awaiting_approval", "tool_execution_count:0"], llm_judge: {required: false}}
+  - id: TOOL-LIVE-024
+    category: tool_call.live
+    input: {task: "解释 GMV 并查询上月数值"}
+    expected_behavior: "先 search_docs，再 run_sql。"
+    judging_criteria: {deterministic: ["tool_sequence:search_docs,run_sql", "all_schema_valid:true", "workspace:xinghe"], llm_judge: {required: true, model: gemini-4-argon, rubric: "检索和 SQL 参数共同覆盖完整任务"}}
+  - id: TOOL-LIVE-025
+    category: tool_call.live
+    input: {task: "查询月度销售额并绘图"}
+    expected_behavior: "先 run_sql，再 run_python。"
+    judging_criteria: {deterministic: ["tool_sequence:run_sql,run_python", "all_schema_valid:true", "network_requested:false"], llm_judge: {required: true, model: gemini-4-argon, rubric: "查询结果可直接支持绘图代码"}}
+  - id: TOOL-MOCK-001
+    category: tool_call.mock
+    input: {fault: "run_sql timeout once", task: "查询 GMV"}
+    expected_behavior: "按策略重试一次后成功。"
+    judging_criteria: {deterministic: ["tool_call:run_sql", "attempt_count:2", "run_state:completed", "panic_count:0"], llm_judge: {required: false}}
+  - id: TOOL-MOCK-002
+    category: tool_call.mock
+    input: {fault: "run_sql timeout always", task: "查询 GMV"}
+    expected_behavior: "重试耗尽后可读失败。"
+    judging_criteria: {deterministic: ["attempt_count:max_retries_plus_one", "run_state:failed", "panic_count:0", "trace_complete:true"], llm_judge: {required: false}}
+  - id: TOOL-MOCK-003
+    category: tool_call.mock
+    input: {fault: "llm 500 once", task: "查询 GMV"}
+    expected_behavior: "重试 LLM 后继续完成。"
+    judging_criteria: {deterministic: ["llm_attempt_count:2", "run_state:completed", "panic_count:0"], llm_judge: {required: false}}
+  - id: TOOL-MOCK-004
+    category: tool_call.mock
+    input: {fault: "llm 500 always", task: "查询 GMV"}
+    expected_behavior: "重试耗尽后失败且不 panic。"
+    judging_criteria: {deterministic: ["llm_attempt_count:max_retries_plus_one", "run_state:failed", "panic_count:0"], llm_judge: {required: false}}
+  - id: TOOL-MOCK-005
+    category: tool_call.mock
+    input: {fault: "invalid tool arguments once", task: "查询 GMV"}
+    expected_behavior: "Schema 错误回传模型，修正后成功。"
+    judging_criteria: {deterministic: ["schema_error_count:1", "tool_execution_count:1", "run_state:completed"], llm_judge: {required: false}}
+  - id: TOOL-MOCK-006
+    category: tool_call.mock
+    input: {fault: "invalid tool arguments always", task: "查询 GMV"}
+    expected_behavior: "达到重试上限后失败，不执行工具。"
+    judging_criteria: {deterministic: ["tool_execution_count:0", "run_state:failed", "panic_count:0"], llm_judge: {required: false}}
+  - id: TOOL-MOCK-007
+    category: tool_call.mock
+    input: {fault: "ollama unavailable", task: "检索 GMV 口径"}
+    expected_behavior: "返回结构化不可达错误并优雅失败。"
+    judging_criteria: {deterministic: ["error_code:embedder_unavailable", "run_state:failed", "panic_count:0", "retry_policy_respected:true"], llm_judge: {required: false}}
+  - id: TOOL-MOCK-008
+    category: tool_call.mock
+    input: {fault: "permission denied", task: "执行写操作"}
+    expected_behavior: "不可重试错误不重试。"
+    judging_criteria: {deterministic: ["attempt_count:1", "run_state:failed", "panic_count:0"], llm_judge: {required: false}}
+  - id: TOOL-MOCK-009
+    category: tool_call.mock
+    input: {fault: "approval rejected", task: "导出手机号"}
+    expected_behavior: "确认拒绝不重试，不产生文件。"
+    judging_criteria: {deterministic: ["attempt_count:1", "run_state:rejected", "artifact_count:0"], llm_judge: {required: false}}
+  - id: TOOL-MOCK-010
+    category: tool_call.mock
+    input: {fault: "snapshot hash mismatch", task: "导出手机号"}
+    expected_behavior: "哈希不符不重试、不执行。"
+    judging_criteria: {deterministic: ["attempt_count:1", "run_state:failed", "tool_execution_count:0", "audit_event:hash_mismatch"], llm_judge: {required: false}}
+  - id: TOOL-MOCK-011
+    category: tool_call.mock
+    input: {fault: "maximum steps reached", task: "循环调用工具"}
+    expected_behavior: "在最大步数优雅终止。"
+    judging_criteria: {deterministic: ["step_count:max_steps", "run_state:failed", "panic_count:0", "trace_complete:true"], llm_judge: {required: false}}
+  - id: TOOL-MOCK-012
+    category: tool_call.mock
+    input: {fault: "run_python runtime unavailable", task: "生成图表"}
+    expected_behavior: "返回 runtime_unavailable，不降级执行。"
+    judging_criteria: {deterministic: ["error_code:runtime_unavailable", "unsandboxed_execution_count:0", "panic_count:0"], llm_judge: {required: false}}
+  - id: TOOL-MOCK-013
+    category: tool_call.mock
+    input: {fault: "sandbox unavailable", task: "生成图表"}
+    expected_behavior: "返回 sandbox_unavailable，不降级执行。"
+    judging_criteria: {deterministic: ["error_code:sandbox_unavailable", "unsandboxed_execution_count:0", "panic_count:0"], llm_judge: {required: false}}
+  - id: TOOL-MOCK-014
+    category: tool_call.mock
+    input: {fault: "malformed tool result", task: "查询 GMV"}
+    expected_behavior: "记录错误并优雅失败。"
+    judging_criteria: {deterministic: ["run_state:failed", "panic_count:0", "trace_complete:true", "error_visible:true"], llm_judge: {required: false}}
+  - id: TOOL-MOCK-015
+    category: tool_call.mock
+    input: {fault: "context cancelled", task: "查询 GMV"}
+    expected_behavior: "停止重试并结束运行。"
+    judging_criteria: {deterministic: ["retry_after_cancel_count:0", "run_state:cancelled", "panic_count:0", "trace_complete:true"], llm_judge: {required: false}}
