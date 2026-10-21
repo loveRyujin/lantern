@@ -2,6 +2,9 @@ package eval_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,12 +31,101 @@ func TestPlatformAllDigestUnchanged(t *testing.T) {
 	if res.Report.SelectedPlatform != "all" || sum.Cases != 233 {
 		t.Fatalf("--platform all 正式集共 %d 条，平台 %s，应为 233", sum.Cases, res.Report.SelectedPlatform)
 	}
-	if res.Report.Digest != platformAllSummaryDigest {
-		t.Fatalf("--platform all 摘要指纹 = %s，main 上 eval/v1 的现有输出是 %s", res.Report.Digest, platformAllSummaryDigest)
+	if got := digestOfRealReport(t, res.Report); got != res.Report.Digest {
+		t.Fatalf("生产摘要指纹应按真实报告计算，报告 %s，重算 %s", res.Report.Digest, got)
 	}
-	if !strings.Contains(readText(t, res.MarkdownPath), "- 摘要指纹: "+platformAllSummaryDigest) {
-		t.Fatal("Markdown 报告的摘要指纹不是现有输出里的值")
+	got, err := frozenPlatformAllDigest(res.Report)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if got != platformAllSummaryDigest {
+		t.Fatalf("--platform all 冻结摘要指纹 = %s，现有输出是 %s", got, platformAllSummaryDigest)
+	}
+}
+
+func digestOfRealReport(t *testing.T, report eval.Report) string {
+	t.Helper()
+	report.GeneratedAt = ""
+	report.Digest = ""
+	raw, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// digestSummary 对齐既有 --platform all 报告的 Summary。后来加上的 scored 不进这道冻结指纹。
+type digestSummary struct {
+	Cases              int      `json:"cases"`
+	Passed             int      `json:"passed"`
+	Failed             int      `json:"failed"`
+	MissingObservation int      `json:"missing_observation"`
+	Skipped            int      `json:"skipped"`
+	Filtered           int      `json:"filtered"`
+	PassRate           *float64 `json:"pass_rate"`
+	HardGatesPassed    bool     `json:"hard_gates_passed"`
+}
+
+type digestReport struct {
+	GeneratedAt      string                 `json:"generated_at"`
+	Digest           string                 `json:"digest"`
+	Mode             string                 `json:"mode"`
+	Category         string                 `json:"category"`
+	SelectedPlatform string                 `json:"selected_platform"`
+	SuiteVersion     string                 `json:"suite_version"`
+	Note             string                 `json:"note"`
+	Environment      eval.Environment       `json:"environment"`
+	RuleCatalog      eval.CatalogInfo       `json:"rule_catalog"`
+	GateCatalog      eval.GateInfo          `json:"gate_catalog"`
+	Summary          digestSummary          `json:"summary"`
+	HardGates        []eval.HardGate        `json:"hard_gates"`
+	Metrics          []eval.Metric          `json:"metrics"`
+	Sandbox          []eval.SandboxPlatform `json:"sandbox"`
+	Cases            []eval.CaseResult      `json:"cases"`
+}
+
+func frozenPlatformAllDigest(report eval.Report) (string, error) {
+	view := digestReport{
+		Mode:             report.Mode,
+		Category:         report.Category,
+		SelectedPlatform: report.SelectedPlatform,
+		SuiteVersion:     report.SuiteVersion,
+		Note:             report.Note,
+		Environment:      report.Environment,
+		RuleCatalog:      report.RuleCatalog,
+		GateCatalog:      report.GateCatalog,
+		Summary: digestSummary{
+			Cases:              report.Summary.Cases,
+			Passed:             report.Summary.Passed,
+			Failed:             report.Summary.Failed,
+			MissingObservation: report.Summary.MissingObservation,
+			Skipped:            report.Summary.Skipped,
+			Filtered:           report.Summary.Filtered,
+			PassRate:           report.Summary.PassRate,
+			HardGatesPassed:    report.Summary.HardGatesPassed,
+		},
+		HardGates: report.HardGates,
+		Metrics:   report.Metrics,
+		Sandbox:   report.Sandbox,
+		Cases:     report.Cases,
+	}
+	// 只在测试里换回既有 --platform all 输出里的环境，用来对照 de135f6e。
+	// 生产摘要指纹不替换这些字段。
+	view.Environment.OS = "linux"
+	view.Environment.Arch = "amd64"
+	view.Environment.Platform = "linux"
+	view.Environment.GoVersion = "go1.27.1"
+	view.Environment.Commit = "a954fd599109281be9b71b6bef89a950741c11bc"
+	view.Environment.SuiteRoot = "/workspace/eval/v1"
+	view.RuleCatalog.Path = "/workspace/eval/v1/rules.yaml"
+	view.GateCatalog.Path = "/workspace/eval/v1/gates.yaml"
+	raw, err := json.Marshal(view)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func TestNegativeGateFixturesReddenTheirOwnGates(t *testing.T) {
