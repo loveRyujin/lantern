@@ -175,4 +175,4 @@ Runner 镜像在作业设置阶段报的是 macOS 26.6.2（25G83），镜像名 
 - 把最低 Python 版本改成 3.11 并升到 pandas 3
 - 在 macOS 上实际执行一次哈希安装。Linux 的 `pyrt-install` job 会跑 `PYRT_ENSURE_REAL=1`；macOS wheel 仍只锁了哈希，没有在 Mac 上装过
 - `TestDetectCanceled` 依赖假解释器 `sleep 30` 和 3 秒上限。进程组杀掉之后应当马上返回；慢 runner 上若杀不掉，测试会先撞上这 3 秒
-- Windows 的常见安装路径（PATH 和用户指定路径仍然有效）
+- Windows 的常见安装路径（PATH 和用户指定路径仍然有效）。`ci` job 会跑 `GOOS=windows go vet ./...`，用来在合入前看到 Windows 编不过的测试和实现；这一步不执行测试，也不在 Windows 上创建 venv
