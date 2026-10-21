@@ -1,6 +1,6 @@
 # lantern 技术设计 v0.3
 
-依据：PRD v0.3（`/workspace/prd/PRD-v0.3.md`，含文末 13:36 已确认决策）、mygo 调研笔记。取代 v0.2（服务端 + Postgres 方案作废）。状态：草案，待评审。
+依据：PRD v0.3（[`../prd/PRD-v0.3.md`](../prd/PRD-v0.3.md)，含文末 13:36 已确认决策）、mygo 调研笔记。取代 v0.2（服务端 + Postgres 方案作废）。状态：草案，待评审。
 
 ## 1. 总体约束
 - 纯 Go，`CGO_ENABLED=0`；Go ≥ 1.27（mygo 要求）；`go.mod` 锁定 mygo v0.6.0 的具体 commit，8 周内不主动升级。
