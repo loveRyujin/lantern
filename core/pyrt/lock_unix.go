@@ -18,11 +18,21 @@ const ensureLockName = ".pyrt.lock"
 var errEnsureBusy = errors.New("pyrt: 已有一次 Ensure 在进行")
 
 // lockEnsure 独占 root 下的 .pyrt.lock。拿不到就返回 errEnsureBusy，调用方不得再清理或替换。
+// 打开时带 O_NOFOLLOW：最后一层是符号链接就返回 path_escape，不跟随，也不对目标加锁。
 // 进程退出时锁会放开，包括中途崩溃。
 func lockEnsure(root string) (func(), error) {
-	f, err := os.OpenFile(filepath.Join(root, ensureLockName), os.O_CREATE|os.O_RDWR, 0o644)
+	path := filepath.Join(root, ensureLockName)
+	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o644)
 	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, pathEscape(path, "文件锁是符号链接")
+		}
 		return nil, fmt.Errorf("pyrt: 文件锁: %w", err)
+	}
+	f := os.NewFile(uintptr(fd), path)
+	if f == nil {
+		_ = syscall.Close(fd)
+		return nil, fmt.Errorf("pyrt: 文件锁: 无效的文件描述符")
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()

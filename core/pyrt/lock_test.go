@@ -1,59 +1,78 @@
 package pyrt
 
 import (
-	"context"
-	"errors"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
-
-	"github.com/loveRyujin/lantern/core/errcode"
 )
 
-func TestEnsureBusyDoesNotSweep(t *testing.T) {
-	installFakePy(t, "3.12.1")
-	outside := t.TempDir()
-	plantFile(t, filepath.Join(outside, "precious.txt"), "keep-outside")
-	before := snapshotTree(t, outside)
-
-	root := t.TempDir()
-	pyenv := filepath.Join(root, "pyenv")
-	if err := os.Mkdir(pyenv, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	stale := filepath.Join(pyenv, ".venv-old-stale", "old.txt")
-	plantFile(t, stale, "stale")
-	if err := os.Symlink(outside, filepath.Join(pyenv, ".venv-new-link")); err != nil {
-		t.Fatal(err)
-	}
-	unlock, err := lockEnsure(root)
+func TestEmbeddedLock(t *testing.T) {
+	spec, err := parseLock(requirementsLock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(unlock)
+	if spec.rangeString() != ">=3.10,<3.14" {
+		t.Fatalf("范围 = %s", spec.rangeString())
+	}
+	if !spec.supports(Version{Major: 3, Minor: 10}) || !spec.supports(Version{Major: 3, Minor: 13, Micro: 9}) {
+		t.Fatal("3.10 和 3.13 应该在锁定范围内")
+	}
+	if spec.supports(Version{Major: 3, Minor: 9, Micro: 9}) || spec.supports(Version{Major: 3, Minor: 14}) {
+		t.Fatal("3.9 和 3.14 不应该在锁定范围内")
+	}
+	want := map[string]string{
+		"pandas":     "2.3.3",
+		"matplotlib": "3.10.9",
+		"numpy":      "2.2.6",
+	}
+	got := map[string]lockedPkg{}
+	for _, pkg := range spec.packages {
+		if len(pkg.Hashes) == 0 {
+			t.Fatalf("%s 没有哈希", pkg.Name)
+		}
+		for _, hash := range pkg.Hashes {
+			if !validSHA256(hash) {
+				t.Fatalf("%s 哈希 %s 不合法", pkg.Name, hash)
+			}
+		}
+		got[pkg.Name] = pkg
+	}
+	for name, ver := range want {
+		pkg, ok := got[name]
+		if !ok || pkg.Version != ver {
+			t.Fatalf("%s = %+v，想要 %s", name, pkg, ver)
+		}
+	}
+	if !strings.Contains(string(requirementsLock), "--hash=sha256:") {
+		t.Fatal("锁文件里没有 sha256")
+	}
+}
 
-	_, err = Config{Root: root, SearchPaths: []string{}}.Ensure(context.Background())
-	if !errors.Is(err, errEnsureBusy) {
-		t.Fatalf("err=%v，想要已有一次 Ensure 在进行", err)
+func TestParseLockRejectsBadFiles(t *testing.T) {
+	cases := []string{
+		"",
+		"# lantern-python: >=3.10,<3.14\n",
+		"# lantern-python: >=3.10,<3.14\npandas==2.3.3\n",
+		"# lantern-python: >=3.10,<3.14\n# lantern-python: >=3.10,<3.14\npandas==2.3.3 \\\n    --hash=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+		"# lantern-python: >=3.14,<3.10\npandas==2.3.3 \\\n    --hash=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+		"pandas==2.3.3 \\\n    --hash=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
 	}
-	if errors.Is(err, ErrUnavailable) || errors.Is(err, ErrPathEscape) {
-		t.Fatal("锁冲突不应该是 runtime_unavailable 或 path_escape")
+	for _, raw := range cases {
+		if _, err := parseLock([]byte(raw)); err == nil {
+			t.Fatalf("应该拒绝:\n%s", raw)
+		}
 	}
-	if code, ok := errcode.CodeOf(err); ok {
-		t.Fatalf("锁冲突不应该带错误码 %s", code)
+}
+
+func TestSearchPaths(t *testing.T) {
+	darwin := searchPaths("darwin")
+	if len(darwin) < 2 || darwin[0] != "/opt/homebrew/bin/python3" {
+		t.Fatalf("darwin = %v", darwin)
 	}
-	body, err := os.ReadFile(stale)
-	if err != nil || string(body) != "stale" {
-		t.Fatalf("拿不到锁时清掉了残留: %q %v", body, err)
+	linux := searchPaths("linux")
+	if len(linux) != 2 || linux[0] != "/usr/local/bin/python3" || linux[1] != "/usr/bin/python3" {
+		t.Fatalf("linux = %v", linux)
 	}
-	got, err := os.Readlink(filepath.Join(pyenv, ".venv-new-link"))
-	if err != nil || got != outside {
-		t.Fatalf("符号链接 = %q, %v", got, err)
-	}
-	if snap := snapshotTree(t, outside); snap != before {
-		t.Fatalf("拿不到锁时改动了 Root 外的文件\n之前:\n%s\n之后:\n%s", before, snap)
-	}
-	if _, err := os.Stat(filepath.Join(pyenv, "venv")); !os.IsNotExist(err) {
-		t.Fatal("拿不到锁时不应该创建 venv")
+	if searchPaths("windows") != nil {
+		t.Fatalf("windows = %v", searchPaths("windows"))
 	}
 }

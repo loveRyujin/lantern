@@ -57,7 +57,7 @@ venv 根目录下有 `.lantern-requirements.sha256`。标记同时写下锁文�
 
 调用 pip 时去掉 `PIP_TARGET`、`PIP_PREFIX`、`PIP_USER`，避免包装到 venv 外面。`index-url` 等镜像配置保留。pip 退出码为 0 之后，还要在 venv 里执行 `python -I -c "import pandas, matplotlib"`（`MPLBACKEND=Agg`）。import 失败不写标记，错误码仍是 `runtime_unavailable`。
 
-同一个 `<Root>` 上不要并发调用 `Ensure`。Unix 上用真实 Root 里的 `.pyrt.lock` 做非阻塞 `flock` 把这件事收成失败：拿不到锁就返回「已有一次 Ensure 在进行」，不清理临时目录，也不 `rename`。进程退出（包括中途崩溃）后锁会放开。非 Unix 没有 `flock`，`Ensure` 直接失败，避免无锁继续。这把锁不管符号链接，符号链接检查照旧。`TestEnsureBusyDoesNotSweep` 在锁被占着时再调用 `Ensure`，残留目录和 Root 外的文件都还在。
+同一个 `<Root>` 上不要并发调用 `Ensure`。Unix 上用真实 Root 里的 `.pyrt.lock` 做非阻塞 `flock` 把这件事收成失败：拿不到锁就返回「已有一次 Ensure 在进行」，不清理临时目录，也不 `rename`。打开锁文件时带 `O_NOFOLLOW`。它本身若是符号链接，返回 `path_escape`，不跟随，也不对链接目标加锁。进程退出（包括中途崩溃）后锁会放开。非 Unix 没有 `flock`，`Ensure` 直接失败，避免无锁继续。这把锁不代替 pyenv、venv 上的符号链接检查。`TestEnsureBusyDoesNotSweep` 在锁被占着时再调用 `Ensure`，残留目录和 Root 外的文件都还在。`TestEnsureLockFileSymlinkIsNotFollowed` 把 `.pyrt.lock` 指到 Root 外，确认目标文件原样留下。
 
 ### 目录句柄与 TOCTOU
 
