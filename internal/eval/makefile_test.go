@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +61,39 @@ func TestMakeEvalEmptySuiteExitsZero(t *testing.T) {
 	md, err := filepath.Glob(filepath.Join(out, "eval-*.md"))
 	if err != nil || len(md) != 1 {
 		t.Fatalf("Markdown 报告 = %v, err = %v", md, err)
+	}
+}
+
+func TestMakeEvalOfficialSet(t *testing.T) {
+	root := moduleRoot(t)
+	out := t.TempDir()
+	code, output := runMake(t, root, "REPORT_DIR="+out)
+	if code != 0 {
+		t.Fatalf("make eval 退出码 = %d，实跑结果是 0\n%s", code, output)
+	}
+	report := readMakeReport(t, out)
+	if report.Summary.MissingObservation != 0 {
+		t.Fatalf("缺观测 = %d，摘要 %+v", report.Summary.MissingObservation, report.Summary)
+	}
+	matches, err := filepath.Glob(filepath.Join(out, "eval-*.md"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("Markdown 报告 = %v, err = %v", matches, err)
+	}
+	raw, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, banned := range []string{"grok", "ollama"} {
+		if strings.Contains(text, banned) {
+			t.Fatalf("报告含有 %s", banned)
+		}
+	}
+	for _, id := range []string{"exfiltration", "side_effect", "sandbox"} {
+		gate := findGate(t, report, id)
+		if gate.SampleCount == 0 {
+			t.Fatalf("%s 没有样本: %+v", id, gate)
+		}
 	}
 }
 

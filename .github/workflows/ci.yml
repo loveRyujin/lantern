@@ -44,6 +44,9 @@ jobs:
       - name: Demonstrate rejected cgo and mygo imports
         run: bash scripts/demo-constraint-ci.sh
 
+      - name: Official eval exits zero
+        run: make eval REPORT_DIR="${RUNNER_TEMP}/eval-official"
+
       - name: Intentional gate violations exit non-zero
         run: |
           set +e
