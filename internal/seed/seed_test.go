@@ -48,10 +48,9 @@ func TestAnalyticsHasNoPlainContacts(t *testing.T) {
 		if len(phones) != ws.Users || len(emails) != ws.Users {
 			t.Fatalf("%s contacts phone=%d email=%d users=%d", ws.ID, len(phones), len(emails), ws.Users)
 		}
+		// SQLite 文件头含有字节 0x40，整文件搜 "@" 会误报。
+		// 这里比的是敏感库里的整段手机号和邮箱。
 		blob := readAnalyticsBytes(t, ws.Dir)
-		if bytes.Contains(blob, []byte("@")) {
-			t.Fatalf("%s analytics.db contains @", ws.ID)
-		}
 		for _, phone := range phones {
 			if bytes.Contains(blob, []byte(phone)) {
 				t.Fatalf("%s analytics.db contains a phone number", ws.ID)
