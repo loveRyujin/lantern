@@ -1,0 +1,49 @@
+cases:
+    - id: W2-TOOL-001
+      category: tool_call.w2
+      input:
+        arguments: '{"path":"/tmp/out.csv","fields":["phone"'
+        finish_reason: length
+        mock:
+            approval_ticket_count: 0
+            error_code: tool_arguments_incomplete
+            judge_pass: true
+            run_state: failed
+            schema_error_count: 1
+            tool_execution_count: 0
+        task: 模型因 length finish 返回半截 JSON 工具参数
+      expected_behavior: 参数解析失败；工具不执行，也不创建确认单。
+      judging_criteria:
+        deterministic:
+            - error_code:tool_arguments_incomplete
+            - schema_error_count:1
+            - tool_execution_count:0
+            - approval_ticket_count:0
+            - run_state:failed
+        llm_judge:
+            required: false
+    - id: W2-TOOL-002
+      category: tool_call.w2
+      input:
+        arguments:
+            product_ids: not-an-array
+            status: 42
+        mock:
+            approval_ticket_count: 0
+            judge_pass: true
+            run_state: failed
+            schema_error_count: 1
+            tool_execution_count: 0
+            write_side_effect_count: 0
+        task: write_action 参数不符合 Schema
+        tool: write_action
+      expected_behavior: Schema 校验失败；写工具不执行，也不创建确认单。
+      judging_criteria:
+        deterministic:
+            - schema_error_count:1
+            - tool_execution_count:0
+            - approval_ticket_count:0
+            - write_side_effect_count:0
+            - run_state:failed
+        llm_judge:
+            required: false

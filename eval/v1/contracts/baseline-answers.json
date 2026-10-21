@@ -1,0 +1,247 @@
+{
+  "answers": [
+    {
+      "id": "XH-SEP-GMV-GROSS",
+      "workspace": "星禾",
+      "question": "2026 年 9 月已支付订单总额是多少",
+      "sql": "SELECT COALESCE(SUM(amount_cents),0) FROM orders WHERE status='已支付' AND created_at \u003e= '2026-09-01T00:00:00Z' AND created_at \u003c '2026-10-01T00:00:00Z'",
+      "expected": 68144551,
+      "unit": "cents"
+    },
+    {
+      "id": "XH-SEP-PAID-COUNT",
+      "workspace": "星禾",
+      "question": "2026 年 9 月已支付订单数是多少",
+      "sql": "SELECT COUNT(*) FROM orders WHERE status='已支付' AND created_at \u003e= '2026-09-01T00:00:00Z' AND created_at \u003c '2026-10-01T00:00:00Z'",
+      "expected": 289,
+      "unit": "orders"
+    },
+    {
+      "id": "XH-SEP-REFUND",
+      "workspace": "星禾",
+      "question": "2026 年 9 月订单对应退款金额是多少",
+      "sql": "SELECT COALESCE(SUM(r.amount_cents),0) FROM refunds r JOIN orders o ON o.id=r.order_id WHERE o.status='已支付' AND o.created_at \u003e= '2026-09-01T00:00:00Z' AND o.created_at \u003c '2026-10-01T00:00:00Z'",
+      "expected": 3851792,
+      "unit": "cents"
+    },
+    {
+      "id": "XH-SEP-NET",
+      "workspace": "星禾",
+      "question": "2026 年 9 月净销售额是多少",
+      "sql": "SELECT COALESCE(SUM(o.amount_cents),0)-COALESCE((SELECT SUM(r.amount_cents) FROM refunds r JOIN orders ro ON ro.id=r.order_id WHERE ro.status='已支付' AND ro.created_at \u003e= '2026-09-01T00:00:00Z' AND ro.created_at \u003c '2026-10-01T00:00:00Z'),0) FROM orders o WHERE o.status='已支付' AND o.created_at \u003e= '2026-09-01T00:00:00Z' AND o.created_at \u003c '2026-10-01T00:00:00Z'",
+      "expected": 64292759,
+      "unit": "cents"
+    },
+    {
+      "id": "XH-SEP-AOV",
+      "workspace": "星禾",
+      "question": "2026 年 9 月退款前客单价是多少",
+      "sql": "SELECT COALESCE(SUM(amount_cents)/NULLIF(COUNT(*),0),0) FROM orders WHERE status='已支付' AND created_at \u003e= '2026-09-01T00:00:00Z' AND created_at \u003c '2026-10-01T00:00:00Z'",
+      "expected": 235794,
+      "unit": "cents"
+    },
+    {
+      "id": "XH-YEAR-REPEAT-USERS",
+      "workspace": "星禾",
+      "question": "全年复购用户数是多少",
+      "sql": "SELECT COUNT(*) FROM (SELECT user_id FROM orders WHERE status='已支付' GROUP BY user_id HAVING COUNT(*)\u003e=2)",
+      "expected": 240,
+      "unit": "users"
+    },
+    {
+      "id": "XH-YEAR-ACTIVE-USERS",
+      "workspace": "星禾",
+      "question": "全年至少购买一次的用户数是多少",
+      "sql": "SELECT COUNT(DISTINCT user_id) FROM orders WHERE status='已支付'",
+      "expected": 240,
+      "unit": "users"
+    },
+    {
+      "id": "XH-YEAR-GMV-GROSS",
+      "workspace": "星禾",
+      "question": "全年已支付订单总额是多少",
+      "sql": "SELECT COALESCE(SUM(amount_cents),0) FROM orders WHERE status='已支付'",
+      "expected": 723068413,
+      "unit": "cents"
+    },
+    {
+      "id": "XH-YEAR-REFUND",
+      "workspace": "星禾",
+      "question": "全年退款金额是多少",
+      "sql": "SELECT COALESCE(SUM(r.amount_cents),0) FROM refunds r JOIN orders o ON o.id=r.order_id WHERE o.status='已支付'",
+      "expected": 70580289,
+      "unit": "cents"
+    },
+    {
+      "id": "XH-YEAR-PAID-COUNT",
+      "workspace": "星禾",
+      "question": "全年已支付订单数是多少",
+      "sql": "SELECT COUNT(*) FROM orders WHERE status='已支付'",
+      "expected": 2962,
+      "unit": "orders"
+    },
+    {
+      "id": "XH-PRODUCT-COUNT",
+      "workspace": "星禾",
+      "question": "商品总数是多少",
+      "sql": "SELECT COUNT(*) FROM products",
+      "expected": 48,
+      "unit": "products"
+    },
+    {
+      "id": "XH-USER-COUNT",
+      "workspace": "星禾",
+      "question": "用户总数是多少",
+      "sql": "SELECT COUNT(*) FROM users",
+      "expected": 240,
+      "unit": "users"
+    },
+    {
+      "id": "XH-REFUND-COUNT",
+      "workspace": "星禾",
+      "question": "退款记录数是多少",
+      "sql": "SELECT COUNT(*) FROM refunds",
+      "expected": 427,
+      "unit": "refunds"
+    },
+    {
+      "id": "XH-SEP-EAST-GMV",
+      "workspace": "星禾",
+      "question": "2026 年 9 月华东已支付订单总额是多少",
+      "sql": "SELECT COALESCE(SUM(o.amount_cents),0) FROM orders o JOIN users u ON u.id=o.user_id WHERE o.status='已支付' AND o.created_at \u003e= '2026-09-01T00:00:00Z' AND o.created_at \u003c '2026-10-01T00:00:00Z' AND u.city IN ('上海','杭州','南京','宁波','苏州')",
+      "expected": 12104587,
+      "unit": "cents"
+    },
+    {
+      "id": "XH-MAX-PAID-ORDER",
+      "workspace": "星禾",
+      "question": "最大已支付订单金额是多少",
+      "sql": "SELECT COALESCE(MAX(amount_cents),0) FROM orders WHERE status='已支付'",
+      "expected": 2388807,
+      "unit": "cents"
+    },
+    {
+      "id": "YS-SEP-GMV-GROSS",
+      "workspace": "云杉",
+      "question": "2026 年 9 月已支付订单总额是多少",
+      "sql": "SELECT COALESCE(SUM(amount_cents),0) FROM orders WHERE status='已支付' AND created_at \u003e= '2026-09-01T00:00:00Z' AND created_at \u003c '2026-10-01T00:00:00Z'",
+      "expected": 112581313,
+      "unit": "cents"
+    },
+    {
+      "id": "YS-SEP-PAID-COUNT",
+      "workspace": "云杉",
+      "question": "2026 年 9 月已支付订单数是多少",
+      "sql": "SELECT COUNT(*) FROM orders WHERE status='已支付' AND created_at \u003e= '2026-09-01T00:00:00Z' AND created_at \u003c '2026-10-01T00:00:00Z'",
+      "expected": 94,
+      "unit": "orders"
+    },
+    {
+      "id": "YS-SEP-REFUND",
+      "workspace": "云杉",
+      "question": "2026 年 9 月订单对应退款金额是多少",
+      "sql": "SELECT COALESCE(SUM(r.amount_cents),0) FROM refunds r JOIN orders o ON o.id=r.order_id WHERE o.status='已支付' AND o.created_at \u003e= '2026-09-01T00:00:00Z' AND o.created_at \u003c '2026-10-01T00:00:00Z'",
+      "expected": 2979667,
+      "unit": "cents"
+    },
+    {
+      "id": "YS-SEP-NET",
+      "workspace": "云杉",
+      "question": "2026 年 9 月净销售额是多少",
+      "sql": "SELECT COALESCE(SUM(o.amount_cents),0)-COALESCE((SELECT SUM(r.amount_cents) FROM refunds r JOIN orders ro ON ro.id=r.order_id WHERE ro.status='已支付' AND ro.created_at \u003e= '2026-09-01T00:00:00Z' AND ro.created_at \u003c '2026-10-01T00:00:00Z'),0) FROM orders o WHERE o.status='已支付' AND o.created_at \u003e= '2026-09-01T00:00:00Z' AND o.created_at \u003c '2026-10-01T00:00:00Z'",
+      "expected": 109601646,
+      "unit": "cents"
+    },
+    {
+      "id": "YS-SEP-AOV",
+      "workspace": "云杉",
+      "question": "2026 年 9 月退款前客单价是多少",
+      "sql": "SELECT COALESCE(SUM(amount_cents)/NULLIF(COUNT(*),0),0) FROM orders WHERE status='已支付' AND created_at \u003e= '2026-09-01T00:00:00Z' AND created_at \u003c '2026-10-01T00:00:00Z'",
+      "expected": 1197673,
+      "unit": "cents"
+    },
+    {
+      "id": "YS-YEAR-REPEAT-USERS",
+      "workspace": "云杉",
+      "question": "全年复购用户数是多少",
+      "sql": "SELECT COUNT(*) FROM (SELECT user_id FROM orders WHERE status='已支付' GROUP BY user_id HAVING COUNT(*)\u003e=2)",
+      "expected": 96,
+      "unit": "users"
+    },
+    {
+      "id": "YS-YEAR-ACTIVE-USERS",
+      "workspace": "云杉",
+      "question": "全年至少购买一次的用户数是多少",
+      "sql": "SELECT COUNT(DISTINCT user_id) FROM orders WHERE status='已支付'",
+      "expected": 96,
+      "unit": "users"
+    },
+    {
+      "id": "YS-YEAR-GMV-GROSS",
+      "workspace": "云杉",
+      "question": "全年已支付订单总额是多少",
+      "sql": "SELECT COALESCE(SUM(amount_cents),0) FROM orders WHERE status='已支付'",
+      "expected": 1183827872,
+      "unit": "cents"
+    },
+    {
+      "id": "YS-YEAR-REFUND",
+      "workspace": "云杉",
+      "question": "全年退款金额是多少",
+      "sql": "SELECT COALESCE(SUM(r.amount_cents),0) FROM refunds r JOIN orders o ON o.id=r.order_id WHERE o.status='已支付'",
+      "expected": 44533407,
+      "unit": "cents"
+    },
+    {
+      "id": "YS-YEAR-PAID-COUNT",
+      "workspace": "云杉",
+      "question": "全年已支付订单数是多少",
+      "sql": "SELECT COUNT(*) FROM orders WHERE status='已支付'",
+      "expected": 1053,
+      "unit": "orders"
+    },
+    {
+      "id": "YS-PRODUCT-COUNT",
+      "workspace": "云杉",
+      "question": "商品总数是多少",
+      "sql": "SELECT COUNT(*) FROM products",
+      "expected": 30,
+      "unit": "products"
+    },
+    {
+      "id": "YS-USER-COUNT",
+      "workspace": "云杉",
+      "question": "用户总数是多少",
+      "sql": "SELECT COUNT(*) FROM users",
+      "expected": 96,
+      "unit": "users"
+    },
+    {
+      "id": "YS-REFUND-COUNT",
+      "workspace": "云杉",
+      "question": "退款记录数是多少",
+      "sql": "SELECT COUNT(*) FROM refunds",
+      "expected": 79,
+      "unit": "refunds"
+    },
+    {
+      "id": "YS-SEP-EAST-GMV",
+      "workspace": "云杉",
+      "question": "2026 年 9 月华东已支付订单总额是多少",
+      "sql": "SELECT COALESCE(SUM(o.amount_cents),0) FROM orders o JOIN users u ON u.id=o.user_id WHERE o.status='已支付' AND o.created_at \u003e= '2026-09-01T00:00:00Z' AND o.created_at \u003c '2026-10-01T00:00:00Z' AND u.city IN ('上海','杭州','南京','宁波','苏州')",
+      "expected": 19286684,
+      "unit": "cents"
+    },
+    {
+      "id": "YS-MAX-PAID-ORDER",
+      "workspace": "云杉",
+      "question": "最大已支付订单金额是多少",
+      "sql": "SELECT COALESCE(MAX(amount_cents),0) FROM orders WHERE status='已支付'",
+      "expected": 4990677,
+      "unit": "cents"
+    }
+  ],
+  "seed": 20261021,
+  "seed_hash": "1a7538f9d00c7631a8ba3da0565f2e7ae05b73d24cf1c63ce8b18d6f68fb9de9",
+  "version": "eval-v1"
+}

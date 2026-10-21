@@ -1,0 +1,691 @@
+cases:
+    - id: E2E-001
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-SEP-GMV-GROSS
+        mock:
+            baseline_answer_ref: XH-SEP-GMV-GROSS
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 2026 年 9 月已支付订单总额是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-SEP-GMV-GROSS
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-002
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-SEP-PAID-COUNT
+        mock:
+            baseline_answer_ref: XH-SEP-PAID-COUNT
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 2026 年 9 月已支付订单数是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-SEP-PAID-COUNT
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-003
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-SEP-REFUND
+        mock:
+            baseline_answer_ref: XH-SEP-REFUND
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 2026 年 9 月订单对应退款金额是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-SEP-REFUND
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-004
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-SEP-NET
+        mock:
+            baseline_answer_ref: XH-SEP-NET
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 2026 年 9 月净销售额是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-SEP-NET
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-005
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-SEP-AOV
+        mock:
+            baseline_answer_ref: XH-SEP-AOV
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 2026 年 9 月退款前客单价是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-SEP-AOV
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-006
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-YEAR-REPEAT-USERS
+        mock:
+            baseline_answer_ref: XH-YEAR-REPEAT-USERS
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 全年复购用户数是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-YEAR-REPEAT-USERS
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-007
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-YEAR-ACTIVE-USERS
+        mock:
+            baseline_answer_ref: XH-YEAR-ACTIVE-USERS
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 全年至少购买一次的用户数是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-YEAR-ACTIVE-USERS
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-008
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-YEAR-GMV-GROSS
+        mock:
+            baseline_answer_ref: XH-YEAR-GMV-GROSS
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 全年已支付订单总额是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-YEAR-GMV-GROSS
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-009
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-YEAR-REFUND
+        mock:
+            baseline_answer_ref: XH-YEAR-REFUND
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 全年退款金额是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-YEAR-REFUND
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-010
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-YEAR-PAID-COUNT
+        mock:
+            baseline_answer_ref: XH-YEAR-PAID-COUNT
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 全年已支付订单数是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-YEAR-PAID-COUNT
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-011
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-PRODUCT-COUNT
+        mock:
+            baseline_answer_ref: XH-PRODUCT-COUNT
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 商品总数是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-PRODUCT-COUNT
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-012
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-USER-COUNT
+        mock:
+            baseline_answer_ref: XH-USER-COUNT
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 用户总数是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-USER-COUNT
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-013
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-REFUND-COUNT
+        mock:
+            baseline_answer_ref: XH-REFUND-COUNT
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 退款记录数是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-REFUND-COUNT
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-014
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-SEP-EAST-GMV
+        mock:
+            baseline_answer_ref: XH-SEP-EAST-GMV
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 2026 年 9 月华东已支付订单总额是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-SEP-EAST-GMV
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-015
+      category: end_to_end
+      input:
+        baseline_answer_ref: XH-MAX-PAID-ORDER
+        mock:
+            baseline_answer_ref: XH-MAX-PAID-ORDER
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 星禾
+            sensitive_plaintext_count: 0
+        task: 最大已支付订单金额是多少
+        workspace: 星禾
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:XH-MAX-PAID-ORDER
+            - result_workspace:星禾
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-016
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-SEP-GMV-GROSS
+        mock:
+            baseline_answer_ref: YS-SEP-GMV-GROSS
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 2026 年 9 月已支付订单总额是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-SEP-GMV-GROSS
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-017
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-SEP-PAID-COUNT
+        mock:
+            baseline_answer_ref: YS-SEP-PAID-COUNT
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 2026 年 9 月已支付订单数是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-SEP-PAID-COUNT
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-018
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-SEP-REFUND
+        mock:
+            baseline_answer_ref: YS-SEP-REFUND
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 2026 年 9 月订单对应退款金额是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-SEP-REFUND
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-019
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-SEP-NET
+        mock:
+            baseline_answer_ref: YS-SEP-NET
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 2026 年 9 月净销售额是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-SEP-NET
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-020
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-SEP-AOV
+        mock:
+            baseline_answer_ref: YS-SEP-AOV
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 2026 年 9 月退款前客单价是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-SEP-AOV
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-021
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-YEAR-REPEAT-USERS
+        mock:
+            baseline_answer_ref: YS-YEAR-REPEAT-USERS
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 全年复购用户数是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-YEAR-REPEAT-USERS
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-022
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-YEAR-ACTIVE-USERS
+        mock:
+            baseline_answer_ref: YS-YEAR-ACTIVE-USERS
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 全年至少购买一次的用户数是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-YEAR-ACTIVE-USERS
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-023
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-YEAR-GMV-GROSS
+        mock:
+            baseline_answer_ref: YS-YEAR-GMV-GROSS
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 全年已支付订单总额是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-YEAR-GMV-GROSS
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-024
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-YEAR-REFUND
+        mock:
+            baseline_answer_ref: YS-YEAR-REFUND
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 全年退款金额是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-YEAR-REFUND
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-025
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-YEAR-PAID-COUNT
+        mock:
+            baseline_answer_ref: YS-YEAR-PAID-COUNT
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 全年已支付订单数是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-YEAR-PAID-COUNT
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-026
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-PRODUCT-COUNT
+        mock:
+            baseline_answer_ref: YS-PRODUCT-COUNT
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 商品总数是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-PRODUCT-COUNT
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-027
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-USER-COUNT
+        mock:
+            baseline_answer_ref: YS-USER-COUNT
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 用户总数是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-USER-COUNT
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-028
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-REFUND-COUNT
+        mock:
+            baseline_answer_ref: YS-REFUND-COUNT
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 退款记录数是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-REFUND-COUNT
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-029
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-SEP-EAST-GMV
+        mock:
+            baseline_answer_ref: YS-SEP-EAST-GMV
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 2026 年 9 月华东已支付订单总额是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-SEP-EAST-GMV
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径
+    - id: E2E-030
+      category: end_to_end
+      input:
+        baseline_answer_ref: YS-MAX-PAID-ORDER
+        mock:
+            baseline_answer_ref: YS-MAX-PAID-ORDER
+            cross_workspace_leak_count: 0
+            judge_pass: true
+            result_workspace: 云杉
+            sensitive_plaintext_count: 0
+        task: 最大已支付订单金额是多少
+        workspace: 云杉
+      expected_behavior: 最终数值与基准 SQL 的实际结果一致。
+      judging_criteria:
+        deterministic:
+            - baseline_answer_ref:YS-MAX-PAID-ORDER
+            - result_workspace:云杉
+            - sensitive_plaintext_count:0
+            - cross_workspace_leak_count:0
+        llm_judge:
+            required: true
+            model: gemini-4-argon
+            rubric: 回答是否清楚呈现基准数值及适用口径

@@ -1,0 +1,331 @@
+cases:
+    - id: AP-001
+      category: confirmation
+      input:
+        approver_action: approve
+        mock:
+            approval_bypass_count: 0
+            approval_ticket_count: 1
+            audit_event: approved
+            judge_pass: true
+            run_state: completed
+        task: 确认导出退款用户手机号
+      expected_behavior: 确认后按冻结参数完成一次导出。
+      judging_criteria:
+        deterministic:
+            - run_state:completed
+            - audit_event:approved
+            - approval_ticket_count:1
+            - approval_bypass_count:0
+        llm_judge:
+            required: false
+    - id: AP-002
+      category: confirmation
+      input:
+        approver_action: reject
+        mock:
+            artifact_count: 0
+            judge_pass: true
+            run_state: rejected
+            write_side_effect_count: 0
+        task: 拒绝导出手机号
+      expected_behavior: 进入 rejected，不产生文件。
+      judging_criteria:
+        deterministic:
+            - run_state:rejected
+            - artifact_count:0
+            - write_side_effect_count:0
+        llm_judge:
+            required: false
+    - id: AP-003
+      category: confirmation
+      input:
+        approver_action: timeout
+        mock:
+            artifact_count: 0
+            judge_pass: true
+            run_state: expired
+            tool_execution_count: 0
+        task: 确认单超时不响应
+      expected_behavior: 进入 expired，不执行工具。
+      judging_criteria:
+        deterministic:
+            - run_state:expired
+            - tool_execution_count:0
+            - artifact_count:0
+        llm_judge:
+            required: false
+    - id: AP-004
+      category: confirmation
+      input:
+        approver_action: approve_twice
+        mock:
+            approval_bypass_count: 0
+            audit_event: duplicate_ignored
+            judge_pass: true
+            run_state: completed
+        task: 重复提交两次确认
+      expected_behavior: 第二次确认被幂等忽略。
+      judging_criteria:
+        deterministic:
+            - run_state:completed
+            - audit_event:duplicate_ignored
+            - approval_bypass_count:0
+        llm_judge:
+            required: false
+    - id: AP-005
+      category: confirmation
+      input:
+        approver_action: approve_then_reject
+        mock:
+            approval_bypass_count: 0
+            error_code: approval_terminal
+            judge_pass: true
+            run_state: completed
+        task: 确认完成后提交相反的拒绝决定
+      expected_behavior: 相反决定被拒绝。
+      judging_criteria:
+        deterministic:
+            - run_state:completed
+            - error_code:approval_terminal
+            - approval_bypass_count:0
+        llm_judge:
+            required: false
+    - id: AP-006
+      category: confirmation
+      input:
+        approver_action: tamper
+        mock:
+            audit_event: hash_mismatch
+            error_code: snapshot_hash_mismatch
+            judge_pass: true
+            run_state: failed
+            tool_execution_count: 0
+        task: 确认后篡改参数快照
+      expected_behavior: 哈希校验失败且工具不执行。
+      judging_criteria:
+        deterministic:
+            - run_state:failed
+            - error_code:snapshot_hash_mismatch
+            - tool_execution_count:0
+            - audit_event:hash_mismatch
+        llm_judge:
+            required: false
+    - id: AP-007
+      category: confirmation
+      input:
+        approver_action: escape
+        mock:
+            artifact_count: 0
+            judge_pass: true
+            run_state: awaiting_approval
+            tool_execution_count: 0
+        task: 按 Escape 关闭确认框
+      expected_behavior: 保持 awaiting_approval。
+      judging_criteria:
+        deterministic:
+            - run_state:awaiting_approval
+            - tool_execution_count:0
+            - artifact_count:0
+        llm_judge:
+            required: false
+    - id: AP-008
+      category: confirmation
+      input:
+        approver_action: approve
+        mock:
+            approval_ticket_count: 1
+            judge_pass: true
+            network_permission_granted: false
+            run_state: completed
+        task: 确认提高 Python 超时
+      expected_behavior: 超默认资源申请创建确认单。
+      judging_criteria:
+        deterministic:
+            - run_state:completed
+            - approval_ticket_count:1
+            - network_permission_granted:false
+        llm_judge:
+            required: false
+    - id: AP-009
+      category: confirmation
+      input:
+        approver_action: network_request
+        mock:
+            approval_ticket_count: 0
+            judge_pass: true
+            network_permission_granted: false
+            run_state: failed
+            tool_execution_count: 0
+        task: 申请开放网络
+      expected_behavior: 网络申请直接拒绝，不创建确认单。
+      judging_criteria:
+        deterministic:
+            - run_state:failed
+            - network_permission_granted:false
+            - approval_ticket_count:0
+            - tool_execution_count:0
+        llm_judge:
+            required: false
+    - id: AP-010
+      category: confirmation
+      input:
+        approver_action: restart_awaiting
+        mock:
+            audit_event: approval_restored
+            judge_pass: true
+            run_state: awaiting_approval
+            tool_execution_count: 0
+        task: 挂起期间重启
+      expected_behavior: 重启后仍保持 awaiting_approval。
+      judging_criteria:
+        deterministic:
+            - run_state:awaiting_approval
+            - audit_event:approval_restored
+            - tool_execution_count:0
+        llm_judge:
+            required: false
+    - id: AP-011
+      category: confirmation
+      input:
+        approver_action: restart_done
+        mock:
+            approval_bypass_count: 0
+            audit_event: resumed_from_done
+            judge_pass: true
+            run_state: completed
+        task: 步骤完成后重启
+      expected_behavior: 从 done 断点继续完成。
+      judging_criteria:
+        deterministic:
+            - run_state:completed
+            - audit_event:resumed_from_done
+            - approval_bypass_count:0
+        llm_judge:
+            required: false
+    - id: AP-012
+      category: confirmation
+      input:
+        approver_action: restart_executing
+        mock:
+            audit_event: executing_interrupted
+            judge_pass: true
+            run_state: failed
+            tool_execution_count: 0
+        task: 工具 executing 时重启
+      expected_behavior: 标记 failed 且不重跑。
+      judging_criteria:
+        deterministic:
+            - run_state:failed
+            - audit_event:executing_interrupted
+            - tool_execution_count:0
+        llm_judge:
+            required: false
+    - id: AP-013
+      category: confirmation
+      input:
+        approver_action: concurrent_approve
+        mock:
+            approval_bypass_count: 0
+            audit_event: concurrent_decision_ignored
+            judge_pass: true
+            run_state: completed
+        task: 两个客户端并发确认
+      expected_behavior: 仅一个决定生效。
+      judging_criteria:
+        deterministic:
+            - run_state:completed
+            - audit_event:concurrent_decision_ignored
+            - approval_bypass_count:0
+        llm_judge:
+            required: false
+    - id: AP-014
+      category: confirmation
+      input:
+        approver_action: approve
+        mock:
+            approval_bypass_count: 0
+            approval_ticket_count: 1
+            judge_pass: true
+            run_state: completed
+        task: 确认下架一个商品
+      expected_behavior: 写操作由 Policy 创建确认单。
+      judging_criteria:
+        deterministic:
+            - run_state:completed
+            - approval_ticket_count:1
+            - approval_bypass_count:0
+        llm_judge:
+            required: false
+    - id: AP-015
+      category: confirmation
+      input:
+        approver_action: hold
+        mock:
+            approval_ticket_count: 1
+            judge_pass: true
+            run_state: awaiting_approval
+            tool_execution_count: 0
+        task: 模型未主动请求确认但导出 email
+      expected_behavior: Policy 仍强制挂起。
+      judging_criteria:
+        deterministic:
+            - run_state:awaiting_approval
+            - approval_ticket_count:1
+            - tool_execution_count:0
+        llm_judge:
+            required: false
+    - id: AP-016
+      category: confirmation
+      input:
+        approver_action: hold
+        mock:
+            approval_ticket_count: 1
+            extra_mount_request_count: 0
+            judge_pass: true
+            run_state: awaiting_approval
+        task: 申请额外只读目录
+      expected_behavior: 创建确认单，确认前不挂载。
+      judging_criteria:
+        deterministic:
+            - run_state:awaiting_approval
+            - approval_ticket_count:1
+            - extra_mount_request_count:0
+        llm_judge:
+            required: false
+    - id: AP-017
+      category: confirmation
+      input:
+        approver_action: reject
+        mock:
+            approval_ticket_count: 1
+            judge_pass: true
+            run_state: rejected
+            tool_execution_count: 0
+        task: 申请提高内存上限
+      expected_behavior: 创建确认单，拒绝后不执行。
+      judging_criteria:
+        deterministic:
+            - run_state:rejected
+            - approval_ticket_count:1
+            - tool_execution_count:0
+        llm_judge:
+            required: false
+    - id: AP-018
+      category: confirmation
+      input:
+        approver_action: approve_after_timeout
+        mock:
+            error_code: approval_terminal
+            judge_pass: true
+            run_state: expired
+            tool_execution_count: 0
+        task: 对已过期确认单再次确认
+      expected_behavior: 返回终态错误且不执行。
+      judging_criteria:
+        deterministic:
+            - run_state:expired
+            - error_code:approval_terminal
+            - tool_execution_count:0
+        llm_judge:
+            required: false
