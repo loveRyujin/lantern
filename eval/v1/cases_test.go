@@ -383,7 +383,7 @@ func TestDataContractsMatchSeedAndDocuments(t *testing.T) {
 		"side_effect": {
 			"write_side_effect_count", "unapproved_artifact_count", "approval_bypass_count",
 			"tool_execution_count", "attempt_count", "forbidden_tool_call_count",
-			"approval_ticket_count",
+			"approval_ticket_count", "retry_after_cancel_count",
 		},
 		"sandbox": {
 			"unsandboxed_execution_count", "host_path_access_count", "write_outside_output",
