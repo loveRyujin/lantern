@@ -89,15 +89,52 @@ package using the following command.
 
 测量方法：工作流 job `macos-sandbox-exec` 使用 `macos-latest`，执行 `scripts/probe-sandbox-exec.sh`，上限 10 分钟。可用的判定是：`sandbox-exec` 存在且可执行，并且 `(version 1)(allow default)` 能让 `/usr/bin/true` 以退出码 0 结束。job 在这个判定失败时失败。
 
-下面几项只记录、不单独决定 job 成败：无参数时的弃用提示、一段 `(deny default)` 策略能否跑通 `/usr/bin/true`、命名 profile `no-network`、以及 `(deny default)` 之外再加 `(deny network*)` 时 `curl https://example.com` 是否失败。`resources/darwin/lantern.sb` 仍是占位说明，这次不用它做探测。
+另外记录、但不单独决定 job 成败的有：无参数时的输出、一段 `(deny default)` 策略能否跑通 `/usr/bin/true`、命名 profile `no-network`，以及 `(version 1)(allow default)(deny network*)` 下 `/usr/bin/curl -fsS --max-time 8 https://example.com` 的退出码。`resources/darwin/lantern.sb` 仍是占位说明，这次不用它做探测。
 
-runner 日志会在该 job 结束后写入本节。写入之前，本节没有实测数字。
+来源：pull request #22 的检查，workflow run [`39569378678`](https://github.com/loveRyujin/lantern/actions/runs/39569378678)，job `macos-sandbox-exec`，2026-10-21 08:27 UTC，结论 success。同一提交的 push 运行 `39569358681` 也是 success。下面是该 job 里探测脚本的标准输出：
+
+```text
+uname: Darwin iad20-eo1205-055ec939-cd86-431a-9ee1-52e3caccd5a5-9EEAA4ACEFC4.local 25.6.0 Darwin Kernel Version 25.6.0: Fri Jul 31 19:16:43 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_VMAPPLE arm64
+runner_os: macOS
+image_os: macos26
+image_version: 20261013.0424.1
+product_name: macOS
+product_version: 26.6.2
+build_version: 25G83
+sandbox_exec: /usr/bin/sandbox-exec
+-rwxr-xr-x  1 root  wheel  102368 Aug 13 02:51 /usr/bin/sandbox-exec
+---- sandbox-exec 无参数 ----
+exit: 64
+  Usage: sandbox-exec [options] command [args]
+  Options:
+    -f profile-file     Read profile from file.
+    -n profile-name     Use pre-defined profile.
+    -p profile-string   Specify profile on the command line.
+    -D key=value        Define a profile parameter.
+  Exactly one of -f, -n, -p must be specified.
+---- allow default /usr/bin/true ----
+exit: 0
+---- deny default /usr/bin/true ----
+exit: 0
+---- named profile no-network /usr/bin/true ----
+exit: 0
+---- deny network curl example.com ----
+exit: 6
+  curl: (6) Could not resolve host: example.com
+结论: sandbox-exec 可用; allow_default=0; deny_default=0; named_no_network=0; network_deny_curl=6; bare=64
+```
+
+Runner 镜像在作业设置阶段报的是 macOS 26.6.2（25G83），镜像名 `macos-26-arm64`，版本 `20261013.0424.1`。内核是虚拟化的 Apple Silicon（`RELEASE_ARM64_VMAPPLE`）。
+
+结论：在这台 `macos-latest` 上 `sandbox-exec` 可用。`(allow default)` 和上面那段 `(deny default)` 都能执行 `/usr/bin/true`。命名 profile `no-network` 也能执行 `/usr/bin/true`。无参数时退出码 64，输出是用法说明，这段文字里没有弃用警告。`(deny network*)` 下 curl 没有拿到 `example.com`，退出码 6，原因是无法解析主机名。这只说明这次请求没有成功，不能代替以后用逃逸用例去核对每一种网络系统调用。
+
+因此 W4 的 macOS 沙箱评测可以留在 GitHub Actions 的 `macos-latest` 上，不必因为 runner 缺少 `sandbox-exec` 而改到本机跑。
 
 ## 后果
 
 - 桌面端准备运行时只调用 `pyrt.Config.Ensure`。替换锁文件版本要改 `requirements.lock` 并更新本节的版本表。
 - 用户机器是 Python 3.14 或更高时，现在会明确失败，而不是装上一半。
-- `sandbox-exec` 的探测和 Python 安装互相独立。macOS job 不下载 pandas。
+- `sandbox-exec` 的探测和 Python 安装互相独立。macOS job 不下载 pandas。2026-10-21 的 `macos-latest`（macOS 26.6.2）上探测通过，后续 macOS 沙箱评测可以挂在这个 runner 上。
 - 参数快照另补了一条回归：`ParamsHash("[]")` 不得等于 `ParamsHash("null")`。空数组必须保持为数组。这与运行时无关，只是同一批改动里带上的。
 
 ## 不在本次范围
