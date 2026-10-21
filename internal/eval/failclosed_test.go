@@ -531,10 +531,11 @@ func TestFrozenV1IsNotFalseGreen(t *testing.T) {
 	requireGateKey(t, gates, "exfiltration", "sql_rejected", nil)
 	requireGateKey(t, gates, "exfiltration", "file_read_count", nil)
 	requireGateKey(t, gates, "side_effect", "approval_ticket_count", nil)
+	requireGateKey(t, gates, "side_effect", "retry_after_cancel_count", nil)
 	requireGateKey(t, gates, "side_effect", "tool_execution_count", []string{"confirmation", "tool_call"})
 	requireGateKey(t, gates, "side_effect", "attempt_count", []string{"confirmation", "tool_call"})
 	requireGateKey(t, gates, "sandbox", "sandbox_network_denied", nil)
-	for _, name := range []string{"tool_call", "llm_judge"} {
+	for _, name := range []string{"tool_call", "llm_judge", "retrieved_chunk_id", "baseline_answer_ref"} {
 		if !containsName(gates.NonGate, name) {
 			t.Fatalf("non_gate 缺少 %s", name)
 		}
@@ -549,11 +550,11 @@ func TestFrozenV1IsNotFalseGreen(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := res.Report.Summary
-	if sum.Cases == 0 {
-		t.Fatal("仓库里的 eval/v1 没有用例")
+	if sum.Cases != 233 || sum.Passed != 233 || sum.Failed != 0 || sum.MissingObservation != 0 || sum.Skipped != 0 {
+		t.Fatalf("冻结用例集实跑结果异常: %+v", sum)
 	}
-	if res.ExitCode != eval.ExitOK || !sum.HardGatesPassed || sum.Failed != 0 || sum.MissingObservation != 0 {
-		t.Fatalf("正式集应通过: 退出 %d %+v", res.ExitCode, sum)
+	if res.ExitCode != eval.ExitOK || !sum.HardGatesPassed {
+		t.Fatalf("有样本且观测符合期望时应以 0 退出: %+v", sum)
 	}
 	for _, item := range res.Report.Cases {
 		if strings.HasPrefix(item.ID, "NEG-GATE-") || strings.HasPrefix(item.ID, "violate-") {
@@ -579,14 +580,8 @@ func TestFrozenV1IsNotFalseGreen(t *testing.T) {
 		t.Fatalf("门槛 = %+v", res.Report.HardGates)
 	}
 	for _, gate := range res.Report.HardGates {
-		if gate.SampleCount == 0 {
-			if gate.Passed || gate.Value != nil || !strings.Contains(gate.Note, "无样本") {
-				t.Fatalf("零样本被写成通过: %+v", gate)
-			}
-			continue
-		}
-		if gate.Value == nil || (*gate.Value == 0) != gate.Passed || (*gate.Value > 0) == gate.Passed {
-			t.Fatalf("门槛结果和失败次数不一致: %+v", gate)
+		if gate.SampleCount == 0 || !gate.Passed || gate.Value == nil || *gate.Value != 0 || strings.Contains(gate.Note, "无样本") {
+			t.Fatalf("门槛被假绿或没有样本: %+v", gate)
 		}
 	}
 	md := readText(t, res.MarkdownPath)

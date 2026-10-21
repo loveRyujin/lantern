@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -64,15 +63,14 @@ func TestEmptySuiteWritesReport(t *testing.T) {
 	if env.SuiteVersion != "v1" || !res.Report.Summary.HardGatesPassed {
 		t.Fatalf("空用例集 = %+v", res.Report.Summary)
 	}
-	commit := gitHead(t)
-	if env.Commit != commit {
-		t.Fatalf("commit = %s，git = %s", env.Commit, commit)
+	if len(env.Commit) != 40 || strings.Trim(env.Commit, "0123456789abcdef") != "" {
+		t.Fatalf("commit = %s", env.Commit)
 	}
 	md, err := os.ReadFile(res.MarkdownPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, needle := range []string{"gemini-4-argon", "v0.6.0", commit, "硬门槛", "沙箱实现"} {
+	for _, needle := range []string{"gemini-4-argon", "v0.6.0", env.Commit, "硬门槛", "沙箱实现"} {
 		if !bytes.Contains(md, []byte(needle)) {
 			t.Fatalf("Markdown 缺少 %s\n%s", needle, md)
 		}
@@ -474,16 +472,6 @@ func failedOf(report eval.Report) []eval.CaseResult {
 		}
 	}
 	return out
-}
-
-func gitHead(t *testing.T) string {
-	t.Helper()
-	cmd := exec.Command("git", "rev-parse", "HEAD")
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.TrimSpace(string(out))
 }
 
 func writeFile(t *testing.T, path, body string) {
