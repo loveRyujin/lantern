@@ -82,6 +82,8 @@ type token struct {
 	kind   tokKind
 	text   string
 	quoted bool
+	pos    int
+	end    int
 }
 
 type scanner struct {
@@ -164,10 +166,21 @@ func (sc *scanner) nextToken() (token, error) {
 		}
 		break
 	}
+	start := sc.i
 	r, ok := sc.peek()
 	if !ok {
 		return token{kind: tokEOF}, nil
 	}
+	tok, err := sc.lex(r)
+	if err != nil || tok.kind == tokEOF {
+		return tok, err
+	}
+	tok.pos = start
+	tok.end = sc.i
+	return tok, nil
+}
+
+func (sc *scanner) lex(r rune) (token, error) {
 	switch r {
 	case ';':
 		sc.bump()

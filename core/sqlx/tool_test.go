@@ -980,11 +980,38 @@ func TestRunSQLIntermediateValue(t *testing.T) {
 		t.Fatalf("group_concat 小结果 = %+v", gotGrouped)
 	}
 
-	// length() 本身很小，但两段正文拼起来超过 1 MiB。整次失败，不返回截断的空结果。
-	over, err := tool.Execute(ctx, callSQL(`SELECT length(group_concat(body)), 1 FROM docs`, nil))
-	assertResultTooLarge(t, over, err)
-	if strings.Contains(over.Content, "truncated") || strings.Contains(err.Error(), strings.Repeat("a", 64)) {
-		t.Fatalf("中间值超限仍带回了结果: %+v %v", over, err)
+	// 两段 600 KB 拼起来超过 1 MiB，但交回的是 length()，仍然是小结果。
+	groupedAll, err := tool.Execute(ctx, callSQL(`SELECT length(group_concat(body)), 1 FROM docs`, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotAll := decodeResult(t, groupedAll)
+	wantAll := int64(len(body)*2 + 1)
+	if gotAll.Truncated || gotAll.RowCount != 1 || cellInt(gotAll.Rows[0][0]) != wantAll {
+		t.Fatalf("两段拼接后的 length = %+v，想要 %d", gotAll, wantAll)
+	}
+}
+
+func TestRunSQLTwoMiBIntermediate(t *testing.T) {
+	_, _, tool, _, _ := newFixture(t)
+	res, err := tool.Execute(t.Context(), callSQL(`SELECT length(hex(zeroblob(1048576)))`, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeResult(t, res)
+	if got.Truncated || got.RowCount != 1 || cellInt(got.Rows[0][0]) != 2*1048576 {
+		t.Fatalf("2 MiB 中间值的 length = %+v summary %s", got, res.Summary)
+	}
+}
+
+func TestRunSQLIntermediateOverValueLimit(t *testing.T) {
+	_, _, tool, _, _ := newFixture(t)
+	// hex 的结果超过 16 MiB。length() 本身很小，但中间值过线，整次失败，前面的行也不留。
+	query := `SELECT 'keep-me' UNION ALL SELECT length(hex(zeroblob(8388609)))`
+	res, err := tool.Execute(t.Context(), callSQL(query, nil))
+	assertResultTooLarge(t, res, err)
+	if strings.Contains(res.Content, "keep-me") || strings.Contains(err.Error(), "keep-me") {
+		t.Fatalf("中间值超过 16 MiB 仍返回了前面的行: %+v %v", res, err)
 	}
 }
 
@@ -1018,20 +1045,17 @@ func TestRunSQLManyRowsTruncateByBytes(t *testing.T) {
 	}
 }
 
-func TestRunSQLColumnCap(t *testing.T) {
+func TestRunSQLManySmallColumns(t *testing.T) {
 	_, _, tool, _, _ := newFixture(t)
-	okQuery := "SELECT " + strings.Join(literalCols(sqlx.MaxResultColumns), ", ")
-	res, err := tool.Execute(t.Context(), callSQL(okQuery, nil))
+	const cols = 40
+	res, err := tool.Execute(t.Context(), callSQL("SELECT "+strings.Join(literalCols(cols), ", "), nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := decodeResult(t, res)
-	if got.Truncated || got.RowCount != 1 || len(got.Columns) != sqlx.MaxResultColumns {
-		t.Fatalf("列数上限内的小结果 = %+v", got)
+	if got.Truncated || got.RowCount != 1 || len(got.Columns) != cols {
+		t.Fatalf("多列小结果 = %+v", got)
 	}
-	over := "SELECT " + strings.Join(literalCols(sqlx.MaxResultColumns+1), ", ")
-	rejected, err := tool.Execute(t.Context(), callSQL(over, nil))
-	assertResultTooLarge(t, rejected, err)
 }
 
 func literalCols(n int) []string {

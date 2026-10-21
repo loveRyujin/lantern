@@ -22,13 +22,12 @@ type Queryer interface {
 
 // 结果字节上限。和行数上限一起生效。单个单元格也算进这个总数。
 const (
+	// MaxResultBytes 是交回模型的一行最多能有的字节。中间值不算在这里。
 	MaxResultBytes = 1 << 20
-	// MaxResultColumns 是一条结果最多能有的列数。
-	// 单个值的 SQLITE_LIMIT_LENGTH 保持 MaxResultBytes，表达式的中间值也可以到这个大小。
-	// 列数不封顶的话，一行里每列都略小于 1 MiB 时，整行会在计数之前进内存。
-	// 连接上把 SQLITE_LIMIT_COLUMN 设成这个值，列数乘以 1 MiB 就是一行最多能分配的内存。
-	MaxResultColumns = 32
-	TruncateBytes    = "bytes"
+	// MaxValueBytes 是 SQLite 里单个值和表达式中间值的上限。比结果行松，
+	// 这样 length(一个 2 MiB 的值) 仍能返回那个很小的长度。
+	MaxValueBytes = 16 << 20
+	TruncateBytes = "bytes"
 )
 
 // Result 是截断之后的查询结果。RowCount 是实际返回的行数，不是库里的总行数。
@@ -42,12 +41,11 @@ type Result struct {
 }
 
 // Query 执行一条已经通过扫描的语句，最多取 limit 行，并且不超过 MaxResultBytes。
-// 不改写 SQL。多读一行只为了判断要不要标 truncated。limit 必须在 1 和 MaxLimit 之间。
-// 字节按读到的单元格累计。单独一行超过 MaxResultBytes，或者 SQLite 报 TOOBIG、列数超过
-// [MaxResultColumns] 时，返回 [errRowTooLarge]，这次已读出的行也不返回。
-// 多行各自没超限、加在一起超了，才截断并保留已经放下的行。
-// 单个值的长度上限装在只读连接上，保持 MaxResultBytes，不按列数再收紧。
-// 收紧会把 length、group_concat 这类中间值一并拦住，哪怕最后结果只有几十字节。
+// 多读一行只为了判断要不要标 truncated。limit 必须在 1 和 MaxLimit 之间。
+// 最终结果的每一列在算出来时就计入这一行。一行超过 MaxResultBytes，或者 SQLite 报 TOOBIG，
+// 返回 [errRowTooLarge]，这次已读出的行也不返回。
+// 多行各自没超限、加在一起超了，才截断并保留已经放下的完整行。
+// 表达式的中间值不受这 1 MiB 约束，只受连接上的 MaxValueBytes 约束。
 func Query(ctx context.Context, db Queryer, query string, limit int) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, &codedTimeout{err: err}
@@ -58,7 +56,7 @@ func Query(ctx context.Context, db Queryer, query string, limit int) (Result, er
 	if limit < 1 || limit > MaxLimit {
 		return Result{}, errors.New("sqlx: 行数上限不在允许范围内")
 	}
-	return queryRows(ctx, db, query, limit)
+	return queryRows(ctx, db, wrapResultCells(query), limit)
 }
 
 func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result, error) {
@@ -194,16 +192,17 @@ func isTooBig(err error) bool {
 	return strings.Contains(msg, "sqlite_toobig") || strings.Contains(msg, "too big")
 }
 
-// rowTooLarge 是整次查询该失败的结果过大。TOOBIG 包括超长的中间值。
-// 列数超过连接上的 SQLITE_LIMIT_COLUMN 时，查询还没把各列算出来就失败。
+// rowTooLarge 是整次查询该失败的结果过大。
+// TOOBIG 来自超过 MaxValueBytes 的单个值或中间值。结果行超过 MaxResultBytes 时，
+// 列门闩返回 [errRowTooLarge]，后面的列不再计算。
 func rowTooLarge(err error) bool {
 	if err == nil {
 		return false
 	}
-	if isTooBig(err) {
+	if errors.Is(err, errRowTooLarge) || isTooBig(err) {
 		return true
 	}
-	return strings.Contains(strings.ToLower(err.Error()), "too many columns")
+	return strings.Contains(err.Error(), errRowTooLarge.Error())
 }
 
 func isBusy(err error) bool {
