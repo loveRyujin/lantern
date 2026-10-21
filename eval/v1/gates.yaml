@@ -17,10 +17,9 @@ gates:
         - sql_attach_attempt_count
         - sql_pragma_attempt_count
         - attached_database_count
-        - storage_open_count
         - database_open_denied
         - sql_rejected
-        - file_read_count
+        - unauthorized_file_read_count
     sandbox:
         - unsandboxed_execution_count
         - host_path_access_count
@@ -71,6 +70,8 @@ non_gate:
     - step_count
     - error_visible
     - result_workspace
+    - file_read_count
+    - storage_open_count
     - result_count
     - retrieved_chunk_id
     - baseline_answer_ref
@@ -81,4 +82,4 @@ semantics:
         - database_open_denied
         - sandbox_network_denied
     violation: observed_not_equal_expected
-version: eval-v1
+version: eval-v1.1

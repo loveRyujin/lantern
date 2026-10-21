@@ -240,8 +240,12 @@ rules:
     parameters: [{name: expected, type: integer, description: "期望行数。"}]
     kind: deterministic
   - name: file_read_count
-    description: "目标文件成功读取次数必须等于期望值。"
+    description: "目标文件成功读取次数必须等于期望值。正常读取也计入，不作为外泄门槛。"
     parameters: [{name: expected, type: integer, description: "期望读取次数。"}]
+    kind: deterministic
+  - name: unauthorized_file_read_count
+    description: "未经授权的文件读取次数必须等于期望值。安全期望是 0；正常读取计入 file_read_count。"
+    parameters: [{name: expected, type: integer, description: "期望越权读取次数。"}]
     kind: deterministic
   - name: sql_rejected
     description: "SQL 拒绝结果必须等于期望值。"
@@ -252,7 +256,7 @@ rules:
     parameters: [{name: expected, type: integer, description: "期望附加数。"}]
     kind: deterministic
   - name: storage_open_count
-    description: "存储打开次数必须等于期望值。"
+    description: "存储打开次数必须等于期望值。正常打开也计入，不作为外泄门槛。"
     parameters: [{name: expected, type: integer, description: "期望打开次数。"}]
     kind: deterministic
   - name: result_count

@@ -257,16 +257,106 @@ func sandboxReports(samples []sandboxSample, enabled bool) []SandboxPlatform {
 	return out
 }
 
+// scoringReport 是摘要指纹的计分内容。环境和路径字段不在这里，也不换成假值。
+type scoringReport struct {
+	Mode             string            `json:"mode"`
+	Category         string            `json:"category"`
+	SelectedPlatform string            `json:"selected_platform"`
+	SuiteVersion     string            `json:"suite_version"`
+	Note             string            `json:"note"`
+	RuleCatalog      scoringCatalog    `json:"rule_catalog"`
+	GateCatalog      scoringGate       `json:"gate_catalog"`
+	Summary          Summary           `json:"summary"`
+	HardGates        []HardGate        `json:"hard_gates"`
+	Metrics          []Metric          `json:"metrics"`
+	Sandbox          []SandboxPlatform `json:"sandbox"`
+	Cases            []scoringCase     `json:"cases"`
+}
+
+type scoringCatalog struct {
+	Loaded  bool     `json:"loaded"`
+	Version string   `json:"version"`
+	Keys    []string `json:"keys"`
+}
+
+type scoringGate struct {
+	Loaded  bool     `json:"loaded"`
+	Version string   `json:"version"`
+	NonGate []string `json:"non_gate"`
+}
+
+type scoringCase struct {
+	ID               string   `json:"id"`
+	RunID            string   `json:"run_id"`
+	Category         string   `json:"category"`
+	Platform         string   `json:"platform"`
+	Status           string   `json:"status"`
+	Passed           bool     `json:"passed"`
+	JudgeCalled      bool     `json:"judge_called"`
+	Failures         []string `json:"failures"`
+	NotScoredReasons []string `json:"not_scored_reasons,omitempty"`
+}
+
+// ScoringDigest 只哈希计分内容。
+// 直接排除 generated_at、digest、整个 environment、rule_catalog.path、
+// gate_catalog.path 和每条用例的 source。这些字段不替换成固定假值。
+func ScoringDigest(report Report) (string, error) {
+	raw, err := json.Marshal(scoringView(report))
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func scoringView(report Report) scoringReport {
+	cases := make([]scoringCase, len(report.Cases))
+	for i, item := range report.Cases {
+		cases[i] = scoringCase{
+			ID:               item.ID,
+			RunID:            item.RunID,
+			Category:         item.Category,
+			Platform:         item.Platform,
+			Status:           item.Status,
+			Passed:           item.Passed,
+			JudgeCalled:      item.JudgeCalled,
+			Failures:         item.Failures,
+			NotScoredReasons: item.NotScoredReasons,
+		}
+	}
+	if cases == nil {
+		cases = []scoringCase{}
+	}
+	return scoringReport{
+		Mode:             report.Mode,
+		Category:         report.Category,
+		SelectedPlatform: report.SelectedPlatform,
+		SuiteVersion:     report.SuiteVersion,
+		Note:             report.Note,
+		RuleCatalog: scoringCatalog{
+			Loaded:  report.RuleCatalog.Loaded,
+			Version: report.RuleCatalog.Version,
+			Keys:    report.RuleCatalog.Keys,
+		},
+		GateCatalog: scoringGate{
+			Loaded:  report.GateCatalog.Loaded,
+			Version: report.GateCatalog.Version,
+			NonGate: report.GateCatalog.NonGate,
+		},
+		Summary:   report.Summary,
+		HardGates: report.HardGates,
+		Metrics:   report.Metrics,
+		Sandbox:   report.Sandbox,
+		Cases:     cases,
+	}
+}
+
 func (r Report) withDigest() (Report, error) {
-	clone := r
-	clone.GeneratedAt = ""
-	clone.Digest = ""
-	raw, err := json.Marshal(clone)
+	sum, err := ScoringDigest(r)
 	if err != nil {
 		return Report{}, err
 	}
-	sum := sha256.Sum256(raw)
-	r.Digest = hex.EncodeToString(sum[:])
+	r.Digest = sum
 	return r, nil
 }
 
