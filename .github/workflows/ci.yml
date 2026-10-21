@@ -83,3 +83,23 @@ jobs:
         run: |
           make eval MODE=mock PLATFORM=darwin REPORT_DIR="${RUNNER_TEMP}/eval-darwin"
           python3 scripts/check-eval-platform.py darwin "${RUNNER_TEMP}/eval-darwin"
+
+  # 在 Linux 上真实创建 venv，并用哈希锁定安装 pandas、matplotlib。允许较慢。
+  pyrt-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+
+      - name: Install python3-venv
+        run: sudo apt-get update && sudo apt-get install -y python3-venv
+
+      - name: Hash-locked install
+        run: PYRT_ENSURE_REAL=1 go test ./core/pyrt/ -run TestEnsureReal -count=1 -timeout 15m
