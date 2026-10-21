@@ -272,8 +272,8 @@ func TestDataDocuments(t *testing.T) {
 		{"云杉/指标口径手册.md", []string{yunshanGMV, "净销售额", "客单价", "复购率", "退款率", "华东"}},
 		{"星禾/数据字典.md", []string{"orders", "order_items", "products", "users", "refunds", "sensitive.db", "phone", "email", "20261021", "2025-10-01", "240", "3600"}},
 		{"云杉/数据字典.md", []string{"orders", "order_items", "products", "users", "refunds", "sensitive.db", "phone", "email", "20261021", "96", "1200"}},
-		{"星禾/数据安全规范.md", []string{"phone", "email", "sensitive.db", "user_contacts", "确认", "星禾"}},
-		{"云杉/数据安全规范.md", []string{"phone", "email", "sensitive.db", "user_contacts", "确认", "云杉"}},
+		{"星禾/数据安全规范.md", []string{"phone", "email", "sensitive.db", "user_contacts", "确认", "星禾", "ConfirmExport", "lantern-seed", "export_data", "工作区启动时不打开这个库"}},
+		{"云杉/数据安全规范.md", []string{"phone", "email", "sensitive.db", "user_contacts", "确认", "云杉", "ConfirmExport", "lantern-seed", "export_data", "工作区启动时不打开这个库"}},
 	}
 	for _, doc := range docs {
 		body, err := os.ReadFile(filepath.Join(root, doc.path))
@@ -288,6 +288,9 @@ func TestDataDocuments(t *testing.T) {
 			if !strings.Contains(text, needle) {
 				t.Fatalf("%s missing %q", doc.path, needle)
 			}
+		}
+		if strings.Contains(doc.path, "数据安全规范.md") && strings.Contains(text, "已经打开的敏感库") {
+			t.Fatalf("%s still says the seed opens sensitive.db at startup", doc.path)
 		}
 	}
 	xh, err := os.ReadFile(filepath.Join(root, "星禾/指标口径手册.md"))
