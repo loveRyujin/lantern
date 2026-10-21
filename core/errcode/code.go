@@ -29,6 +29,10 @@ const (
 	// PathEscape 表示要操作的路径上有符号链接，或解析之后不在调用方给出的根目录里。
 	// 调用方不得顺着链接删除或改写根目录外面的文件。
 	PathEscape Code = "path_escape"
+	// ExportUnconfirmed 表示没有一张可用的已批准导出确认，不能打开敏感库。
+	// 记录不存在、未批准、已拒绝、工作区或导出对象不一致、已过期、已使用，都是这个码。
+	// 调用方不得改走别的连接去读敏感原文。
+	ExportUnconfirmed Code = "export_unconfirmed"
 )
 
 // String 返回码值本身。
@@ -37,7 +41,7 @@ func (c Code) String() string { return string(c) }
 // Known 报告 c 是不是本包定义的稳定错误码。
 func (c Code) Known() bool {
 	switch c {
-	case Timeout, OOM, Killed, Exec, RuntimeUnavailable, SandboxUnavailable, EmbeddingMismatch, StreamTruncated, PathEscape:
+	case Timeout, OOM, Killed, Exec, RuntimeUnavailable, SandboxUnavailable, EmbeddingMismatch, StreamTruncated, PathEscape, ExportUnconfirmed:
 		return true
 	default:
 		return false
