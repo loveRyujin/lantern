@@ -2,6 +2,8 @@ package evalv1_test
 
 import (
 	"bytes"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -9,7 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/loveRyujin/lantern/internal/seed"
 	"go.yaml.in/yaml/v3"
+
+	_ "modernc.org/sqlite"
 )
 
 type caseFile struct {
@@ -19,6 +24,7 @@ type caseFile struct {
 type evalCase struct {
 	ID               string         `yaml:"id"`
 	Category         string         `yaml:"category"`
+	Platform         string         `yaml:"platform,omitempty"`
 	Input            map[string]any `yaml:"input"`
 	ExpectedBehavior string         `yaml:"expected_behavior"`
 	JudgingCriteria  judging        `yaml:"judging_criteria"`
@@ -52,6 +58,37 @@ type ruleParameter struct {
 	Description string `yaml:"description"`
 }
 
+type baselineContract struct {
+	Seed     uint64           `json:"seed"`
+	SeedHash string           `json:"seed_hash"`
+	Answers  []baselineAnswer `json:"answers"`
+}
+
+type baselineAnswer struct {
+	ID        string `json:"id"`
+	Workspace string `json:"workspace"`
+	SQL       string `json:"sql"`
+	Expected  int64  `json:"expected"`
+}
+
+type chunkContract struct {
+	Labels []chunkLabel `json:"labels"`
+}
+
+type chunkLabel struct {
+	ID       string `json:"id"`
+	Document string `json:"document"`
+	Heading  string `json:"heading"`
+	Anchor   string `json:"anchor"`
+}
+
+type approverContract struct {
+	Scripts []struct {
+		CaseID string `json:"case_id"`
+		Action string `json:"action"`
+	} `json:"scripts"`
+}
+
 func TestCaseFilesParseAndQuotasMatch(t *testing.T) {
 	t.Parallel()
 
@@ -62,8 +99,8 @@ func TestCaseFilesParseAndQuotasMatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 3 {
-		t.Fatalf("YAML 文件数 = %d，期望 3", len(paths))
+	if len(paths) != 9 {
+		t.Fatalf("YAML 文件数 = %d，期望 9", len(paths))
 	}
 
 	var all []evalCase
@@ -109,10 +146,134 @@ func TestCaseFilesParseAndQuotasMatch(t *testing.T) {
 	assertQuota(t, all, "benign_control", 5)
 	assertQuota(t, all, "tool_call.live", 25)
 	assertQuota(t, all, "tool_call.mock", 15)
+	assertQuota(t, all, "tool_call.w2", 2)
 	assertPrefixQuota(t, all, "workspace_isolation.", 8)
+	assertQuota(t, all, "confirmation", 18)
+	assertPrefixQuota(t, all, "rag.", 60)
+	assertQuota(t, all, "end_to_end", 30)
+	assertPrefixQuota(t, all, "sandbox.", 40)
+	assertPlatformQuota(t, all, "linux", 20)
+	assertPlatformQuota(t, all, "darwin", 20)
 
-	if got := len(all); got != 83 {
-		t.Fatalf("用例总数 = %d，期望 83", got)
+	if got := len(all); got != 233 {
+		t.Fatalf("冻结通过集用例总数 = %d，期望 233", got)
+	}
+}
+
+func TestNegativeGateFixturesAreExcludedAndViolating(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("negative-fixtures/cases.yaml.disabled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file caseFile
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&file); err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Cases) != 3 {
+		t.Fatalf("故意违规样本数 = %d，期望 3", len(file.Cases))
+	}
+	wantRule := map[string]string{
+		"NEG-GATE-LEAK":        "sensitive_plaintext_count:1",
+		"NEG-GATE-SIDE-EFFECT": "write_side_effect_count:1",
+		"NEG-GATE-SANDBOX":     "network_egress_success_count:1",
+	}
+	for _, c := range file.Cases {
+		if c.Input["excluded_from_frozen_pass_set"] != true {
+			t.Errorf("%s 未标记 excluded_from_frozen_pass_set", c.ID)
+		}
+		found := false
+		for _, rule := range c.JudgingCriteria.Deterministic {
+			if rule == wantRule[c.ID] {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s 缺少故意违规规则 %q", c.ID, wantRule[c.ID])
+		}
+	}
+}
+
+func TestDataContractsMatchSeedAndDocuments(t *testing.T) {
+	t.Parallel()
+	var baseline baselineContract
+	readJSON(t, "contracts/baseline-answers.json", &baseline)
+	if baseline.Seed != seed.DefaultSeed || len(baseline.Answers) != 30 {
+		t.Fatalf("baseline seed=%d answers=%d", baseline.Seed, len(baseline.Answers))
+	}
+	result, err := seed.Run(t.Context(), seed.Options{Root: t.TempDir(), Seed: baseline.Seed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Hash != baseline.SeedHash {
+		t.Fatalf("基准答案 seed hash = %s，实际 = %s", baseline.SeedHash, result.Hash)
+	}
+	dbPaths := make(map[string]string)
+	for _, workspace := range result.Workspaces {
+		dbPaths[workspace.ID] = filepath.Join(workspace.Dir, "analytics.db")
+	}
+	for _, answer := range baseline.Answers {
+		db, err := sql.Open("sqlite", dbPaths[answer.Workspace])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got int64
+		queryErr := db.QueryRowContext(t.Context(), answer.SQL).Scan(&got)
+		closeErr := db.Close()
+		if queryErr != nil {
+			t.Fatalf("%s: %v", answer.ID, queryErr)
+		}
+		if closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		if got != answer.Expected {
+			t.Errorf("%s 实算 = %d，冻结答案 = %d", answer.ID, got, answer.Expected)
+		}
+	}
+
+	var chunks chunkContract
+	readJSON(t, "contracts/chunk-labels.json", &chunks)
+	if len(chunks.Labels) != 20 {
+		t.Fatalf("chunk labels = %d，期望 20", len(chunks.Labels))
+	}
+	for _, label := range chunks.Labels {
+		body, err := os.ReadFile(filepath.Join("..", "..", "data", label.Document))
+		if err != nil {
+			t.Fatalf("%s: %v", label.ID, err)
+		}
+		text := string(body)
+		if !strings.Contains(text, "## "+label.Heading) || !strings.Contains(text, label.Anchor) {
+			t.Errorf("%s 的 heading 或 anchor 不在 %s", label.ID, label.Document)
+		}
+	}
+
+	var approver approverContract
+	readJSON(t, "contracts/approver-script.json", &approver)
+	if len(approver.Scripts) != 18 {
+		t.Fatalf("approver scripts = %d，期望 18", len(approver.Scripts))
+	}
+	for _, script := range approver.Scripts {
+		if script.CaseID == "" || script.Action == "" {
+			t.Errorf("Approver 脚本缺少 case_id 或 action: %+v", script)
+		}
+	}
+
+	var sensitive struct {
+		Workspaces []struct {
+			ID     string   `json:"id"`
+			Fields []string `json:"fields"`
+		} `json:"workspaces"`
+	}
+	readJSON(t, "contracts/sensitive-fields.json", &sensitive)
+	if len(sensitive.Workspaces) != 2 {
+		t.Fatalf("sensitive workspaces = %d", len(sensitive.Workspaces))
+	}
+	for _, workspace := range sensitive.Workspaces {
+		if strings.Join(workspace.Fields, ",") != "phone,email" {
+			t.Errorf("%s 敏感字段 = %v", workspace.ID, workspace.Fields)
+		}
 	}
 }
 
@@ -219,6 +380,13 @@ func validateCase(t *testing.T, path string, index int, c evalCase) {
 	if len(c.JudgingCriteria.Deterministic) == 0 {
 		t.Errorf("%s: 至少需要一条 deterministic 判定规则", where)
 	}
+	mock, ok := c.Input["mock"].(map[string]any)
+	if !ok || len(mock) == 0 {
+		t.Errorf("%s: input.mock 必须是非空观测映射", where)
+	}
+	if c.Platform != "" && c.Platform != "linux" && c.Platform != "darwin" {
+		t.Errorf("%s: platform %q 无效", where, c.Platform)
+	}
 	if c.JudgingCriteria.LLMJudge.Required {
 		if c.JudgingCriteria.LLMJudge.Model != "gemini-4-argon" {
 			t.Errorf("%s: LLM judge 模型 = %q，期望 gemini-4-argon", where, c.JudgingCriteria.LLMJudge.Model)
@@ -228,6 +396,17 @@ func validateCase(t *testing.T, path string, index int, c evalCase) {
 		}
 	} else if c.JudgingCriteria.LLMJudge.Model != "" || c.JudgingCriteria.LLMJudge.Rubric != "" {
 		t.Errorf("%s: 不需要 LLM judge 时不能设置 model 或 rubric", where)
+	}
+}
+
+func readJSON(t *testing.T, path string, target any) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, target); err != nil {
+		t.Fatalf("解析 %s: %v", path, err)
 	}
 }
 
@@ -254,5 +433,18 @@ func assertPrefixQuota(t *testing.T, cases []evalCase, prefix string, want int) 
 	}
 	if got != want {
 		t.Errorf("%s* 配额 = %d，期望 %d", prefix, got, want)
+	}
+}
+
+func assertPlatformQuota(t *testing.T, cases []evalCase, platform string, want int) {
+	t.Helper()
+	got := 0
+	for _, c := range cases {
+		if strings.HasPrefix(c.Category, "sandbox.") && c.Platform == platform {
+			got++
+		}
+	}
+	if got != want {
+		t.Errorf("sandbox platform %s 配额 = %d，期望 %d", platform, got, want)
 	}
 }
