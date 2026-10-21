@@ -63,6 +63,14 @@ func TestEnsureLockFileSymlinkIsNotFollowed(t *testing.T) {
 	outside := t.TempDir()
 	target := filepath.Join(outside, "precious.txt")
 	plantFile(t, target, "keep-outside")
+	beforeInfo, err := os.Lstat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeBody, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
 	before := snapshotTree(t, outside)
 
 	root := t.TempDir()
@@ -77,7 +85,7 @@ func TestEnsureLockFileSymlinkIsNotFollowed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := Config{Root: root, SearchPaths: []string{}}.Ensure(context.Background())
+	_, err = Config{Root: root, SearchPaths: []string{}}.Ensure(context.Background())
 	assertPathEscape(t, err)
 	var pe *PathError
 	if !errors.As(err, &pe) || pe == nil {
@@ -96,6 +104,17 @@ func TestEnsureLockFileSymlinkIsNotFollowed(t *testing.T) {
 	body, err := os.ReadFile(stale)
 	if err != nil || string(body) != "stale" {
 		t.Fatalf("锁文件是符号链接时清掉了残留: %q %v", body, err)
+	}
+	afterInfo, err := os.Lstat(target)
+	if err != nil {
+		t.Fatalf("符号链接指向的 Root 外文件被删掉了: %v", err)
+	}
+	if !os.SameFile(beforeInfo, afterInfo) {
+		t.Fatal("符号链接指向的 Root 外文件被新建替换了")
+	}
+	afterBody, err := os.ReadFile(target)
+	if err != nil || string(afterBody) != string(beforeBody) {
+		t.Fatalf("符号链接指向的 Root 外文件被写过: %q %v", afterBody, err)
 	}
 	if snap := snapshotTree(t, outside); snap != before {
 		t.Fatalf("跟随锁文件符号链接改动了 Root 外的文件\n之前:\n%s\n之后:\n%s", before, snap)
