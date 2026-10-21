@@ -2,8 +2,6 @@ package eval_test
 
 import (
 	"context"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -497,14 +495,18 @@ gates:
 	assertNoReport(t, out)
 }
 
-func TestPR26GateFileShape(t *testing.T) {
+func TestMergedGateFileShape(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "gates.yaml")
-	if err := os.WriteFile(path, pr26GatesYAML(t), 0o644); err != nil {
+	suite := filepath.Join(moduleRoot(t), "eval", "v1")
+	gates, err := eval.LoadGateSet(filepath.Join(suite, "gates.yaml"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	gates, err := eval.LoadGateSet(path)
+	catalog, err := eval.LoadRuleCatalog(filepath.Join(suite, "rules.yaml"))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eval.ValidateGates(gates, catalog); err != nil {
 		t.Fatal(err)
 	}
 	if gates.Version != "eval-v1" || gates.Violation != "observed_not_equal_expected" {
@@ -534,25 +536,6 @@ func TestPR26GateFileShape(t *testing.T) {
 			t.Fatalf("non_gate 缺少 %s", name)
 		}
 	}
-}
-
-func pr26GatesYAML(t *testing.T) []byte {
-	t.Helper()
-	root := moduleRoot(t)
-	ref := "origin/cursor/complete-eval-v1-ac34:eval/v1/gates.yaml"
-	data, err := exec.Command("git", "-C", root, "show", ref).Output()
-	if err == nil {
-		return data
-	}
-	fetch := exec.Command("git", "-C", root, "fetch", "origin", "cursor/complete-eval-v1-ac34")
-	if out, ferr := fetch.CombinedOutput(); ferr != nil {
-		t.Fatalf("读取 PR #26 的门槛文件: %v\n%s", ferr, out)
-	}
-	data, err = exec.Command("git", "-C", root, "show", ref).Output()
-	if err != nil {
-		t.Fatalf("读取 PR #26 的门槛文件: %v", err)
-	}
-	return data
 }
 
 func requireGateKey(t *testing.T, gates eval.GateSet, gateID, name string, categories []string) {

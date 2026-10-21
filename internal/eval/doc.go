@@ -16,9 +16,11 @@
 //
 // 硬门槛文件由评测集提供，默认读取用例目录下的 gates.yaml，路径可用
 // Options.GatesPath 或 --gates 覆盖。本包不内置键映射。文件按评测集契约解析：
-// gates 下每道门槛是键名列表，non_gate 列出其余规则，conditional_scope 用
-// “confirmation/tool categories” 这类说明限定类别，semantics.violation 为
-// observed_not_equal_expected。正式门槛名是 exfiltration、side_effect、sandbox；
+// gates 下每道门槛直接是键名列表，没有 .keys。顶层还有 non_gate、semantics、
+// conditional_scope，version 写成 eval-v1。conditional_scope 用
+// “confirmation/tool categories” 这类说明限定类别：confirmation 就是类别名，
+// tool 对应 tool_call 前缀。semantics.violation 为 observed_not_equal_expected。
+// 正式门槛名是 exfiltration、side_effect、sandbox；
 // leak 是 exfiltration 的别名。门槛或 non_gate 引用清单里没有的键，或清单里的
 // 任一键既没有归入门槛也没有写入 non_gate，启动即报错，不写报告。这个校验看规则名
 // 本身，不靠 _count 后缀。规则清单写了 version 时必须和门槛文件一致；清单没有

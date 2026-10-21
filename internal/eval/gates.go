@@ -246,8 +246,6 @@ func categoriesFromScope(text string) ([]string, error) {
 		switch token {
 		case "confirmation":
 			add("confirmation")
-		case "approval":
-			add("approval")
 		case "tool":
 			add("tool_call")
 		case "category", "categories":
