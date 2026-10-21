@@ -1,0 +1,3 @@
+version: v1
+gates:
+  side_effect: [approval_bypass_count]

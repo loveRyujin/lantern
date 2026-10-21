@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"time"
 	"unicode"
 
 	"github.com/loveRyujin/lantern/core/approval"
@@ -37,13 +36,17 @@ func (g ExportGrant) ApprovalID() string { return g.approvalID }
 
 // ConfirmExport 在 runs.approvals 里找到一条可用的导出确认后签发凭证。
 //
-// 记录必须已经存在，并且同时满足：决定是批准、动作是 export_data、
+// cc 由调用方按当前运行和步骤填好。状态机拿它和确认单逐项比较，
+// 不会从确认单自己反推运行或步骤。任何一项对不上都返回 approval_mismatch，
+// 确认单保持原状。
+//
+// 记录必须已经存在，并且同时满足：状态是 approved、动作是 export_data、
 // workspace_id 等于这个工作区、export_object 等于 exportObject、
-// expires_at 晚于现在、consumed_at 为空。签发成功会写上 consumed_at，
+// expires_at 晚于现在。签发成功会把状态改成 consumed，
 // 所以同一张确认单不能再签发第二次。本方法不创建、不打开 sensitive.db。
 // 任意字符串、未批准、已拒绝、别的工作区、别的导出对象、过期或重放都返回
 // [ErrExportUnconfirmed]，错误码是 export_unconfirmed。
-func (h *Handle) ConfirmExport(ctx context.Context, approvalID, exportObject string) (ExportGrant, error) {
+func (h *Handle) ConfirmExport(ctx context.Context, approvalID string, cc approval.ConsumeContext, exportObject string) (ExportGrant, error) {
 	if err := ctx.Err(); err != nil {
 		return ExportGrant{}, err
 	}
@@ -62,7 +65,7 @@ func (h *Handle) ConfirmExport(ctx context.Context, approvalID, exportObject str
 	if closed {
 		return ExportGrant{}, fmt.Errorf("workspace: closed: %w", ErrExportUnconfirmed)
 	}
-	if err := h.consumeApproval(ctx, approvalID, exportObject); err != nil {
+	if err := h.consumeApproval(ctx, approvalID, cc, exportObject); err != nil {
 		return ExportGrant{}, err
 	}
 	h.mu.Lock()
@@ -102,64 +105,22 @@ func (h *Handle) OpenSensitive(ctx context.Context, grant ExportGrant) (*sql.DB,
 	return db, nil
 }
 
-func (h *Handle) consumeApproval(ctx context.Context, approvalID, exportObject string) error {
-	tx, err := h.Runs.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("workspace: approval: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var workspaceID, action, object, decision, expiresAt string
-	var consumed sql.NullString
-	err = tx.QueryRowContext(ctx, `
-		SELECT workspace_id, action, export_object, decision, expires_at, consumed_at
-		FROM approvals WHERE id = ?`, approvalID,
-	).Scan(&workspaceID, &action, &object, &decision, &expiresAt, &consumed)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrExportUnconfirmed
-	}
-	if err != nil {
-		return fmt.Errorf("workspace: approval: %w", err)
-	}
-	if !approvalUsable(h.ID, exportObject, workspaceID, action, object, decision, expiresAt, consumed.Valid, time.Now()) {
-		return ErrExportUnconfirmed
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := tx.ExecContext(ctx, `
-		UPDATE approvals SET consumed_at = ?
-		WHERE id = ? AND consumed_at IS NULL`, now, approvalID,
-	)
-	if err != nil {
-		return fmt.Errorf("workspace: approval: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("workspace: approval: %w", err)
-	}
-	if n != 1 {
-		return ErrExportUnconfirmed
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("workspace: approval: %w", err)
-	}
-	return nil
+func (h *Handle) consumeApproval(ctx context.Context, approvalID string, cc approval.ConsumeContext, exportObject string) error {
+	err := approval.New(h.Runs).ConsumeForExport(ctx, approvalID, cc, h.ID, exportObject)
+	return mapExportError(err)
 }
 
-func approvalUsable(handleID, wantObject, workspaceID, action, object, decision, expiresAt string, consumed bool, now time.Time) bool {
-	if workspaceID != handleID || action != actionExportData || object != wantObject {
-		return false
+func mapExportError(err error) error {
+	if err == nil {
+		return nil
 	}
-	if decision != string(approval.ActionApprove) || consumed {
-		return false
+	if errors.Is(err, approval.ErrMismatch) || errors.Is(err, approval.ErrSnapshotMismatch) {
+		return err
 	}
-	exp, err := time.Parse(time.RFC3339Nano, expiresAt)
-	if err != nil {
-		exp, err = time.Parse(time.RFC3339, expiresAt)
-		if err != nil {
-			return false
-		}
+	if errors.Is(err, ErrExportUnconfirmed) {
+		return err
 	}
-	return exp.After(now)
+	return fmt.Errorf("workspace: approval: %w: %w", ErrExportUnconfirmed, err)
 }
 
 func (h *Handle) reserve(grant ExportGrant) error {

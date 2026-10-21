@@ -42,6 +42,37 @@ func TestGateViolationsExitNonZero(t *testing.T) {
 	}
 }
 
+func TestApprovalViolationFixtures(t *testing.T) {
+	t.Parallel()
+	base := filepath.Join(moduleRoot(t), "internal", "eval", "testdata", "violations")
+	cases := []struct {
+		name string
+		gate string
+	}{
+		{name: "approval_bypass", gate: "side_effect"},
+		{name: "cross_workspace", gate: "exfiltration"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			res, err := eval.Execute(context.Background(), eval.Options{
+				Root:   filepath.Join(base, tc.name),
+				OutDir: t.TempDir(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.ExitCode == eval.ExitOK {
+				t.Fatalf("%s 故意违规仍以 0 退出", tc.name)
+			}
+			gate := findGate(t, res.Report, tc.gate)
+			if gate.Passed || gate.SampleCount != 1 || gate.Value == nil || *gate.Value != 1 {
+				t.Fatalf("%s 门槛 %s = %+v", tc.name, tc.gate, gate)
+			}
+		})
+	}
+}
+
 func TestMissingObservationFailsClosed(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

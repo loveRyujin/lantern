@@ -162,15 +162,9 @@ func (l *Loop) Run(ctx context.Context, in Input) (Outcome, error) {
 
 		if len(resp.Message.ToolCalls) == 0 {
 			if tools.TruncatedFinish(resp.FinishReason) {
-				out, stop := l.noteArgument(runCtx, in, modelCalls, &failures, tools.CodeArgumentsIncomplete)
-				if stop {
-					return out, out.Err
-				}
-				messages = append(messages, llm.Message{
-					Role:    llm.RoleUser,
-					Content: feedback(tools.CodeArgumentsIncomplete, "回复因输出截断而不完整"),
-				})
-				continue
+				// 只有最终回答被截断。这不是工具失败，不计入连续校验失败。
+				err := agentErr(CodeAnswerIncomplete, "最终回答因输出截断而不完整", true)
+				return l.finish(runCtx, in, modelCalls, StateFailed, err)
 			}
 			return l.finish(runCtx, in, modelCalls, StateCompleted, nil, resp.Message.Content)
 		}
@@ -204,6 +198,16 @@ func (l *Loop) handleCalls(ctx context.Context, in Input, resp llm.Response, fai
 		}
 	}
 	if bad {
+		for i := range items {
+			err := items[i].err
+			if err == nil {
+				err = tools.Skip()
+			}
+			if recErr := l.recordCallError(ctx, in, &items[i], err); recErr != nil {
+				out, _ := l.finish(ctx, in, modelCalls, StateFailed, recErr)
+				return out, false, nil
+			}
+		}
 		if argBad && failures.noteArgumentStep() {
 			code := tools.CodeArgumentsInvalid
 			for _, item := range items {
@@ -233,8 +237,12 @@ func (l *Loop) handleCalls(ctx context.Context, in Input, resp llm.Response, fai
 			return out, false, nil
 		}
 		if items[i].err != nil {
+			if recErr := l.recordCallError(ctx, in, &items[i], items[i].err); recErr != nil {
+				out, _ := l.finish(ctx, in, modelCalls, StateFailed, recErr)
+				return out, false, nil
+			}
 			if tools.ArgumentFailure(items[i].err) {
-				// 替换参数没通过校验。计数已在 runPrepared 里记过。
+				// 用户批准时带回的替换参数没通过校验。不计入连续失败。
 			} else {
 				failures.noteExecutionFailure()
 			}
@@ -268,7 +276,7 @@ func (l *Loop) runPrepared(ctx context.Context, in Input, resp llm.Response, ite
 		return Outcome{}, false
 	}
 	if decision.NeedsConfirm {
-		out, stop, ok := l.confirm(ctx, in, resp, item, decision, failures, modelCalls)
+		out, stop, ok := l.confirm(ctx, in, resp, item, decision, modelCalls)
 		if stop || !ok {
 			return out, stop
 		}
@@ -308,15 +316,20 @@ func (l *Loop) runPrepared(ctx context.Context, in Input, resp llm.Response, ite
 
 // confirm 落库并征求决定。ok 为 false 表示这个调用不执行，错误在 item.err。
 // stop 表示整次运行结束。
-func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *callItem, decision policy.Decision, failures *failureCounter, modelCalls int) (Outcome, bool, bool) {
+func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *callItem, decision policy.Decision, modelCalls int) (Outcome, bool, bool) {
 	if l.Tickets == nil || l.Approver == nil {
 		item.err = plain("需要确认但没有确认单存储或 Approver")
 		return Outcome{}, false, false
 	}
 	p := item.prepared
+	stepID := item.call.ID
+	if stepID == "" {
+		stepID = newID()
+	}
 	ticket := approval.Ticket{
 		ID:            newID(),
 		RunID:         in.RunID,
+		StepID:        stepID,
 		WorkspaceID:   in.WorkspaceID,
 		Prompt:        in.Prompt,
 		Action:        p.Name,
@@ -325,6 +338,7 @@ func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *c
 		Sensitive:     append([]string(nil), decision.Sensitive...),
 		EstimatedRows: decision.EstimatedRows,
 		Risk:          decision.Risk,
+		ExpiresAt:     l.clock()().Add(24 * time.Hour),
 	}
 	if ticket.Risk == "" {
 		ticket.Risk = decision.Reason
@@ -359,6 +373,10 @@ func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *c
 	}
 	switch choice.Action {
 	case approval.ActionReject:
+		if err := l.applyDecision(ctx, ticket.ID, choice); err != nil {
+			out, _ := l.finish(ctx, in, modelCalls, StateFailed, err)
+			return out, true, false
+		}
 		out, _ := l.finish(ctx, in, modelCalls, StateRejected, agentErr("approval_rejected", "确认被拒绝", false))
 		return out, true, false
 	case approval.ActionDefer:
@@ -367,12 +385,8 @@ func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *c
 	case approval.ActionApprove:
 		if choice.OverridesSnapshot() {
 			if _, err := l.Tools.PrepareRaw(p.Name, choice.Params); err != nil {
+				// 替换参数不符合 Schema：不执行，把校验错误交回去，不计入连续失败。
 				item.err = err
-				if tools.ArgumentFailure(err) && failures.noteArgumentStep() {
-					code, _ := tools.CodeOf(err)
-					out, _ := l.noteArgumentAlreadyCounted(ctx, in, modelCalls, code)
-					return out, true, false
-				}
 				return Outcome{}, false, false
 			}
 			if out, stop := l.hashMismatch(ctx, in, modelCalls, choice.Params, ticket.ParamsHash, "批准带回的参数和冻结快照不一致"); stop {
@@ -384,6 +398,10 @@ func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *c
 			return out, true, false
 		}
 		if out, stop := l.hashMismatch(ctx, in, modelCalls, p.Args, p.Hash, "执行前参数哈希不一致"); stop {
+			return out, true, false
+		}
+		if err := l.applyDecision(ctx, ticket.ID, choice); err != nil {
+			out, _ := l.finish(ctx, in, modelCalls, StateFailed, err)
 			return out, true, false
 		}
 		return Outcome{}, false, true
@@ -489,6 +507,41 @@ func runTool(ctx context.Context, tool tools.Tool, call tools.Call) (tools.Resul
 			return tools.Result{}, errToolIgnoredTimeout, true
 		}
 	}
+}
+
+func (l *Loop) applyDecision(ctx context.Context, id string, decision approval.Decision) error {
+	decider, ok := l.Tickets.(approval.Decider)
+	if !ok || decider == nil {
+		return nil
+	}
+	return decider.Decide(ctx, id, decision)
+}
+
+func (l *Loop) recordCallError(ctx context.Context, in Input, item *callItem, callErr error) error {
+	if l == nil || l.Log == nil || callErr == nil || item == nil {
+		return nil
+	}
+	code, _ := tools.CodeOf(callErr)
+	if code == "" {
+		code = "tool_failed"
+	}
+	name := item.call.Name
+	if name == "" {
+		name = item.prepared.Name
+	}
+	status := "failed"
+	if code == tools.CodeCallSkipped {
+		status = "skipped"
+	}
+	return l.Log.Append(ctx, RunEvent{
+		RunID:      in.RunID,
+		Kind:       code,
+		ToolName:   name,
+		ParamsHash: item.prepared.Hash,
+		Summary:    code,
+		Status:     status,
+		Code:       code,
+	})
 }
 
 func (l *Loop) recordTool(ctx context.Context, in Input, item *callItem, tokens int) error {

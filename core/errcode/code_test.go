@@ -20,9 +20,10 @@ func TestCodeValues(t *testing.T) {
 		errcode.StreamTruncated:    "stream_truncated",
 		errcode.PathEscape:         "path_escape",
 		errcode.ExportUnconfirmed:  "export_unconfirmed",
+		errcode.ApprovalMismatch:   "approval_mismatch",
 	}
-	if len(want) != 10 {
-		t.Fatalf("稳定错误码数量 = %d，想要 10", len(want))
+	if len(want) != 11 {
+		t.Fatalf("稳定错误码数量 = %d，想要 11", len(want))
 	}
 	for code, text := range want {
 		if code.String() != text {

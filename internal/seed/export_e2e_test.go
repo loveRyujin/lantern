@@ -31,7 +31,14 @@ func TestExportEndToEndFromSeed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	grant, err := h.ConfirmExport(ctx, approvalID, object)
+	cc, err := seed.SeedConsumeContext(approvalID, object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cc.RunID != "seed-"+approvalID || cc.StepID != "seed" || cc.ArgsHash == "" {
+		t.Fatalf("种子消费上下文 = %+v", cc)
+	}
+	grant, err := h.ConfirmExport(ctx, approvalID, cc, object)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +66,7 @@ func TestExportEndToEndFromSeed(t *testing.T) {
 		}
 	}
 
-	again, err := h.ConfirmExport(ctx, approvalID, object)
+	again, err := h.ConfirmExport(ctx, approvalID, cc, object)
 	if !errors.Is(err, workspace.ErrExportUnconfirmed) {
 		t.Fatalf("second confirm err = %v, want ErrExportUnconfirmed", err)
 	}

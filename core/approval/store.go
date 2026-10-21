@@ -10,3 +10,10 @@ import "context"
 type Store interface {
 	Create(ctx context.Context, ticket Ticket) error
 }
+
+// Decider 把 Approver 返回的决定写回确认单。
+// 只有状态机能改审批决定。Agent 在 Create 并征求决定之后，
+// 如果存储同时实现了 Decider，就调用 Decide。内存假存储可以只实现 Store。
+type Decider interface {
+	Decide(ctx context.Context, id string, decision Decision) error
+}

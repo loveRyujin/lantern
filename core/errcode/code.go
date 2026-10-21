@@ -33,6 +33,9 @@ const (
 	// 记录不存在、未批准、已拒绝、工作区或导出对象不一致、已过期、已使用，都是这个码。
 	// 调用方不得改走别的连接去读敏感原文。
 	ExportUnconfirmed Code = "export_unconfirmed"
+	// ApprovalMismatch 表示调用方拿来核对的运行、步骤或参数哈希和确认单不一致。
+	// 确认单状态不变。它不是 export_unconfirmed：对不上号和「没有可用确认」是两件事。
+	ApprovalMismatch Code = "approval_mismatch"
 )
 
 // String 返回码值本身。
@@ -41,7 +44,7 @@ func (c Code) String() string { return string(c) }
 // Known 报告 c 是不是本包定义的稳定错误码。
 func (c Code) Known() bool {
 	switch c {
-	case Timeout, OOM, Killed, Exec, RuntimeUnavailable, SandboxUnavailable, EmbeddingMismatch, StreamTruncated, PathEscape, ExportUnconfirmed:
+	case Timeout, OOM, Killed, Exec, RuntimeUnavailable, SandboxUnavailable, EmbeddingMismatch, StreamTruncated, PathEscape, ExportUnconfirmed, ApprovalMismatch:
 		return true
 	default:
 		return false

@@ -90,13 +90,13 @@ func TestExportAPIsRefuseWithoutGrant(t *testing.T) {
 	}
 	assertSensitiveUntouched(t, dir)
 
-	if _, err := h.ConfirmExport(ctx, "", "users"); !errors.Is(err, workspace.ErrInvalidApproval) || !errors.Is(err, workspace.ErrExportUnconfirmed) {
+	if _, err := h.ConfirmExport(ctx, "", approval.ConsumeContext{}, "users"); !errors.Is(err, workspace.ErrInvalidApproval) || !errors.Is(err, workspace.ErrExportUnconfirmed) {
 		t.Fatalf("ConfirmExport empty: %v", err)
 	}
 	assertSensitiveUntouched(t, dir)
 
 	// 任意字符串不是审批记录，不能签发凭证，也不能打开敏感库。
-	grant, err := h.ConfirmExport(ctx, "apr-outside", "users")
+	grant, err := h.ConfirmExport(ctx, "apr-outside", approval.ConsumeContext{}, "users")
 	if !errors.Is(err, workspace.ErrExportUnconfirmed) {
 		t.Fatalf("arbitrary token confirmed: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestHandleDoesNotExportSensitiveField(t *testing.T) {
 func TestOpenSensitiveForgedToken(t *testing.T) {
 	ctx := t.Context()
 	h, dir := newExportWorkspace(t, ctx, "forged")
-	grant, err := h.ConfirmExport(ctx, "forged-token", "users")
+	grant, err := h.ConfirmExport(ctx, "forged-token", approval.ConsumeContext{}, "users")
 	assertExportDenied(t, ctx, h, dir, grant, err)
 }
 
@@ -147,11 +147,11 @@ func TestOpenSensitiveUnapproved(t *testing.T) {
 	ctx := t.Context()
 	h, dir := newExportWorkspace(t, ctx, "pending")
 	insertApproval(t, ctx, h, "apr-pending", h.ID, "export_data", "users", "", time.Now().Add(time.Hour))
-	grant, err := h.ConfirmExport(ctx, "apr-pending", "users")
+	grant, err := h.ConfirmExport(ctx, "apr-pending", apiCC("apr-pending"), "users")
 	assertExportDenied(t, ctx, h, dir, grant, err)
 
 	insertApproval(t, ctx, h, "apr-defer", h.ID, "export_data", "users", string(approval.ActionDefer), time.Now().Add(time.Hour))
-	grant, err = h.ConfirmExport(ctx, "apr-defer", "users")
+	grant, err = h.ConfirmExport(ctx, "apr-defer", apiCC("apr-defer"), "users")
 	assertExportDenied(t, ctx, h, dir, grant, err)
 }
 
@@ -159,7 +159,7 @@ func TestOpenSensitiveRejected(t *testing.T) {
 	ctx := t.Context()
 	h, dir := newExportWorkspace(t, ctx, "rejected")
 	insertApproval(t, ctx, h, "apr-reject", h.ID, "export_data", "users", string(approval.ActionReject), time.Now().Add(time.Hour))
-	grant, err := h.ConfirmExport(ctx, "apr-reject", "users")
+	grant, err := h.ConfirmExport(ctx, "apr-reject", apiCC("apr-reject"), "users")
 	assertExportDenied(t, ctx, h, dir, grant, err)
 }
 
@@ -167,7 +167,7 @@ func TestOpenSensitiveCrossWorkspace(t *testing.T) {
 	ctx := t.Context()
 	h, dir := newExportWorkspace(t, ctx, "here")
 	insertApproval(t, ctx, h, "apr-there", "there", "export_data", "users", string(approval.ActionApprove), time.Now().Add(time.Hour))
-	grant, err := h.ConfirmExport(ctx, "apr-there", "users")
+	grant, err := h.ConfirmExport(ctx, "apr-there", apiCC("apr-there"), "users")
 	assertExportDenied(t, ctx, h, dir, grant, err)
 }
 
@@ -175,11 +175,11 @@ func TestOpenSensitiveWrongObject(t *testing.T) {
 	ctx := t.Context()
 	h, dir := newExportWorkspace(t, ctx, "object")
 	insertApproval(t, ctx, h, "apr-object", h.ID, "export_data", "orders", string(approval.ActionApprove), time.Now().Add(time.Hour))
-	grant, err := h.ConfirmExport(ctx, "apr-object", "users")
+	grant, err := h.ConfirmExport(ctx, "apr-object", apiCC("apr-object"), "users")
 	assertExportDenied(t, ctx, h, dir, grant, err)
 
 	// 对象不一致不能把确认单用掉，正确的对象仍然可以打开一次。
-	grant, err = h.ConfirmExport(ctx, "apr-object", "orders")
+	grant, err = h.ConfirmExport(ctx, "apr-object", apiCC("apr-object"), "orders")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestOpenSensitiveExpired(t *testing.T) {
 	ctx := t.Context()
 	h, dir := newExportWorkspace(t, ctx, "expired")
 	insertApproval(t, ctx, h, "apr-expired", h.ID, "export_data", "users", string(approval.ActionApprove), time.Now().Add(-time.Hour))
-	grant, err := h.ConfirmExport(ctx, "apr-expired", "users")
+	grant, err := h.ConfirmExport(ctx, "apr-expired", apiCC("apr-expired"), "users")
 	assertExportDenied(t, ctx, h, dir, grant, err)
 }
 
@@ -202,7 +202,7 @@ func TestOpenSensitiveNotExportAction(t *testing.T) {
 	ctx := t.Context()
 	h, dir := newExportWorkspace(t, ctx, "write")
 	insertApproval(t, ctx, h, "apr-write", h.ID, "write_action", "users", string(approval.ActionApprove), time.Now().Add(time.Hour))
-	grant, err := h.ConfirmExport(ctx, "apr-write", "users")
+	grant, err := h.ConfirmExport(ctx, "apr-write", apiCC("apr-write"), "users")
 	assertExportDenied(t, ctx, h, dir, grant, err)
 }
 
@@ -210,7 +210,7 @@ func TestOpenSensitiveReplay(t *testing.T) {
 	ctx := t.Context()
 	h, _ := newExportWorkspace(t, ctx, "replay")
 	insertApproval(t, ctx, h, "apr-replay", h.ID, "export_data", "users", string(approval.ActionApprove), time.Now().Add(time.Hour))
-	grant, err := h.ConfirmExport(ctx, "apr-replay", "users")
+	grant, err := h.ConfirmExport(ctx, "apr-replay", apiCC("apr-replay"), "users")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestOpenSensitiveReplay(t *testing.T) {
 	if code, ok := errcode.CodeOf(err); !ok || code != errcode.ExportUnconfirmed {
 		t.Fatalf("replay grant code = %s, ok %v", code, ok)
 	}
-	reissued, err := h.ConfirmExport(ctx, "apr-replay", "users")
+	reissued, err := h.ConfirmExport(ctx, "apr-replay", apiCC("apr-replay"), "users")
 	if !errors.Is(err, workspace.ErrExportUnconfirmed) {
 		t.Fatalf("replay approval: %v", err)
 	}
@@ -240,6 +240,14 @@ func TestOpenSensitiveReplay(t *testing.T) {
 	if opened != nil || !errors.Is(err, workspace.ErrExportUnconfirmed) {
 		t.Fatalf("replay open: db=%v err=%v", opened, err)
 	}
+}
+
+func apiCC(id string) approval.ConsumeContext {
+	hash, err := approval.ParamsHash([]byte("{}"))
+	if err != nil {
+		panic(err)
+	}
+	return approval.ConsumeContext{RunID: "run-" + id, StepID: "step", ArgsHash: hash}
 }
 
 func newExportWorkspace(t *testing.T, ctx context.Context, id string) (*workspace.Handle, string) {
@@ -266,13 +274,24 @@ func insertApproval(t *testing.T, ctx context.Context, h *workspace.Handle, id, 
 	if decision != "" {
 		decided = now
 	}
+	hash, err := approval.ParamsHash([]byte("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := string(approval.StatePending)
+	switch decision {
+	case string(approval.ActionApprove):
+		state = string(approval.StateApproved)
+	case string(approval.ActionReject):
+		state = string(approval.StateRejected)
+	}
 	if _, err := h.Runs.ExecContext(ctx, `
 		INSERT INTO approvals (
 			id, run_id, step_id, params_hash, params_json, decision, created_at, decided_at,
-			workspace_id, action, export_object, expires_at
-		) VALUES (?, ?, 'step', ?, '{}', ?, ?, ?, ?, ?, ?, ?)`,
-		id, runID, strings.Repeat("ab", 32), decision, now, decided,
-		workspaceID, action, object, expires.UTC().Format(time.RFC3339Nano),
+			workspace_id, action, export_object, expires_at, state, version
+		) VALUES (?, ?, 'step', ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		id, runID, hash, decision, now, decided,
+		workspaceID, action, object, expires.UTC().Format(time.RFC3339Nano), state,
 	); err != nil {
 		t.Fatalf("insert approval: %v", err)
 	}

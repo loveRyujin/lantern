@@ -60,7 +60,7 @@ func TestCreateOpenLayout(t *testing.T) {
 		}
 		want := 1
 		if db == h.Runs {
-			want = 2
+			want = 3
 		}
 		if n != want {
 			t.Fatalf("schema_migrations = %d, want %d", n, want)
@@ -93,8 +93,8 @@ func TestCreateOpenLayout(t *testing.T) {
 	if err := reopened.Runs.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 {
-		t.Fatalf("reopen runs migrations = %d, want 2", n)
+	if n != 3 {
+		t.Fatalf("reopen runs migrations = %d, want 3", n)
 	}
 	assertSensitiveAbsent(t, reopened.Dir)
 }
@@ -429,22 +429,42 @@ func insertExportApproval(t *testing.T, ctx context.Context, h *Handle, row expo
 	if row.decision != "" {
 		decided = now
 	}
+	hash, err := approval.ParamsHash([]byte("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := string(approval.StatePending)
+	switch row.decision {
+	case string(approval.ActionApprove):
+		state = string(approval.StateApproved)
+	case string(approval.ActionReject):
+		state = string(approval.StateRejected)
+	}
 	if _, err := h.Runs.ExecContext(ctx, `
 		INSERT INTO approvals (
 			id, run_id, step_id, params_hash, params_json, decision, created_at, decided_at,
-			workspace_id, action, export_object, expires_at
-		) VALUES (?, ?, 'step', ?, '{}', ?, ?, ?, ?, ?, ?, ?)`,
-		row.id, runID, strings.Repeat("ab", 32), row.decision, now, decided,
+			workspace_id, action, export_object, expires_at, state, version
+		) VALUES (?, ?, 'step', ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		row.id, runID, hash, row.decision, now, decided,
 		row.workspaceID, row.action, row.object, row.expiresAt.UTC().Format(time.RFC3339Nano),
+		state,
 	); err != nil {
 		t.Fatalf("insert approval: %v", err)
 	}
 }
 
+func exportCC(approvalID string) approval.ConsumeContext {
+	hash, err := approval.ParamsHash([]byte("{}"))
+	if err != nil {
+		panic(err)
+	}
+	return approval.ConsumeContext{RunID: "run-" + approvalID, StepID: "step", ArgsHash: hash}
+}
+
 func mustOpenSensitive(t *testing.T, ctx context.Context, h *Handle, approvalID string) *sql.DB {
 	t.Helper()
 	mustApproveExport(t, ctx, h, approvalID, exportObjectContacts)
-	grant, err := h.ConfirmExport(ctx, approvalID, exportObjectContacts)
+	grant, err := h.ConfirmExport(ctx, approvalID, exportCC(approvalID), exportObjectContacts)
 	if err != nil {
 		t.Fatalf("ConfirmExport(%q): %v", approvalID, err)
 	}

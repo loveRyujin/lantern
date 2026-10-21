@@ -165,7 +165,7 @@ func TestMakeEvalNegativeExitsNonZero(t *testing.T) {
 	for _, item := range report.Cases {
 		seen[item.ID] = item
 	}
-	for _, id := range []string{"violate-exfiltration", "violate-side-effect", "violate-sandbox"} {
+	for _, id := range []string{"violate-exfiltration", "violate-side-effect", "violate-sandbox", "violate-approval-bypass", "violate-cross-workspace"} {
 		item, ok := seen[id]
 		if !ok || item.Status != "failed" {
 			t.Fatalf("%s = %+v", id, item)

@@ -1,0 +1,2 @@
+rules:
+  - cross_workspace_leak_count

@@ -21,6 +21,10 @@ type RunEvent struct {
 	Summary    string
 	Duration   time.Duration
 	Tokens     int
+	// Status 是 ok、failed 或 skipped。成功步骤可以留空。
+	Status string
+	// Code 是失败或跳过时的错误码。
+	Code string
 }
 
 type eventPayload struct {
@@ -29,6 +33,8 @@ type eventPayload struct {
 	Summary    string `json:"summary"`
 	DurationNS int64  `json:"duration_ns"`
 	Tokens     int    `json:"tokens"`
+	Status     string `json:"status,omitempty"`
+	Code       string `json:"code,omitempty"`
 }
 
 // RunLog 追加 run_events。
@@ -83,6 +89,8 @@ func (s *SQLiteLog) Append(ctx context.Context, ev RunEvent) error {
 		Summary:    ev.Summary,
 		DurationNS: ev.Duration.Nanoseconds(),
 		Tokens:     ev.Tokens,
+		Status:     ev.Status,
+		Code:       ev.Code,
 	})
 	if err != nil {
 		return err

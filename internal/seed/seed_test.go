@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loveRyujin/lantern/core/approval"
 	"github.com/loveRyujin/lantern/core/errcode"
 	"github.com/loveRyujin/lantern/core/workspace"
 	"github.com/loveRyujin/lantern/internal/seed"
@@ -327,7 +328,7 @@ func TestNoGrantCannotWriteSensitive(t *testing.T) {
 	t.Cleanup(func() { _ = h.Close() })
 	assertSensitiveMissing(t, h.Dir)
 
-	_, err = h.ConfirmExport(ctx, "lantern-seed-missing", "user_contacts")
+	_, err = h.ConfirmExport(ctx, "lantern-seed-missing", approval.ConsumeContext{}, "user_contacts")
 	if !errors.Is(err, workspace.ErrExportUnconfirmed) {
 		t.Fatalf("ConfirmExport without approval: %v", err)
 	}
@@ -343,7 +344,11 @@ func TestNoGrantCannotWriteSensitive(t *testing.T) {
 	if err := seed.RecordExportApproval(ctx, h, "lantern-seed-ok", "user_contacts"); err != nil {
 		t.Fatal(err)
 	}
-	grant, err := h.ConfirmExport(ctx, "lantern-seed-ok", "user_contacts")
+	cc, err := seed.SeedConsumeContext("lantern-seed-ok", "user_contacts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := h.ConfirmExport(ctx, "lantern-seed-ok", cc, "user_contacts")
 	if err != nil {
 		t.Fatal(err)
 	}
