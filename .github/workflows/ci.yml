@@ -43,3 +43,15 @@ jobs:
 
       - name: Demonstrate rejected cgo and mygo imports
         run: bash scripts/demo-constraint-ci.sh
+
+  # W1：确认 GitHub 托管的 macOS runner 还能不能调用 sandbox-exec。
+  # 结论写在 docs/adr/0003-python-runtime.md，不在这里安装 Python 依赖。
+  macos-sandbox-exec:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Probe sandbox-exec
+        run: bash scripts/probe-sandbox-exec.sh
