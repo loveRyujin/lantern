@@ -47,8 +47,8 @@ type Ticket struct {
 // Decision 是 Approver 的返回。
 type Decision struct {
 	Action Action
-	// Params 为 nil 表示沿用确认单里的快照。
-	// 非 nil 只出现在批准里，表示脚本或调用方给出了另一份参数。
+	// Params 为 nil 或空切片时沿用确认单里的快照。
+	// 非空内容只出现在批准里，表示脚本或调用方给出了另一份参数。
 	Params []byte
 }
 
@@ -101,6 +101,7 @@ func (t Ticket) VerifySnapshot() error {
 }
 
 // Validate 检查决定。只有批准可以携带替换参数。
+// nil 和空切片都表示沿用确认单快照，不算替换。
 func (d Decision) Validate() error {
 	switch d.Action {
 	case ActionApprove, ActionReject, ActionDefer:
@@ -114,8 +115,9 @@ func (d Decision) Validate() error {
 }
 
 // OverridesSnapshot 报告批准是否带了另一份参数。
+// 空切片与 nil 同样表示没有替换，避免把没有内容的切片当成新快照。
 func (d Decision) OverridesSnapshot() bool {
-	return d.Action == ActionApprove && d.Params != nil
+	return d.Action == ActionApprove && len(d.Params) > 0
 }
 
 func validHash(h string) bool {

@@ -63,6 +63,23 @@ func TestParamsHashCanonical(t *testing.T) {
 	}
 }
 
+func TestParamsHashRejectsDuplicateKeys(t *testing.T) {
+	cases := []string{
+		`{"rows":1,"rows":100000}`,
+		`{"a":1,"b":{"rows":1,"rows":2}}`,
+		`[{"rows":1,"rows":2}]`,
+		`{"\u0072ows":1,"rows":100000}`,
+	}
+	for _, raw := range cases {
+		if _, err := approval.ParamsHash([]byte(raw)); !errors.Is(err, approval.ErrInvalidParams) {
+			t.Fatalf("%s err=%v，想要拒绝重复键", raw, err)
+		}
+	}
+	if _, err := approval.ParamsHash([]byte(`{"a":{"x":1},"b":{"x":2}}`)); err != nil {
+		t.Fatalf("不同对象里的同名键应该允许: %v", err)
+	}
+}
+
 func TestTicketSnapshot(t *testing.T) {
 	ticket := mustTicket(t)
 	if err := ticket.VerifySnapshot(); err != nil {
@@ -118,6 +135,39 @@ func TestFakeDecisions(t *testing.T) {
 	}
 	if got := len(fake.Tickets()); got != 5 {
 		t.Fatalf("记下的确认单 = %d", got)
+	}
+}
+
+func TestEmptyParamsAreNotOverride(t *testing.T) {
+	empty := approval.Decision{Action: approval.ActionApprove, Params: []byte{}}
+	if err := empty.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if empty.OverridesSnapshot() {
+		t.Fatal("空切片应视为没有替换参数")
+	}
+	if (approval.Decision{Action: approval.ActionApprove}).OverridesSnapshot() {
+		t.Fatal("nil 参数应视为没有替换")
+	}
+}
+
+func TestApproveReplacementFailsVerifySnapshot(t *testing.T) {
+	ticket := mustTicket(t)
+	replaced := []byte(`{"rows":100000}`)
+	decision := approval.Decision{Action: approval.ActionApprove, Params: replaced}
+	if err := decision.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !decision.OverridesSnapshot() {
+		t.Fatal("非空替换参数应该被识别")
+	}
+	forged := ticket
+	forged.Params = decision.Params
+	if err := forged.VerifySnapshot(); !errors.Is(err, approval.ErrSnapshotMismatch) {
+		t.Fatalf("替换后的参数跑 VerifySnapshot err=%v", err)
+	}
+	if err := ticket.VerifySnapshot(); err != nil {
+		t.Fatalf("原确认单被改写了: %v", err)
 	}
 }
 
