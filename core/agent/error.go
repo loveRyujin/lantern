@@ -5,9 +5,10 @@ import "fmt"
 const (
 	// CodeMaxSteps 表示已经走到最大步数，不再调用模型。
 	CodeMaxSteps = "max_steps"
-	// CodeTimeout 表示运行的总时间到了。
+	// CodeTimeout 表示运行总时间到了，或工具没有在时限内返回。
 	CodeTimeout = "timeout"
-	// CodeHashMismatch 表示批准带回的参数和冻结快照不一致。
+	// CodeHashMismatch 表示执行前的参数和校验或确认时的哈希不一致。
+	// 批准带回的另一份参数对不上冻结快照，也用这个码。
 	CodeHashMismatch = "hash_mismatch"
 )
 

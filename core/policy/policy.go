@@ -6,7 +6,7 @@ import (
 )
 
 // Request 是一次已经通过 Schema 的工具调用。
-// Args 只供策略以后读取业务字段。默认实现不读它。
+// Args 是调用方给的副本，只供策略以后读取业务字段。就地修改不会影响执行。默认实现不读它。
 type Request struct {
 	Tool string
 	Args json.RawMessage
