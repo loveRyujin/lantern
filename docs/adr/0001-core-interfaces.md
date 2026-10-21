@@ -100,8 +100,11 @@ type Publisher interface {
 | `runtime_unavailable` | `errcode.RuntimeUnavailable` | Python 缺失或版本不符，不得改走无沙箱执行 |
 | `sandbox_unavailable` | `errcode.SandboxUnavailable` | 隔离机制不可用，不得换一套更弱的隔离 |
 | `embedding_mismatch` | `errcode.EmbeddingMismatch` | 索引与当前 Embedder 的 ID 或维度不同 |
+| `stream_truncated` | `errcode.StreamTruncated` | 模型流在 `[DONE]` 和 `finish_reason` 都没到时断开，可重试；截断的正文和 tool_call 参数不能当成成功结果 |
 
 `error` 来自技术设计第 7 节，和上面几个码一起返回给 Agent。平台暂时分不清 OOM 时，可以先返回 `killed` 或 `error`，但码值本身不能省掉；具体映射等 W3 / W4 实测后再写进评测规则。
+
+`stream_truncated` 不复用沙箱的 `timeout`。流已经正常结束（有 `[DONE]` 或 `finish_reason`）但拼好的 tool_call 缺少 id 或 name 时，不使用这个码。
 
 带码错误实现 `errcode.Coded`。调用方用 `errors.Is` 匹配哨兵，或用 `errcode.CodeOf` 取码。不要解析 `Error()` 的文案。
 
