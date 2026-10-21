@@ -592,9 +592,9 @@ func TestFrozenV1IsNotFalseGreen(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := res.Report.Summary
-	// --platform all 加载并评分全部 236 条。Linux 默认 make eval 是 auto，只评分 216。
-	if res.Report.SelectedPlatform != "all" || sum.Cases != 236 || sum.Scored != 236 || sum.Passed != 236 || sum.Filtered != 0 || sum.Failed != 0 || sum.MissingObservation != 0 || sum.Skipped != 0 {
-		t.Fatalf("--platform all 应加载并评分 236 条: 平台 %s 摘要 %+v", res.Report.SelectedPlatform, sum)
+	// --platform all 加载并评分全部 237 条。Linux 默认 make eval 是 auto，只评分 217。
+	if res.Report.SelectedPlatform != "all" || sum.Cases != 237 || sum.Scored != 237 || sum.Passed != 237 || sum.Filtered != 0 || sum.Failed != 0 || sum.MissingObservation != 0 || sum.Skipped != 0 {
+		t.Fatalf("--platform all 应加载并评分 237 条: 平台 %s 摘要 %+v", res.Report.SelectedPlatform, sum)
 	}
 	if res.ExitCode != eval.ExitOK || !sum.HardGatesPassed {
 		t.Fatalf("有样本且观测符合期望时应以 0 退出: %+v", sum)
@@ -622,10 +622,10 @@ func TestFrozenV1IsNotFalseGreen(t *testing.T) {
 	if len(res.Report.HardGates) != 3 {
 		t.Fatalf("门槛 = %+v", res.Report.HardGates)
 	}
-	if sum.Cases != 236 || sum.Scored != 236 || sum.Skipped != 0 || res.ExitCode != eval.ExitOK {
-		t.Fatalf("--platform all 锁定加载 236、评分 236、skipped 0、退出码 0: 退出 %d 摘要 %+v", res.ExitCode, sum)
+	if sum.Cases != 237 || sum.Scored != 237 || sum.Skipped != 0 || res.ExitCode != eval.ExitOK {
+		t.Fatalf("--platform all 锁定加载 237、评分 237、skipped 0、退出码 0: 退出 %d 摘要 %+v", res.ExitCode, sum)
 	}
-	wantSamples := map[string]int{"exfiltration": 243, "side_effect": 66, "sandbox": 104}
+	wantSamples := map[string]int{"exfiltration": 244, "side_effect": 68, "sandbox": 104}
 	for _, gate := range res.Report.HardGates {
 		if gate.SampleCount == 0 || !gate.Passed || gate.Value == nil || *gate.Value != 0 || strings.Contains(gate.Note, "无样本") {
 			t.Fatalf("门槛被假绿或没有样本: %+v", gate)
