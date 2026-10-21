@@ -12,6 +12,7 @@ import (
 	"github.com/loveRyujin/lantern/core/llm"
 	"github.com/loveRyujin/lantern/core/policy"
 	"github.com/loveRyujin/lantern/core/tools"
+	"github.com/loveRyujin/lantern/core/workspace"
 )
 
 func TestTruncatedFinalAnswerIsRetryableAndNotAToolFailure(t *testing.T) {
@@ -56,24 +57,14 @@ func TestSchemaInvalidReplacementDoesNotCountFailures(t *testing.T) {
 	bad := approval.Response{Action: approval.ActionApprove, Params: []byte(`{"object":1}`)}
 	h.approver.Responses = []approval.Response{bad, bad, bad}
 	out, err := h.run()
-	if err != nil || out.State != StateCompleted || out.ModelCalls != 4 || exp.n() != 0 {
+	if out.ModelCalls != 1 || out.State != StateAwaitingApproval || exp.n() != 0 || err == nil {
 		t.Fatalf("%+v %v exec=%d", out, err, exp.n())
 	}
-	text := requestText(h.provider.requests()[3])
-	if !strings.Contains(text, tools.CodeArgumentsInvalid) {
-		t.Fatalf("校验错误没有交回给模型: %s", text)
+	if !strings.Contains(err.Error(), tools.CodeArgumentsInvalid) || strings.Contains(err.Error(), "连续 3 次") {
+		t.Fatalf("不应计入连续失败: %v", err)
 	}
-	events := h.log.Events()
-	if len(events) != 3 {
-		t.Fatalf("替换参数失败应留下 3 条记录，实际 %+v", events)
-	}
-	for _, ev := range events {
-		if ev.Kind != tools.CodeArgumentsInvalid || ev.Status != "failed" || ev.Code != tools.CodeArgumentsInvalid {
-			t.Fatalf("记录 %+v", ev)
-		}
-		if strings.Contains(ev.Summary, "object") {
-			t.Fatalf("摘要带了参数 %q", ev.Summary)
-		}
+	if len(h.provider.requests()) != 1 {
+		t.Fatalf("校验错误交给了模型: %d", len(h.provider.requests()))
 	}
 }
 
@@ -210,7 +201,7 @@ func TestMachinePersistsApprovalDecision(t *testing.T) {
 			Params: []byte(`{"object":1}`),
 		}}
 		out, err := h.run()
-		if err != nil || out.State != StateCompleted || exp.n() != 0 {
+		if out.State != StateAwaitingApproval || exp.n() != 0 || err == nil || !strings.Contains(err.Error(), tools.CodeArgumentsInvalid) {
 			t.Fatalf("%+v %v exec=%d", out, err, exp.n())
 		}
 		var state, decision string
@@ -259,7 +250,7 @@ func TestConsumeBeforeExecution(t *testing.T) {
 		if stop || !ok || out.Err != nil {
 			t.Fatalf("stop=%v ok=%v %+v", stop, ok, out)
 		}
-		if _, _, err := h.loop.execute(t.Context(), in, item.prepared, time.Second); err != nil {
+		if _, _, err := h.loop.execute(t.Context(), in, item, time.Second); err != nil {
 			t.Fatal(err)
 		}
 		state, stepID, _, version, _ := approvalRow(t, ws.Runs)
@@ -323,15 +314,9 @@ func TestConsumeBeforeExecution(t *testing.T) {
 		}
 		ticket := h.approver.Tickets()[0]
 		// 同一个批准再提交一次：不改状态、不改版本，工具不再跑。
-		err = m.Decide(t.Context(), ticket.ID, approval.Decision{Action: approval.ActionApprove})
-		if err == nil {
-			_, _ = exp.Execute(t.Context(), tools.Call{Name: ticket.Action, Args: ticket.Params})
-		}
-		if exp.n() != 1 {
-			t.Fatalf("重复决定又执行了 %d 次", exp.n())
-		}
-		if !errors.Is(err, approval.ErrIllegalTransition) {
-			t.Fatalf("重复决定 = %v", err)
+		res, err := m.Decide(t.Context(), ticket.ID, approval.Decision{Action: approval.ActionApprove})
+		if err != nil || !res.Duplicate || res.Version != version || exp.n() != 1 {
+			t.Fatalf("重复决定 %+v %v exec=%d", res, err, exp.n())
 		}
 		againState, againStep, againDecision, againVersion, againConsumed := approvalRow(t, db)
 		if againState != state || againVersion != version || againStep != stepID || againDecision != decision || againConsumed != consumed {
@@ -429,16 +414,269 @@ func (s *decideOnlyStore) Create(ctx context.Context, ticket approval.Ticket) er
 	return ticket.Validate()
 }
 
-func (s *decideOnlyStore) Decide(ctx context.Context, id string, decision approval.Decision) error {
+func (s *decideOnlyStore) Decide(ctx context.Context, id string, decision approval.Decision) (approval.DecideResult, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return approval.DecideResult{}, err
 	}
 	if id == "" {
-		return approval.ErrNotFound
+		return approval.DecideResult{}, approval.ErrNotFound
 	}
 	if err := decision.Validate(); err != nil {
-		return err
+		return approval.DecideResult{}, err
 	}
 	s.decisions++
-	return nil
+	return approval.DecideResult{State: approval.StateApproved, Version: 1}, nil
+}
+
+func (s *decideOnlyStore) Consume(context.Context, string, approval.ConsumeContext) error {
+	return errors.New("agent: 确认单存储不能消费")
+}
+
+func (createOnlyStore) Decide(context.Context, string, approval.Decision) (approval.DecideResult, error) {
+	return approval.DecideResult{}, errors.New("agent: 确认单存储不能写决定")
+}
+
+func (createOnlyStore) Consume(context.Context, string, approval.ConsumeContext) error {
+	return errors.New("agent: 确认单存储不能消费")
+}
+
+func TestSchemaInvalidReplacementStaysPendingUntilExpiry(t *testing.T) {
+	exportStep := llm.CallTools(llm.ToolCall{ID: "e", Name: "export_data", Arguments: `{"object":"contacts"}`})
+	bad := approval.Response{Action: approval.ActionApprove, Params: []byte(`{"object":1}`)}
+
+	t.Run("到期前可以重新批准", func(t *testing.T) {
+		ws := openRuns(t)
+		h := newHarness(t, echoSpec(), exportStep, llm.Say("不该走到这里"))
+		exp := h.add(tools.SpecExportData)
+		m := approval.New(ws.Runs)
+		h.loop.Tickets = m
+		h.approver.Responses = []approval.Response{bad}
+		out, err := h.run()
+		if out.ModelCalls != 1 || out.State != StateAwaitingApproval || exp.n() != 0 || len(h.provider.requests()) != 1 {
+			t.Fatalf("%+v %v exec=%d requests=%d", out, err, exp.n(), len(h.provider.requests()))
+		}
+		if err == nil || !strings.Contains(err.Error(), tools.CodeArgumentsInvalid) {
+			t.Fatalf("校验错误应回到用户: %v", err)
+		}
+		var id, state string
+		var version int64
+		var consumed sql.NullString
+		if err := ws.Runs.QueryRowContext(t.Context(), `SELECT id, state, version, consumed_at FROM approvals`).Scan(&id, &state, &version, &consumed); err != nil {
+			t.Fatal(err)
+		}
+		if state != string(approval.StatePending) || version != 0 || consumed.Valid {
+			t.Fatalf("state=%s version=%d consumed=%v", state, version, consumed)
+		}
+		res, err := m.Decide(t.Context(), id, approval.Decision{Action: approval.ActionApprove})
+		if err != nil || res.Duplicate || res.State != approval.StateApproved || res.Version != 1 || exp.n() != 0 {
+			t.Fatalf("重新批准 %+v %v exec=%d", res, err, exp.n())
+		}
+	})
+
+	t.Run("过期后不能再批准", func(t *testing.T) {
+		ws := openRuns(t)
+		h := newHarness(t, echoSpec(), exportStep, llm.Say("不该走到这里"))
+		exp := h.add(tools.SpecExportData)
+		m := approval.New(ws.Runs)
+		h.loop.Tickets = m
+		h.approver.Responses = []approval.Response{bad}
+		if _, err := h.run(); err == nil || exp.n() != 0 {
+			t.Fatalf("%v exec=%d", err, exp.n())
+		}
+		var id string
+		if err := ws.Runs.QueryRowContext(t.Context(), `SELECT id FROM approvals`).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+		if _, err := ws.Runs.ExecContext(t.Context(), `UPDATE approvals SET expires_at = ? WHERE id = ?`, past, id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.Decide(t.Context(), id, approval.Decision{Action: approval.ActionApprove}); !errors.Is(err, approval.ErrExpired) {
+			t.Fatalf("过期后批准 = %v", err)
+		}
+		var state string
+		if err := ws.Runs.QueryRowContext(t.Context(), `SELECT state FROM approvals WHERE id = ?`, id).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		if state != string(approval.StateExpired) || exp.n() != 0 {
+			t.Fatalf("state=%s exec=%d", state, exp.n())
+		}
+	})
+}
+
+func TestStreamTruncationWritesRunEvents(t *testing.T) {
+	ws := openRuns(t)
+	h := newHarness(t, echoSpec(),
+		llm.Inject(llm.FaultStreamTruncated),
+		llm.Inject(llm.FaultStreamTruncated),
+		llm.Inject(llm.FaultStreamTruncated),
+		llm.Say("不该走到这里"),
+	)
+	mem := &MemoryLog{}
+	h.loop.Log = teeLog{a: mem, b: NewSQLiteLog(ws.Runs)}
+	out, err := h.run()
+	if out.ModelCalls != 3 || out.State != StateFailed || !retryable(err) || errorCode(err) != tools.CodeArgumentsIncomplete {
+		t.Fatalf("%+v %v", out, err)
+	}
+	if len(mem.Events()) != 3 {
+		t.Fatalf("内存记录 %+v", mem.Events())
+	}
+	for _, ev := range mem.Events() {
+		if ev.Kind != tools.CodeArgumentsIncomplete || ev.Status != "failed" || ev.Code != tools.CodeArgumentsIncomplete {
+			t.Fatalf("记录 %+v", ev)
+		}
+	}
+	var n int
+	if err := ws.Runs.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM run_events WHERE run_id = ? AND kind = ?`, "run-1", tools.CodeArgumentsIncomplete).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Fatalf("sqlite 记录 %d", n)
+	}
+}
+
+func TestAgentExportConfirmOpensSensitiveOnce(t *testing.T) {
+	ctx := t.Context()
+	ws, err := workspace.Create(ctx, t.TempDir(), "ws-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := ws.Runs.ExecContext(ctx, `
+		INSERT INTO runs (id, state, version, context, created_at, updated_at)
+		VALUES ('run-1', 'running', 0, '', ?, ?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t, echoSpec(), llm.CallTools(llm.ToolCall{
+		ID: "e", Name: "export_data", Arguments: `{"object":"contacts"}`,
+	}), llm.Say("结束"))
+	exp := h.add(tools.SpecExportData)
+	h.loop.Tickets = approval.New(ws.Runs)
+	h.approver.Responses = []approval.Response{{Action: approval.ActionApprove}}
+	var grant workspace.ExportGrant
+	confirms := 0
+	h.loop.ExportConfirm = func(ctx context.Context, id string, cc approval.ConsumeContext, object string) error {
+		confirms++
+		var cerr error
+		grant, cerr = ws.ConfirmExport(ctx, id, cc, object)
+		return cerr
+	}
+	opens := 0
+	exp.fn = func(ctx context.Context, call tools.Call) (tools.Result, error) {
+		if call.ApprovalID == "" || call.StepID != "e" || call.ArgsHash == "" {
+			return tools.Result{}, errors.New("工具没有拿到当前运行的消费上下文")
+		}
+		db, err := ws.OpenSensitive(ctx, grant)
+		if err != nil {
+			return tools.Result{}, err
+		}
+		opens++
+		_ = db.Close()
+		return tools.Result{Content: "ok", Summary: "已导出"}, nil
+	}
+	out, err := h.loop.Run(ctx, Input{RunID: "run-1", WorkspaceID: "ws-1", Prompt: "导出联系人"})
+	if err != nil || out.State != StateCompleted || exp.n() != 1 || confirms != 1 || opens != 1 {
+		t.Fatalf("%+v %v exec=%d confirm=%d open=%d", out, err, exp.n(), confirms, opens)
+	}
+	var state, object string
+	var version int64
+	if err := ws.Runs.QueryRowContext(ctx, `SELECT state, version, export_object FROM approvals`).Scan(&state, &version, &object); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(approval.StateConsumed) || version != 2 || object != "contacts" {
+		t.Fatalf("state=%s version=%d object=%s", state, version, object)
+	}
+	if _, err := ws.OpenSensitive(ctx, grant); !errors.Is(err, workspace.ErrExportUnconfirmed) {
+		t.Fatalf("第二次打开 = %v", err)
+	}
+	ticket := h.approver.Tickets()[0]
+	if _, err := ws.ConfirmExport(ctx, ticket.ID, approval.ConsumeContext{
+		RunID: ticket.RunID, StepID: ticket.StepID, ArgsHash: ticket.ParamsHash,
+	}, "contacts"); !errors.Is(err, workspace.ErrExportUnconfirmed) {
+		t.Fatalf("第二次确认 = %v", err)
+	}
+}
+
+func TestConsumedFailureNeedsNewApproval(t *testing.T) {
+	ws := openRuns(t)
+	spec := tools.SpecExportData
+	spec.MaxAttempts = 3
+	h := newHarness(t, echoSpec(),
+		llm.CallTools(llm.ToolCall{ID: "e1", Name: "export_data", Arguments: `{"object":"contacts"}`}),
+		llm.CallTools(llm.ToolCall{ID: "e2", Name: "export_data", Arguments: `{"object":"contacts"}`}),
+		llm.Say("结束"),
+	)
+	exp := h.add(spec)
+	h.loop.Tickets = approval.New(ws.Runs)
+	h.loop.Log = teeLog{a: h.log, b: NewSQLiteLog(ws.Runs)}
+	h.approver.Responses = []approval.Response{
+		{Action: approval.ActionApprove},
+		{Action: approval.ActionApprove},
+	}
+	calls := 0
+	exp.fn = func(context.Context, tools.Call) (tools.Result, error) {
+		calls++
+		if calls == 1 {
+			return tools.Result{}, &tools.Error{Code: "export_failed", Retryable: true, Message: "导出失败"}
+		}
+		return tools.Result{Content: "ok", Summary: "已导出"}, nil
+	}
+	out, err := h.run()
+	if err != nil || out.State != StateCompleted || exp.n() != 2 {
+		t.Fatalf("%+v %v exec=%d", out, err, exp.n())
+	}
+	tickets := h.approver.Tickets()
+	if len(tickets) != 2 || tickets[0].ID == tickets[1].ID {
+		t.Fatalf("确认单 %+v", tickets)
+	}
+	rows, err := ws.Runs.QueryContext(t.Context(), `SELECT id, state, version FROM approvals ORDER BY created_at`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var seen int
+	for rows.Next() {
+		var id, state string
+		var version int64
+		if err := rows.Scan(&id, &state, &version); err != nil {
+			t.Fatal(err)
+		}
+		seen++
+		if state != string(approval.StateConsumed) || version != 2 {
+			t.Fatalf("失败后不应退回 approved: %s %s %d", id, state, version)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 2 {
+		t.Fatalf("确认单行数 %d", seen)
+	}
+	failed := tickets[0].ID
+	foundEvent := false
+	for _, ev := range h.log.Events() {
+		if ev.TicketID == failed && ev.Status == "failed" && ev.Code == "export_failed" {
+			foundEvent = true
+		}
+	}
+	if !foundEvent {
+		t.Fatalf("run_events 没有失败结果 %+v", h.log.Events())
+	}
+	var payload string
+	if err := ws.Runs.QueryRowContext(t.Context(), `SELECT payload FROM run_events WHERE kind = ?`, "export_failed").Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, failed) {
+		t.Fatalf("sqlite 没有确认单标识 %s", payload)
+	}
+	foundAudit := false
+	for _, rec := range h.audit.Records() {
+		if rec.Action == "tool_failed" && strings.Contains(rec.Detail, failed) && strings.Contains(rec.Detail, "export_failed") {
+			foundAudit = true
+		}
+	}
+	if !foundAudit {
+		t.Fatalf("审计 %+v", h.audit.Records())
+	}
 }

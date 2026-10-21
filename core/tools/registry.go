@@ -33,6 +33,11 @@ type Call struct {
 	Hash        string
 	RunID       string
 	WorkspaceID string
+	// ApprovalID、StepID、ArgsHash 是执行前消费确认单用的当前步骤。
+	// 导出工具把它们交给 ConfirmExport，不能从确认单记录里反推。
+	ApprovalID string
+	StepID     string
+	ArgsHash   string
 }
 
 // Result 是工具的观察结果。Summary 会进入 run_events，不要把参数原文放进去。

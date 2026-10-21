@@ -95,20 +95,63 @@ func (m *Machine) CreateTx(ctx context.Context, tx *sql.Tx, ticket Ticket) error
 	return m.insert(ctx, tx, ticket)
 }
 
+// duplicateError 让重复决定的审计随事务提交。调用方把它换成 Duplicate=true 的成功结果。
+type duplicateError struct{ result DecideResult }
+
+func (e duplicateError) Error() string { return "approval: duplicate decision" }
+
 // Decide 按 Approver 的决定转移。暂缓保持 pending，不改版本。
+// 同一个决定再提交一次是成功，Duplicate 为 true，状态和版本不变。
 // 先读出已提交的行，测试用的闸门也停在写锁之外，两个事务才能拿着同一版本去做条件更新。
-func (m *Machine) Decide(ctx context.Context, id string, decision Decision) error {
+func (m *Machine) Decide(ctx context.Context, id string, decision Decision) (DecideResult, error) {
 	if err := decision.Validate(); err != nil {
-		return err
+		return DecideResult{}, err
 	}
 	rec, err := m.loadCommitted(ctx, id)
 	if err != nil {
-		return err
+		return DecideResult{}, err
 	}
 	m.hitGate()
-	return m.transact(ctx, func(tx *sql.Tx) error {
-		return m.finishDecide(ctx, tx, rec, decision)
+	var result DecideResult
+	err = m.transact(ctx, func(tx *sql.Tx) error {
+		var ferr error
+		result, ferr = m.finishDecide(ctx, tx, rec, decision)
+		return ferr
 	})
+	var dup duplicateError
+	if errors.As(err, &dup) {
+		return dup.result, nil
+	}
+	if errors.Is(err, ErrVersionConflict) {
+		return m.settleDuplicate(ctx, id, decision)
+	}
+	if err != nil {
+		return DecideResult{}, err
+	}
+	return result, nil
+}
+
+// settleDuplicate 在条件更新输掉之后重新读已提交的行。
+// 已经是同一个决定就记 duplicate_decision，不再当成版本冲突。
+func (m *Machine) settleDuplicate(ctx context.Context, id string, decision Decision) (DecideResult, error) {
+	fresh, err := m.loadCommitted(ctx, id)
+	if err != nil {
+		return DecideResult{}, err
+	}
+	same, err := recordedSame(fresh, decision)
+	if err != nil {
+		return DecideResult{}, err
+	}
+	if !same {
+		return DecideResult{}, ErrVersionConflict
+	}
+	detail := fmt.Sprintf("id=%s run=%s from=%s action=%s", fresh.id, fresh.runID, fresh.state, "duplicate_decision")
+	if err := m.transact(ctx, func(tx *sql.Tx) error {
+		return m.appendAudit(ctx, tx, "duplicate_decision", detail)
+	}); err != nil {
+		return DecideResult{}, err
+	}
+	return DecideResult{State: fresh.state, Version: fresh.version, Duplicate: true}, nil
 }
 
 // DecideTx 在调用方的事务里写决定。
@@ -271,43 +314,89 @@ func (m *Machine) decide(ctx context.Context, q queryRower, id string, decision 
 		return err
 	}
 	m.hitGate()
-	return m.finishDecide(ctx, q, rec, decision)
+	_, err = m.finishDecide(ctx, q, rec, decision)
+	var dup duplicateError
+	if errors.As(err, &dup) {
+		return nil
+	}
+	return err
 }
 
-func (m *Machine) finishDecide(ctx context.Context, q queryRower, rec row, decision Decision) error {
+func (m *Machine) finishDecide(ctx context.Context, q queryRower, rec row, decision Decision) (DecideResult, error) {
 	if err := consistent(rec); err != nil {
-		return m.fail(ctx, q, rec, "corrupt", err)
+		return DecideResult{}, m.fail(ctx, q, rec, "corrupt", err)
 	}
 	if decision.Action == ActionDefer {
 		if rec.state != StatePending {
-			return m.deny(ctx, q, rec, rec.state)
+			return DecideResult{}, m.deny(ctx, q, rec, rec.state)
 		}
-		return nil
+		return DecideResult{State: rec.state, Version: rec.version}, nil
 	}
 	if decision.OverridesSnapshot() {
 		sum, err := ParamsHash(decision.Params)
 		if err != nil {
-			return err
+			return DecideResult{}, err
 		}
 		if sum != rec.paramsHash {
-			return m.fail(ctx, q, rec, "snapshot_mismatch", ErrSnapshotMismatch)
+			return DecideResult{}, m.fail(ctx, q, rec, "snapshot_mismatch", ErrSnapshotMismatch)
 		}
 	}
 	if m.due(rec) && (rec.state == StatePending || rec.state == StateApproved) {
 		if err := m.transition(ctx, q, rec, StateExpired, rec.decision, rec.decidedAt, rec.consumedAt); err != nil {
-			return err
+			return DecideResult{}, err
 		}
-		return commitError{err: ErrExpired}
+		return DecideResult{State: StateExpired, Version: rec.version + 1}, commitError{err: ErrExpired}
+	}
+	if same, err := recordedSame(rec, decision); err != nil {
+		return DecideResult{}, err
+	} else if same {
+		detail := fmt.Sprintf("id=%s run=%s from=%s action=%s", rec.id, rec.runID, rec.state, "duplicate_decision")
+		if err := m.appendAudit(ctx, q, "duplicate_decision", detail); err != nil {
+			return DecideResult{}, err
+		}
+		res := DecideResult{State: rec.state, Version: rec.version, Duplicate: true}
+		return res, commitError{err: duplicateError{result: res}}
 	}
 	switch decision.Action {
 	case ActionApprove:
 		decided := m.clock().Format(timeLayout)
-		return m.transition(ctx, q, rec, StateApproved, string(ActionApprove), sql.NullString{String: decided, Valid: true}, rec.consumedAt)
+		if err := m.transition(ctx, q, rec, StateApproved, string(ActionApprove), sql.NullString{String: decided, Valid: true}, rec.consumedAt); err != nil {
+			return DecideResult{}, err
+		}
+		return DecideResult{State: StateApproved, Version: rec.version + 1}, nil
 	case ActionReject:
 		decided := m.clock().Format(timeLayout)
-		return m.transition(ctx, q, rec, StateRejected, string(ActionReject), sql.NullString{String: decided, Valid: true}, rec.consumedAt)
+		if err := m.transition(ctx, q, rec, StateRejected, string(ActionReject), sql.NullString{String: decided, Valid: true}, rec.consumedAt); err != nil {
+			return DecideResult{}, err
+		}
+		return DecideResult{State: StateRejected, Version: rec.version + 1}, nil
 	default:
-		return fmt.Errorf("%w: 未知决定 %q", ErrInvalidDecision, decision.Action)
+		return DecideResult{}, fmt.Errorf("%w: 未知决定 %q", ErrInvalidDecision, decision.Action)
+	}
+}
+
+// recordedSame 表示这个决定已经落在确认单上，再提交一次不应该转移。
+// 过期不是同一次决定的结果，批准一张过期单仍然是非法转移。
+func recordedSame(rec row, decision Decision) (bool, error) {
+	if decision.OverridesSnapshot() {
+		sum, err := ParamsHash(decision.Params)
+		if err != nil {
+			return false, err
+		}
+		if sum != rec.paramsHash {
+			return false, nil
+		}
+	}
+	switch decision.Action {
+	case ActionApprove:
+		if rec.decision != string(ActionApprove) {
+			return false, nil
+		}
+		return rec.state == StateApproved || rec.state == StateConsumed, nil
+	case ActionReject:
+		return rec.decision == string(ActionReject) && rec.state == StateRejected, nil
+	default:
+		return false, nil
 	}
 }
 

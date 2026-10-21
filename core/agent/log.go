@@ -25,6 +25,8 @@ type RunEvent struct {
 	Status string
 	// Code 是失败或跳过时的错误码。
 	Code string
+	// TicketID 是已经消费的确认单。失败时和结果一起留下。
+	TicketID string
 }
 
 type eventPayload struct {
@@ -35,6 +37,7 @@ type eventPayload struct {
 	Tokens     int    `json:"tokens"`
 	Status     string `json:"status,omitempty"`
 	Code       string `json:"code,omitempty"`
+	TicketID   string `json:"ticket_id,omitempty"`
 }
 
 // RunLog 追加 run_events。
@@ -91,6 +94,7 @@ func (s *SQLiteLog) Append(ctx context.Context, ev RunEvent) error {
 		Tokens:     ev.Tokens,
 		Status:     ev.Status,
 		Code:       ev.Code,
+		TicketID:   ev.TicketID,
 	})
 	if err != nil {
 		return err

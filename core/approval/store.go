@@ -11,11 +11,19 @@ type Store interface {
 	Create(ctx context.Context, ticket Ticket) error
 }
 
+// DecideResult 是一次决定的结果。
+// Duplicate 为 true 时，这次提交和已经生效的决定相同：状态和版本都不变。
+type DecideResult struct {
+	State     State
+	Version   int64
+	Duplicate bool
+}
+
 // Decider 把 Approver 返回的决定写回确认单。
 // 只有状态机能改审批决定。Agent 在批准或拒绝时必须拿到 Decider，
 // 存储没实现这个接口就直接失败，不会静默跳过再去执行工具。
 type Decider interface {
-	Decide(ctx context.Context, id string, decision Decision) error
+	Decide(ctx context.Context, id string, decision Decision) (DecideResult, error)
 }
 
 // Consumer 在执行前把已批准的确认单消费掉。

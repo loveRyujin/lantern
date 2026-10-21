@@ -584,12 +584,17 @@ func TestLoopReplacementParamsRevalidated(t *testing.T) {
 			Params: []byte(`{"object":1}`),
 		}}
 		out, err := h.run()
-		if err != nil || out.State != StateCompleted || out.ModelCalls != 2 || exp.n() != 0 {
+		if out.ModelCalls != 1 || out.State != StateAwaitingApproval || exp.n() != 0 || err == nil {
 			t.Fatalf("%+v %v exec=%d", out, err, exp.n())
 		}
-		text := requestText(h.provider.requests()[1])
-		if !strings.Contains(text, tools.CodeArgumentsInvalid) || strings.Contains(text, CodeHashMismatch) {
-			t.Fatalf("回给模型的文本 = %s", text)
+		if errorCode(err) != "" && errorCode(err) != tools.CodeArgumentsInvalid && !strings.Contains(err.Error(), tools.CodeArgumentsInvalid) {
+			t.Fatalf("校验错误没有回到调用方: %v", err)
+		}
+		if !strings.Contains(err.Error(), tools.CodeArgumentsInvalid) {
+			t.Fatalf("校验错误没有回到调用方: %v", err)
+		}
+		if len(h.provider.requests()) != 1 {
+			t.Fatalf("校验错误交给了模型: %d", len(h.provider.requests()))
 		}
 		if len(h.audit.Records()) != 0 {
 			t.Fatal("Schema 失败不应记成哈希不一致")
@@ -1012,36 +1017,43 @@ func (m *memTickets) Create(ctx context.Context, ticket approval.Ticket) error {
 	return nil
 }
 
-func (m *memTickets) Decide(ctx context.Context, id string, decision approval.Decision) error {
+func (m *memTickets) Decide(ctx context.Context, id string, decision approval.Decision) (approval.DecideResult, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return approval.DecideResult{}, err
 	}
 	if err := decision.Validate(); err != nil {
-		return err
+		return approval.DecideResult{}, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	rec := m.find(id)
 	if rec == nil {
-		return approval.ErrNotFound
+		return approval.DecideResult{}, approval.ErrNotFound
 	}
 	if decision.Action == approval.ActionDefer {
 		if rec.state != approval.StatePending {
-			return approval.ErrIllegalTransition
+			return approval.DecideResult{}, approval.ErrIllegalTransition
 		}
-		return nil
+		return approval.DecideResult{State: rec.state, Version: rec.version}, nil
 	}
 	if decision.OverridesSnapshot() {
 		sum, err := approval.ParamsHash(decision.Params)
 		if err != nil {
-			return err
+			return approval.DecideResult{}, err
 		}
 		if sum != rec.ticket.ParamsHash {
-			return approval.ErrSnapshotMismatch
+			return approval.DecideResult{}, approval.ErrSnapshotMismatch
 		}
 	}
+	if decision.Action == approval.ActionApprove && rec.decision == string(approval.ActionApprove) &&
+		(rec.state == approval.StateApproved || rec.state == approval.StateConsumed) {
+		return approval.DecideResult{State: rec.state, Version: rec.version, Duplicate: true}, nil
+	}
+	if decision.Action == approval.ActionReject && rec.decision == string(approval.ActionReject) && rec.state == approval.StateRejected {
+		return approval.DecideResult{State: rec.state, Version: rec.version, Duplicate: true}, nil
+	}
 	if rec.state != approval.StatePending {
-		return approval.ErrIllegalTransition
+		return approval.DecideResult{}, approval.ErrIllegalTransition
 	}
 	switch decision.Action {
 	case approval.ActionApprove:
@@ -1051,10 +1063,10 @@ func (m *memTickets) Decide(ctx context.Context, id string, decision approval.De
 		rec.state = approval.StateRejected
 		rec.decision = string(approval.ActionReject)
 	default:
-		return approval.ErrInvalidDecision
+		return approval.DecideResult{}, approval.ErrInvalidDecision
 	}
 	rec.version++
-	return nil
+	return approval.DecideResult{State: rec.state, Version: rec.version}, nil
 }
 
 func (m *memTickets) Consume(ctx context.Context, id string, cc approval.ConsumeContext) error {
@@ -1100,6 +1112,14 @@ func (m *memTickets) list() []approval.Ticket {
 type sqlTickets struct {
 	db *sql.DB
 	n  int
+}
+
+func (s *sqlTickets) Decide(context.Context, string, approval.Decision) (approval.DecideResult, error) {
+	return approval.DecideResult{}, errors.New("agent: 确认单存储不能写决定")
+}
+
+func (s *sqlTickets) Consume(context.Context, string, approval.ConsumeContext) error {
+	return errors.New("agent: 确认单存储不能消费")
 }
 
 func (s *sqlTickets) Create(ctx context.Context, ticket approval.Ticket) error {

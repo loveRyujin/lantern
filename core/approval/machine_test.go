@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ func TestLegalTransitions(t *testing.T) {
 		m := New(db)
 		ticket := mustCreatePending(t, ctx, m, db, "ok-approve", []byte(`{"object":"contacts"}`), time.Now().Add(time.Hour))
 		before := auditCount(t, db)
-		if err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove}); err != nil {
+		if _, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove}); err != nil {
 			t.Fatal(err)
 		}
 		got := readApproval(t, db, ticket.ID)
@@ -44,7 +45,7 @@ func TestLegalTransitions(t *testing.T) {
 		db := openApprovalDB(t)
 		m := New(db)
 		ticket := mustCreatePending(t, ctx, m, db, "ok-reject", []byte(`{"object":"contacts"}`), time.Now().Add(time.Hour))
-		if err := m.Decide(ctx, ticket.ID, Decision{Action: ActionReject}); err != nil {
+		if _, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionReject}); err != nil {
 			t.Fatal(err)
 		}
 		got := readApproval(t, db, ticket.ID)
@@ -166,40 +167,55 @@ func TestPublicIllegalPaths(t *testing.T) {
 		ticket := mustApprove(t, ctx, m, db, "twice", params)
 		first := readApproval(t, db, ticket.ID)
 		before := auditCount(t, db)
-		err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove})
-		if !errors.Is(err, ErrIllegalTransition) || errors.Is(err, ErrTerminal) {
-			t.Fatalf("再次批准 = %v", err)
+		res, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove})
+		if err != nil || !res.Duplicate || res.Version != first.version || res.State != StateApproved {
+			t.Fatalf("再次批准 = %+v %v", res, err)
 		}
 		got := readApproval(t, db, ticket.ID)
 		if got.state != string(StateApproved) || got.version != first.version || got.decided != first.decided {
 			t.Fatalf("再次批准改了决定时间或版本: before=%+v after=%+v", first, got)
 		}
-		if auditCount(t, db) != before+1 {
-			t.Fatalf("审计条数 = %d", auditCount(t, db))
+		rows := auditsOf(t, db)
+		if len(rows) != before+1 || rows[len(rows)-1].action != "duplicate_decision" || containsPhone(rows[len(rows)-1].detail) {
+			t.Fatalf("审计 = %+v", rows[before:])
 		}
 	})
 
 	t.Run("拒绝后再批准", func(t *testing.T) {
 		assertPublicIllegal(t, ctx, params, "rej-app", func(ctx context.Context, m *Machine, db *sql.DB, ticket Ticket) {
-			if err := m.Decide(ctx, ticket.ID, Decision{Action: ActionReject}); err != nil {
+			if _, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionReject}); err != nil {
 				t.Fatal(err)
 			}
 		}, func(ctx context.Context, m *Machine, ticket Ticket) error {
-			return m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove})
+			_, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove})
+			return err
 		}, StateRejected, true)
 	})
 
 	t.Run("消费后再批准", func(t *testing.T) {
-		assertPublicIllegal(t, ctx, params, "con-app", func(ctx context.Context, m *Machine, db *sql.DB, ticket Ticket) {
-			if err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove}); err != nil {
-				t.Fatal(err)
-			}
-			if err := m.Consume(ctx, ticket.ID, contextOf(ticket)); err != nil {
-				t.Fatal(err)
-			}
-		}, func(ctx context.Context, m *Machine, ticket Ticket) error {
-			return m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove})
-		}, StateConsumed, true)
+		db := openApprovalDB(t)
+		m := New(db)
+		ticket := mustCreatePending(t, ctx, m, db, "con-app", params, time.Now().Add(time.Hour))
+		if _, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove}); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Consume(ctx, ticket.ID, contextOf(ticket)); err != nil {
+			t.Fatal(err)
+		}
+		first := readApproval(t, db, ticket.ID)
+		before := auditCount(t, db)
+		res, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove})
+		if err != nil || !res.Duplicate || res.State != StateConsumed || res.Version != first.version {
+			t.Fatalf("消费后再批准 = %+v %v", res, err)
+		}
+		got := readApproval(t, db, ticket.ID)
+		if got != first {
+			t.Fatalf("重复决定改了行 before=%+v after=%+v", first, got)
+		}
+		rows := auditsOf(t, db)
+		if len(rows) != before+1 || rows[len(rows)-1].action != "duplicate_decision" {
+			t.Fatalf("审计 = %+v", rows[before:])
+		}
 	})
 
 	t.Run("过期后再批准", func(t *testing.T) {
@@ -212,7 +228,8 @@ func TestPublicIllegalPaths(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, func(ctx context.Context, m *Machine, ticket Ticket) error {
-			return m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove})
+			_, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove})
+			return err
 		}, StateExpired, true)
 	})
 
@@ -224,17 +241,18 @@ func TestPublicIllegalPaths(t *testing.T) {
 
 	t.Run("已批准不能改成拒绝", func(t *testing.T) {
 		assertPublicIllegal(t, ctx, params, "app-rej", func(ctx context.Context, m *Machine, db *sql.DB, ticket Ticket) {
-			if err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove}); err != nil {
+			if _, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove}); err != nil {
 				t.Fatal(err)
 			}
 		}, func(ctx context.Context, m *Machine, ticket Ticket) error {
-			return m.Decide(ctx, ticket.ID, Decision{Action: ActionReject})
+			_, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionReject})
+			return err
 		}, StateApproved, false)
 	})
 
 	t.Run("已消费不能过期", func(t *testing.T) {
 		assertPublicIllegal(t, ctx, params, "con-exp", func(ctx context.Context, m *Machine, db *sql.DB, ticket Ticket) {
-			if err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove}); err != nil {
+			if _, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove}); err != nil {
 				t.Fatal(err)
 			}
 			if err := m.Consume(ctx, ticket.ID, contextOf(ticket)); err != nil {
@@ -247,7 +265,7 @@ func TestPublicIllegalPaths(t *testing.T) {
 
 	t.Run("已消费不能再消费", func(t *testing.T) {
 		assertPublicIllegal(t, ctx, params, "con-con", func(ctx context.Context, m *Machine, db *sql.DB, ticket Ticket) {
-			if err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove}); err != nil {
+			if _, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove}); err != nil {
 				t.Fatal(err)
 			}
 			if err := m.Consume(ctx, ticket.ID, contextOf(ticket)); err != nil {
@@ -304,11 +322,11 @@ func TestConcurrentApproveAndReject(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			errs[0] = m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove})
+			_, errs[0] = m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove})
 		}()
 		go func() {
 			defer wg.Done()
-			errs[1] = m.Decide(ctx, ticket.ID, Decision{Action: ActionReject})
+			_, errs[1] = m.Decide(ctx, ticket.ID, Decision{Action: ActionReject})
 		}()
 		wg.Wait()
 		m.SetGate(nil)
@@ -335,6 +353,94 @@ func TestConcurrentApproveAndReject(t *testing.T) {
 			t.Fatalf("第 %d 轮版本冲突被记成非法转移", i)
 		}
 	}
+}
+
+func TestDuplicateDecisionIsIdempotent(t *testing.T) {
+	ctx := t.Context()
+	params := []byte(`{"object":"contacts"}`)
+
+	t.Run("连续两次", func(t *testing.T) {
+		db := openApprovalDB(t)
+		m := New(db)
+		ticket := mustCreatePending(t, ctx, m, db, "seq", params, time.Now().Add(time.Hour))
+		var exec int
+		run := func() (DecideResult, error) {
+			res, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove})
+			if err == nil && !res.Duplicate {
+				exec++
+			}
+			return res, err
+		}
+		first, err := run()
+		if err != nil || first.Duplicate || first.Version != 1 || exec != 1 {
+			t.Fatalf("第一次 %+v %v exec=%d", first, err, exec)
+		}
+		second, err := run()
+		if err != nil || !second.Duplicate || second.Version != 1 || second.State != StateApproved || exec != 1 {
+			t.Fatalf("第二次 %+v %v exec=%d", second, err, exec)
+		}
+		got := readApproval(t, db, ticket.ID)
+		if got.state != string(StateApproved) || got.version != 1 {
+			t.Fatalf("状态 %+v", got)
+		}
+		rows := auditsOf(t, db)
+		if len(rows) != 1 || rows[0].action != "duplicate_decision" {
+			t.Fatalf("审计 %+v", rows)
+		}
+		if _, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionReject}); !errors.Is(err, ErrIllegalTransition) {
+			t.Fatalf("不同决定 = %v", err)
+		}
+		if readApproval(t, db, ticket.ID).version != 1 || exec != 1 {
+			t.Fatal("不同决定改了版本或又执行了")
+		}
+	})
+
+	t.Run("并发两次", func(t *testing.T) {
+		db := openApprovalDB(t)
+		m := New(db)
+		for i := 0; i < 50; i++ {
+			id := fmt.Sprintf("dup-%d", i)
+			ticket := mustCreatePending(t, ctx, m, db, id, params, time.Now().Add(time.Hour))
+			g := newPairGate()
+			m.SetGate(g.enter)
+			var exec atomic.Int32
+			type outcome struct {
+				res DecideResult
+				err error
+			}
+			out := make([]outcome, 2)
+			var wg sync.WaitGroup
+			wg.Add(2)
+			for n := 0; n < 2; n++ {
+				go func(n int) {
+					defer wg.Done()
+					res, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove})
+					if err == nil && !res.Duplicate {
+						exec.Add(1)
+					}
+					out[n] = outcome{res: res, err: err}
+				}(n)
+			}
+			wg.Wait()
+			m.SetGate(nil)
+			if g.arrived() != 2 {
+				t.Fatalf("第 %d 轮没有停在同一版本", i)
+			}
+			got := readApproval(t, db, ticket.ID)
+			dups := 0
+			for _, item := range out {
+				if item.err != nil {
+					t.Fatalf("第 %d 轮 %v", i, item.err)
+				}
+				if item.res.Duplicate {
+					dups++
+				}
+			}
+			if dups != 1 || exec.Load() != 1 || got.version != 1 || got.state != string(StateApproved) {
+				t.Fatalf("第 %d 轮 dups=%d exec=%d %+v", i, dups, exec.Load(), got)
+			}
+		}
+	})
 }
 
 func TestConcurrentConsumeOneWins(t *testing.T) {
@@ -613,7 +719,7 @@ func TestDeadline(t *testing.T) {
 			t.Fatal(err)
 		}
 		m.SetClock(func() time.Time { return exp.Add(time.Second) })
-		if err := m.Decide(ctx, pending.ID, Decision{Action: ActionApprove}); !errors.Is(err, ErrExpired) {
+		if _, err := m.Decide(ctx, pending.ID, Decision{Action: ActionApprove}); !errors.Is(err, ErrExpired) {
 			t.Fatalf("到期批准 = %v", err)
 		}
 		if got := readApproval(t, db, pending.ID); got.state != string(StateExpired) || got.version != 1 {
@@ -625,7 +731,7 @@ func TestDeadline(t *testing.T) {
 		if got := readApproval(t, db, approved.ID); got.state != string(StateExpired) || got.consumed.Valid || got.version != 2 {
 			t.Fatalf("approved 到期 %+v", got)
 		}
-		if err := m.Decide(ctx, pending.ID, Decision{Action: ActionApprove}); !errors.Is(err, ErrIllegalTransition) || !errors.Is(err, ErrTerminal) {
+		if _, err := m.Decide(ctx, pending.ID, Decision{Action: ActionApprove}); !errors.Is(err, ErrIllegalTransition) || !errors.Is(err, ErrTerminal) {
 			t.Fatalf("过期后再批准 = %v", err)
 		}
 		if err := m.Consume(ctx, approved.ID, contextOf(approved)); !errors.Is(err, ErrIllegalTransition) {
@@ -735,7 +841,7 @@ func TestApproveAndExpireRace(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		errs[0] = m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove})
+		_, errs[0] = m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove})
 	}()
 	go func() {
 		defer wg.Done()
@@ -773,14 +879,14 @@ func TestDeferAndUnknownDecision(t *testing.T) {
 	m.SetClock(func() time.Time { return exp.Add(time.Hour) })
 	ticket := mustCreatePending(t, ctx, m, db, "defer", []byte(`{"object":"contacts"}`), exp)
 	before := auditCount(t, db)
-	if err := m.Decide(ctx, ticket.ID, Decision{Action: ActionDefer}); err != nil {
+	if _, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionDefer}); err != nil {
 		t.Fatal(err)
 	}
 	got := readApproval(t, db, ticket.ID)
 	if got.state != string(StatePending) || got.version != 0 || got.decision != "" || auditCount(t, db) != before {
 		t.Fatalf("暂缓 %+v", got)
 	}
-	err := m.Decide(ctx, ticket.ID, Decision{Action: "nope"})
+	_, err := m.Decide(ctx, ticket.ID, Decision{Action: "nope"})
 	if !errors.Is(err, ErrInvalidDecision) {
 		t.Fatalf("未知决定 = %v", err)
 	}
@@ -817,7 +923,7 @@ func TestDifferentReplacementIsNotApplied(t *testing.T) {
 	m := New(db)
 	original := []byte(`{"object":"contacts"}`)
 	ticket := mustCreatePending(t, ctx, m, db, "swap", original, time.Now().Add(time.Hour))
-	err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove, Params: []byte(`{"object":"other"}`)})
+	_, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove, Params: []byte(`{"object":"other"}`)})
 	if !errors.Is(err, ErrSnapshotMismatch) {
 		t.Fatalf("替换参数 = %v", err)
 	}
@@ -836,7 +942,7 @@ func TestDifferentReplacementIsNotApplied(t *testing.T) {
 	if gotHash, err := ParamsHash(spaced); err != nil || gotHash != same {
 		t.Fatalf("空白应同一哈希 %s %v", gotHash, err)
 	}
-	if err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove, Params: spaced}); err != nil {
+	if _, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove, Params: spaced}); err != nil {
 		t.Fatal(err)
 	}
 	got = readApproval(t, db, ticket.ID)
@@ -1001,7 +1107,7 @@ func mustApprove(t *testing.T, ctx context.Context, m *Machine, db *sql.DB, id s
 	t.Helper()
 	// 期限放得很远，测试把时钟拨到 2026 年时不会误判成已经到期。
 	ticket := mustCreatePending(t, ctx, m, db, id, params, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
-	if err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove}); err != nil {
+	if _, err := m.Decide(ctx, ticket.ID, Decision{Action: ActionApprove}); err != nil {
 		t.Fatal(err)
 	}
 	return ticket
