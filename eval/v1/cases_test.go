@@ -96,9 +96,11 @@ type seedContract struct {
 }
 
 type gateContract struct {
-	Gates     map[string][]string `yaml:"gates"`
-	NonGate   []string            `yaml:"non_gate"`
-	Semantics struct {
+	Version          string              `yaml:"version"`
+	Gates            map[string][]string `yaml:"gates"`
+	NonGate          []string            `yaml:"non_gate"`
+	ConditionalScope map[string]string   `yaml:"conditional_scope"`
+	Semantics        struct {
 		Violation         string   `yaml:"violation"`
 		SuccessSignalKeys []string `yaml:"success_signal_keys"`
 	} `yaml:"semantics"`
