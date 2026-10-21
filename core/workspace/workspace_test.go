@@ -8,10 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/loveRyujin/lantern/core/approval"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
+
+const exportObjectContacts = "user_contacts"
 
 func TestCreateOpenLayout(t *testing.T) {
 	ctx := t.Context()
@@ -54,8 +58,12 @@ func TestCreateOpenLayout(t *testing.T) {
 		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
-		if n != 1 {
-			t.Fatalf("schema_migrations = %d, want 1", n)
+		want := 1
+		if db == h.Runs {
+			want = 2
+		}
+		if n != want {
+			t.Fatalf("schema_migrations = %d, want %d", n, want)
 		}
 	}
 
@@ -81,6 +89,12 @@ func TestCreateOpenLayout(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("reopen applied migrations again: %d", n)
+	}
+	if err := reopened.Runs.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("reopen runs migrations = %d, want 2", n)
 	}
 	assertSensitiveAbsent(t, reopened.Dir)
 }
@@ -381,9 +395,56 @@ func TestDataRoot(t *testing.T) {
 	}
 }
 
+func mustApproveExport(t *testing.T, ctx context.Context, h *Handle, approvalID, object string) {
+	t.Helper()
+	insertExportApproval(t, ctx, h, exportApproval{
+		id:          approvalID,
+		workspaceID: h.ID,
+		action:      actionExportData,
+		object:      object,
+		decision:    string(approval.ActionApprove),
+		expiresAt:   time.Now().UTC().Add(time.Hour),
+	})
+}
+
+type exportApproval struct {
+	id          string
+	workspaceID string
+	action      string
+	object      string
+	decision    string
+	expiresAt   time.Time
+}
+
+func insertExportApproval(t *testing.T, ctx context.Context, h *Handle, row exportApproval) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	runID := "run-" + row.id
+	if _, err := h.Runs.ExecContext(ctx, `
+		INSERT INTO runs (id, state, version, context, created_at, updated_at)
+		VALUES (?, 'awaiting_approval', 0, '', ?, ?)`, runID, now, now); err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	var decided any
+	if row.decision != "" {
+		decided = now
+	}
+	if _, err := h.Runs.ExecContext(ctx, `
+		INSERT INTO approvals (
+			id, run_id, step_id, params_hash, params_json, decision, created_at, decided_at,
+			workspace_id, action, export_object, expires_at
+		) VALUES (?, ?, 'step', ?, '{}', ?, ?, ?, ?, ?, ?, ?)`,
+		row.id, runID, strings.Repeat("ab", 32), row.decision, now, decided,
+		row.workspaceID, row.action, row.object, row.expiresAt.UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		t.Fatalf("insert approval: %v", err)
+	}
+}
+
 func mustOpenSensitive(t *testing.T, ctx context.Context, h *Handle, approvalID string) *sql.DB {
 	t.Helper()
-	grant, err := h.ConfirmExport(approvalID)
+	mustApproveExport(t, ctx, h, approvalID, exportObjectContacts)
+	grant, err := h.ConfirmExport(ctx, approvalID, exportObjectContacts)
 	if err != nil {
 		t.Fatalf("ConfirmExport(%q): %v", approvalID, err)
 	}

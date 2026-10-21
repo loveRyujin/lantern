@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+
+	"github.com/loveRyujin/lantern/core/errcode"
 )
 
 const (
@@ -26,13 +28,23 @@ const (
 
 // 工作区标识和路径错误。调用方用 errors.Is 判断。
 var (
-	ErrInvalidID         = errors.New("workspace: invalid id")
-	ErrPathEscape        = errors.New("workspace: path escapes workspace root")
-	ErrExists            = errors.New("workspace: already exists")
-	ErrNotFound          = errors.New("workspace: not found")
-	ErrInvalidApproval   = errors.New("workspace: invalid approval id")
-	ErrExportUnconfirmed = errors.New("workspace: export not confirmed")
+	ErrInvalidID       = errors.New("workspace: invalid id")
+	ErrPathEscape      = errors.New("workspace: path escapes workspace root")
+	ErrExists          = errors.New("workspace: already exists")
+	ErrNotFound        = errors.New("workspace: not found")
+	ErrInvalidApproval = errors.New("workspace: invalid approval id")
+	// ErrExportUnconfirmed 表示没有一张可用的已批准导出确认。
+	// Code 返回 export_unconfirmed。记录不存在、未批准、已拒绝、工作区或导出对象
+	// 不一致、已过期、已使用，都是这个错误。
+	ErrExportUnconfirmed error = exportDenied{}
 )
+
+// exportDenied 是 [ErrExportUnconfirmed] 的具体类型，方便 errors.As 取到错误码。
+type exportDenied struct{}
+
+func (exportDenied) Error() string { return "workspace: export not confirmed" }
+
+func (exportDenied) Code() errcode.Code { return errcode.ExportUnconfirmed }
 
 // Handle 是一个已经打开的工作区。
 // 启动时只打开 kb、analytics、runs。sensitive.db 不在这里，见 [Handle.OpenSensitive]。

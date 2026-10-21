@@ -3,10 +3,18 @@ package workspace
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"time"
 	"unicode"
+
+	"github.com/loveRyujin/lantern/core/approval"
 )
+
+// actionExportData 是会打开敏感库的那一次工具调用。
+// 写操作或其他确认单即使已批准，也不能用来签发导出凭证。
+const actionExportData = "export_data"
 
 // exportGrant 是签发记录。同一张确认单在一个工作区里只能签发一次。
 type exportGrant struct {
@@ -15,7 +23,7 @@ type exportGrant struct {
 	used       bool
 }
 
-// ExportGrant 是用户确认一次敏感导出后签发的凭证。
+// ExportGrant 是对照 runs.approvals 里一条已批准导出确认后签发的凭证。
 // 只有 [Handle.ConfirmExport] 能签发。字段不导出，包外写不出一张能通过校验的凭证。
 // 凭证绑在签发它的工作区上，只能成功打开一次 sensitive.db。
 type ExportGrant struct {
@@ -24,28 +32,43 @@ type ExportGrant struct {
 	approvalID string
 }
 
-// ApprovalID 返回签发这张凭证时记下的确认单标识。
+// ApprovalID 返回这张凭证对应的确认单标识。
 func (g ExportGrant) ApprovalID() string { return g.approvalID }
 
-// ConfirmExport 在用户已经确认这次导出之后签发凭证。
-// approvalID 是确认单标识，同一工作区里同一张确认单只能签发一次。
-// 本方法不创建、不打开 sensitive.db。
-func (h *Handle) ConfirmExport(approvalID string) (ExportGrant, error) {
-	if h == nil {
-		return ExportGrant{}, fmt.Errorf("workspace: %w", ErrExportUnconfirmed)
+// ConfirmExport 在 runs.approvals 里找到一条可用的导出确认后签发凭证。
+//
+// 记录必须已经存在，并且同时满足：决定是批准、动作是 export_data、
+// workspace_id 等于这个工作区、export_object 等于 exportObject、
+// expires_at 晚于现在、consumed_at 为空。签发成功会写上 consumed_at，
+// 所以同一张确认单不能再签发第二次。本方法不创建、不打开 sensitive.db。
+// 任意字符串、未批准、已拒绝、别的工作区、别的导出对象、过期或重放都返回
+// [ErrExportUnconfirmed]，错误码是 export_unconfirmed。
+func (h *Handle) ConfirmExport(ctx context.Context, approvalID, exportObject string) (ExportGrant, error) {
+	if err := ctx.Err(); err != nil {
+		return ExportGrant{}, err
+	}
+	if h == nil || h.Runs == nil {
+		return ExportGrant{}, ErrExportUnconfirmed
 	}
 	if err := validateApprovalID(approvalID); err != nil {
+		return ExportGrant{}, err
+	}
+	if err := validateExportObject(exportObject); err != nil {
+		return ExportGrant{}, err
+	}
+	h.mu.Lock()
+	closed := h.closed
+	h.mu.Unlock()
+	if closed {
+		return ExportGrant{}, fmt.Errorf("workspace: closed: %w", ErrExportUnconfirmed)
+	}
+	if err := h.consumeApproval(ctx, approvalID, exportObject); err != nil {
 		return ExportGrant{}, err
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed {
 		return ExportGrant{}, fmt.Errorf("workspace: closed: %w", ErrExportUnconfirmed)
-	}
-	for _, g := range h.grants {
-		if g.approvalID == approvalID {
-			return ExportGrant{}, fmt.Errorf("workspace: approval %q: %w", approvalID, ErrExportUnconfirmed)
-		}
 	}
 	h.nextGrant++
 	id := h.nextGrant
@@ -77,6 +100,66 @@ func (h *Handle) OpenSensitive(ctx context.Context, grant ExportGrant) (*sql.DB,
 		return nil, err
 	}
 	return db, nil
+}
+
+func (h *Handle) consumeApproval(ctx context.Context, approvalID, exportObject string) error {
+	tx, err := h.Runs.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("workspace: approval: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var workspaceID, action, object, decision, expiresAt string
+	var consumed sql.NullString
+	err = tx.QueryRowContext(ctx, `
+		SELECT workspace_id, action, export_object, decision, expires_at, consumed_at
+		FROM approvals WHERE id = ?`, approvalID,
+	).Scan(&workspaceID, &action, &object, &decision, &expiresAt, &consumed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrExportUnconfirmed
+	}
+	if err != nil {
+		return fmt.Errorf("workspace: approval: %w", err)
+	}
+	if !approvalUsable(h.ID, exportObject, workspaceID, action, object, decision, expiresAt, consumed.Valid, time.Now()) {
+		return ErrExportUnconfirmed
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := tx.ExecContext(ctx, `
+		UPDATE approvals SET consumed_at = ?
+		WHERE id = ? AND consumed_at IS NULL`, now, approvalID,
+	)
+	if err != nil {
+		return fmt.Errorf("workspace: approval: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("workspace: approval: %w", err)
+	}
+	if n != 1 {
+		return ErrExportUnconfirmed
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("workspace: approval: %w", err)
+	}
+	return nil
+}
+
+func approvalUsable(handleID, wantObject, workspaceID, action, object, decision, expiresAt string, consumed bool, now time.Time) bool {
+	if workspaceID != handleID || action != actionExportData || object != wantObject {
+		return false
+	}
+	if decision != string(approval.ActionApprove) || consumed {
+		return false
+	}
+	exp, err := time.Parse(time.RFC3339Nano, expiresAt)
+	if err != nil {
+		exp, err = time.Parse(time.RFC3339, expiresAt)
+		if err != nil {
+			return false
+		}
+	}
+	return exp.After(now)
 }
 
 func (h *Handle) reserve(grant ExportGrant) error {
@@ -119,12 +202,26 @@ func (h *Handle) commit(id uint64, db *sql.DB) error {
 }
 
 func validateApprovalID(id string) error {
+	if err := validateToken(id); err != nil {
+		return fmt.Errorf("workspace: approval id: %w", errors.Join(ErrExportUnconfirmed, ErrInvalidApproval))
+	}
+	return nil
+}
+
+func validateExportObject(object string) error {
+	if err := validateToken(object); err != nil {
+		return fmt.Errorf("workspace: export object: %w", errors.Join(ErrExportUnconfirmed, ErrInvalidApproval))
+	}
+	return nil
+}
+
+func validateToken(id string) error {
 	if id == "" || len(id) > 256 {
-		return fmt.Errorf("workspace: approval id: %w", ErrInvalidApproval)
+		return ErrInvalidApproval
 	}
 	for _, r := range id {
 		if r == 0 || unicode.IsControl(r) || unicode.IsSpace(r) {
-			return fmt.Errorf("workspace: approval id: %w", ErrInvalidApproval)
+			return ErrInvalidApproval
 		}
 	}
 	return nil

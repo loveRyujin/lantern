@@ -11,9 +11,12 @@
 //	    tmp/           沙箱临时目录
 //
 // [Create] 和 [Open] 只打开 kb、analytics、runs。sensitive.db 不在启动路径上。
-// 用户确认导出后，调用 [Handle.ConfirmExport] 拿到 [ExportGrant]，再交给
-// [Handle.OpenSensitive] 才会创建并打开这个库。凭证是一次性的，绑在签发它的工作区上；
-// 零值、伪造值、别的工作区的凭证、已经用过的凭证都拿不到连接。
+// 用户确认导出并落成 runs.approvals 里的一条已批准记录之后，调用
+// [Handle.ConfirmExport] 才会签发 [ExportGrant]。记录必须存在、决定为批准、
+// 动作是 export_data、工作区和导出对象与本次调用一致、未过期，且没有用过。
+// 任意字符串签不出凭证。凭证再交给 [Handle.OpenSensitive] 才会创建并打开这个库。
+// 凭证绑在签发它的工作区上，同一张确认单和同一张凭证都只能成功打开一次。
+// 拒绝时的错误码是 export_unconfirmed。
 //
 // 库都用 modernc.org/sqlite，并以 WAL 打开。Core 只拿 [Handle]，按路径分别打开，
 // 没有“共用一个库再过滤”的做法。每条由本包打开的连接（含确认后的 sensitive）都把
