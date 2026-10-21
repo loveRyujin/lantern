@@ -49,6 +49,8 @@ python -I -m pip install --disable-pip-version-check --no-input --require-hashes
 
 venv 根目录下有 `.lantern-requirements.sha256`。标记同时写下锁文件哈希、基础解释器绝对路径和版本。三者一致，且 venv 解释器版本仍在锁定范围内时，`Ensure` 不再调用 pip。标记缺失、哈希变化或基础解释器变了，就在 `<Root>/pyenv` 里新建临时目录，对这个空目录执行 `python -I -m venv`（不带 `--clear`），再 `rename` 成 `venv`。旧目录先改名挪开，删除前从解析后的 Root 再往下 Lstat：Root 以下任一层是符号链接，或解析后不在这个 Root 内，就返回 `path_escape`，不对它 `RemoveAll`。`--clear` 在沙箱外执行，目标若是指向 Root 外的符号链接，删掉的是外面的文件，所以不再使用。
 
+`Ensure` 一开始会清掉 `pyenv` 下残留的 `.venv-new-*` 和 `.venv-old-*`。这是两次 `rename` 中间进程崩溃时留下的临时目录。只删除解析后仍在真实 Root 内的真实目录。同名的符号链接和普通文件留在原地，不跟随链接，也不对它们 `RemoveAll`。`TestEnsureSweepsRenameCrashLeftovers` 在 Root 里放好这两级目录（以及指向 Root 外的同名符号链接）再调用 `Ensure`。
+
 调用方给出的 `Root` 先做一次 `EvalSymlinks`，得到的真实目录是信任起点。macOS 上 `/var`、`/tmp` 本身就是符号链接，`$TMPDIR` 会经过它们；这些祖先目录不算 `path_escape`。只对真实 Root 以下的 `pyenv`、`venv`、临时目录和备份目录逐级 `Lstat`，发现符号链接就拒绝。解析之后的路径必须仍在这个真实 Root 内。缺的目录逐级 `Mkdir`，不用 `MkdirAll`。
 
 两次路径检查之间的替换由测试钩子覆盖。`MkdirTemp`、`rename` 和删除旧目录之间仍有一小段只靠删除前再次 `Lstat` 收口的窗口；同一 Root 不并发调用时，这个窗口没有第二个 `Ensure` 来钻。
