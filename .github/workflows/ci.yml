@@ -44,8 +44,10 @@ jobs:
       - name: Demonstrate rejected cgo and mygo imports
         run: bash scripts/demo-constraint-ci.sh
 
-      - name: Official eval exits zero
-        run: make eval REPORT_DIR="${RUNNER_TEMP}/eval-official"
+      - name: Official eval on Linux scores 213
+        run: |
+          make eval REPORT_DIR="${RUNNER_TEMP}/eval-official"
+          python3 scripts/check-eval-platform.py linux "${RUNNER_TEMP}/eval-official"
 
       - name: Intentional gate violations exit non-zero
         run: |
@@ -70,3 +72,14 @@ jobs:
 
       - name: Probe sandbox-exec
         run: bash scripts/probe-sandbox-exec.sh
+
+      - name: Setup Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+
+      - name: Darwin sandbox cases pass
+        run: |
+          make eval PLATFORM=darwin REPORT_DIR="${RUNNER_TEMP}/eval-darwin"
+          python3 scripts/check-eval-platform.py darwin "${RUNNER_TEMP}/eval-darwin"

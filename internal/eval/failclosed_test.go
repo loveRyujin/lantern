@@ -2,7 +2,9 @@ package eval_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -550,8 +552,9 @@ func TestFrozenV1IsNotFalseGreen(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := res.Report.Summary
-	if sum.Cases != 233 || sum.Passed != 233 || sum.Failed != 0 || sum.MissingObservation != 0 || sum.Skipped != 0 {
-		t.Fatalf("冻结用例集实跑结果异常: %+v", sum)
+	// --platform all 加载并评分全部 233 条。Linux 默认 make eval 是 auto，只评分 213。
+	if res.Report.SelectedPlatform != "all" || sum.Cases != 233 || sum.Scored != 233 || sum.Passed != 233 || sum.Filtered != 0 || sum.Failed != 0 || sum.MissingObservation != 0 || sum.Skipped != 0 {
+		t.Fatalf("--platform all 应加载并评分 233 条: 平台 %s 摘要 %+v", res.Report.SelectedPlatform, sum)
 	}
 	if res.ExitCode != eval.ExitOK || !sum.HardGatesPassed {
 		t.Fatalf("有样本且观测符合期望时应以 0 退出: %+v", sum)
@@ -579,8 +582,8 @@ func TestFrozenV1IsNotFalseGreen(t *testing.T) {
 	if len(res.Report.HardGates) != 3 {
 		t.Fatalf("门槛 = %+v", res.Report.HardGates)
 	}
-	if sum.Cases != 233 || sum.Skipped != 0 || res.ExitCode != eval.ExitOK {
-		t.Fatalf("锁定总数 233、skipped 0、退出码 0: 退出 %d 摘要 %+v", res.ExitCode, sum)
+	if sum.Cases != 233 || sum.Scored != 233 || sum.Skipped != 0 || res.ExitCode != eval.ExitOK {
+		t.Fatalf("--platform all 锁定加载 233、评分 233、skipped 0、退出码 0: 退出 %d 摘要 %+v", res.ExitCode, sum)
 	}
 	wantSamples := map[string]int{"exfiltration": 241, "side_effect": 60, "sandbox": 104}
 	for _, gate := range res.Report.HardGates {
@@ -599,6 +602,53 @@ func TestFrozenV1IsNotFalseGreen(t *testing.T) {
 	}
 	if res.Report.Environment.Model != "mock" || res.Report.Environment.EmbeddingModel != "mock" {
 		t.Fatalf("环境 = %+v", res.Report.Environment)
+	}
+}
+
+func TestDarwinSandboxCasesPass(t *testing.T) {
+	t.Parallel()
+	suite := filepath.Join(moduleRoot(t), "eval", "v1")
+	res, err := eval.Execute(context.Background(), eval.Options{
+		Root:     suite,
+		OutDir:   t.TempDir(),
+		Platform: "darwin",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := res.Report.Summary
+	if res.ExitCode != eval.ExitOK || res.Report.SelectedPlatform != "darwin" || sum.Skipped != 0 || sum.Failed != 0 || sum.MissingObservation != 0 || !sum.HardGatesPassed {
+		t.Fatalf("darwin 20 条应全部通过并退出 0: 退出 %d 摘要 %+v", res.ExitCode, sum)
+	}
+	passed := map[string]struct{}{}
+	var filtered []string
+	for _, item := range res.Report.Cases {
+		if strings.HasPrefix(item.ID, "SB-MACOS-") {
+			if item.Status != "passed" || item.Platform != "darwin" || !strings.HasPrefix(item.Category, "sandbox.") {
+				t.Fatalf("darwin 沙箱用例未通过: %+v", item)
+			}
+			passed[item.ID] = struct{}{}
+		}
+		if item.Status == "filtered" {
+			filtered = append(filtered, item.ID)
+		}
+	}
+	var wantDarwin []string
+	var wantLinux []string
+	for i := 1; i <= 20; i++ {
+		id := fmt.Sprintf("SB-MACOS-%02d", i)
+		wantDarwin = append(wantDarwin, id)
+		wantLinux = append(wantLinux, fmt.Sprintf("SB-LINUX-%02d", i))
+		if _, ok := passed[id]; !ok {
+			t.Fatalf("缺少通过的 darwin 用例 %s", id)
+		}
+	}
+	if len(passed) != len(wantDarwin) {
+		t.Fatalf("通过的 darwin 沙箱用例 = %d，应为 20", len(passed))
+	}
+	sort.Strings(filtered)
+	if strings.Join(filtered, ",") != strings.Join(wantLinux, ",") {
+		t.Fatalf("darwin 运行过滤的用例 = %v，应为 20 条 linux 沙箱用例", filtered)
 	}
 }
 

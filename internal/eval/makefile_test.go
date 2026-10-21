@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -64,48 +67,50 @@ func TestMakeEvalEmptySuiteExitsZero(t *testing.T) {
 	}
 }
 
-// otherPlatformSandboxCases 是 eval/v1 里标成另一平台的沙箱用例数。
-// darwin 与 linux 各 20 条，全部有 input.mock。make eval 的 auto 只评当前平台，
-// 这 20 条记为平台过滤，skipped 仍是 0。
-const otherPlatformSandboxCases = 20
+// linuxAutoScored 是 Linux 上 make eval（PLATFORM=auto）的实际评分数。
+// 233 条都会加载；其中 20 条 darwin 沙箱用例被过滤，skipped 为 0。
+const linuxAutoScored = 213
 
 func TestMakeEvalOfficialSet(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux CI 的 auto 基线只在 linux 上锁定 scored 213、filtered 20、skipped 0")
+	}
 	root := moduleRoot(t)
 	out := t.TempDir()
 	code, output := runMake(t, root, "REPORT_DIR="+out)
 	if code != 0 {
-		t.Fatalf("make eval 退出码 = %d，实跑结果是 0\n%s", code, output)
+		t.Fatalf("make eval 退出码 = %d，Linux auto 应为 0\n%s", code, output)
 	}
 	report := readMakeReport(t, out)
+	if report.SelectedPlatform != "linux" {
+		t.Fatalf("默认平台 = %s，Linux auto 应为 linux", report.SelectedPlatform)
+	}
 	sum := report.Summary
 	if sum.Cases != 233 {
-		t.Fatalf("用例总数 = %d，#26 验收口径是 233", sum.Cases)
+		t.Fatalf("Linux auto 加载了 %d 条，用例总数是 233", sum.Cases)
 	}
-	if sum.Skipped != 0 {
-		t.Fatalf("skipped = %d，233 条都有 input.mock，不应跳过", sum.Skipped)
+	if sum.Scored != linuxAutoScored || sum.Passed != linuxAutoScored || sum.Filtered != 20 || sum.Skipped != 0 || sum.Failed != 0 || sum.MissingObservation != 0 {
+		t.Fatalf("Linux auto 应评分 213、过滤 20、跳过 0，摘要 %+v", sum)
 	}
-	if sum.Filtered != otherPlatformSandboxCases {
-		t.Fatalf("平台过滤 = %d，应为另一平台的 %d 条沙箱用例", sum.Filtered, otherPlatformSandboxCases)
+	if sum.Scored == sum.Cases || sum.Passed == sum.Cases {
+		t.Fatalf("Linux auto 的实际评分是 %d，摘要 %+v", linuxAutoScored, sum)
 	}
-	if sum.Scored != sum.Cases-otherPlatformSandboxCases || sum.MissingObservation != 0 {
-		t.Fatalf("实际评分 = %d，摘要 %+v", sum.Scored, sum)
-	}
-	selected := report.SelectedPlatform
 	var filteredIDs []string
 	for _, item := range report.Cases {
 		if item.Status != "filtered" {
 			continue
 		}
 		filteredIDs = append(filteredIDs, item.ID)
-		if item.Platform == "" || item.Platform == selected || !strings.HasPrefix(item.Category, "sandbox.") {
-			t.Fatalf("过滤用例不是另一平台的沙箱用例: %+v", item)
+		if item.Platform != "darwin" || !strings.HasPrefix(item.Category, "sandbox.") {
+			t.Fatalf("过滤用例不是 darwin 沙箱用例: %+v", item)
 		}
 		if len(item.Failures) == 0 || !strings.Contains(strings.Join(item.Failures, " "), "平台") {
 			t.Fatalf("过滤用例没有写明原因: %+v", item)
 		}
 	}
-	if len(filteredIDs) != otherPlatformSandboxCases {
-		t.Fatalf("列出的过滤用例 = %d，应为 %d", len(filteredIDs), otherPlatformSandboxCases)
+	sort.Strings(filteredIDs)
+	if strings.Join(filteredIDs, ",") != strings.Join(sandboxIDs("SB-MACOS"), ",") {
+		t.Fatalf("过滤用例 = %v，应为 SB-MACOS-01 到 SB-MACOS-20", filteredIDs)
 	}
 	matches, err := filepath.Glob(filepath.Join(out, "eval-*.md"))
 	if err != nil || len(matches) != 1 {
@@ -122,7 +127,6 @@ func TestMakeEvalOfficialSet(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"- 用例总数: 233",
 		"- 实际评分: 213",
 		"- 跳过: 0",
 		"- 平台过滤: 20",
@@ -179,6 +183,14 @@ func TestMakeEvalNegativeExitsNonZero(t *testing.T) {
 			t.Fatalf("%s 应被判失败且有样本: %+v", id, gate)
 		}
 	}
+}
+
+func sandboxIDs(prefix string) []string {
+	ids := make([]string, 0, 20)
+	for i := 1; i <= 20; i++ {
+		ids = append(ids, fmt.Sprintf("%s-%02d", prefix, i))
+	}
+	return ids
 }
 
 func runMake(t *testing.T, root string, args ...string) (int, string) {
