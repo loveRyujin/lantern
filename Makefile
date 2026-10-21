@@ -3,7 +3,7 @@
 export CGO_ENABLED := 0
 
 seed:
-	@echo "TODO: lantern-seed 尚未实现"
+	go run ./cmd/lantern-seed -force
 
 test:
 	go test ./...
