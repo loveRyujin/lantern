@@ -44,8 +44,8 @@ func TestCLIMissingCatalogExitsNonZero(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--root", root, "--out", t.TempDir()}, &stdout, &stderr)
-	if code == eval.ExitOK {
-		t.Fatalf("缺少规则清单时不应成功\n%s", stderr.String())
+	if code != eval.ExitUsage {
+		t.Fatalf("缺少规则清单的退出码 = %d，应为 %d\n%s", code, eval.ExitUsage, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "规则清单") {
 		t.Fatalf("stderr = %s", stderr.String())
@@ -115,8 +115,8 @@ gates:
 	}
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"run", "--root", root, "--out", out}, &stdout, &stderr)
-	if code == eval.ExitOK {
-		t.Fatalf("不安全期望应以非零退出，实际 %d\n%s", code, stderr.String())
+	if code != eval.ExitUsage {
+		t.Fatalf("不安全期望的退出码 = %d，应为 %d\n%s", code, eval.ExitUsage, stderr.String())
 	}
 	text := stderr.String()
 	for _, want := range []string{"LEAK-COUNT", "sensitive_plaintext_count", "NET-OPEN", "sandbox_network_denied"} {

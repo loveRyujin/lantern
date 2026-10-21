@@ -42,8 +42,9 @@ type GateInfo struct {
 	NonGate []string `json:"non_gate"`
 }
 
-// LoadGateSet 读取 gates.yaml。version 必填。
-func LoadGateSet(path string) (GateSet, error) {
+// loadGateSet 读取 gates.yaml。version 必填。
+// 不导出：评分前必须走 LoadCheckedGateSet，否则会绕过双向校验和安全期望校验。
+func loadGateSet(path string) (GateSet, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return GateSet{}, fmt.Errorf("eval: 读取门槛文件 %s: %w", path, err)
@@ -329,7 +330,7 @@ func parseNameList(raw any, field string) ([]string, error) {
 // LoadCheckedGateSet 读取门槛文件，完成清单双向校验，并检查外泄与沙箱键的期望值。
 // 期望值不是安全值时返回错误，调用方不写报告。
 func LoadCheckedGateSet(path string, suite Suite, catalog RuleCatalog) (GateSet, error) {
-	gates, err := LoadGateSet(path)
+	gates, err := loadGateSet(path)
 	if err != nil {
 		return GateSet{}, err
 	}

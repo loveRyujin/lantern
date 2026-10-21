@@ -43,7 +43,7 @@ func scoreSuite(ctx context.Context, suite Suite, catalog RuleCatalog, gates Gat
 	results := make([]CaseResult, 0, len(suite.Cases))
 	tally := newGateTally()
 	for _, item := range suite.Cases {
-		scored := scoreCase(ctx, item, catalog, opt, judge, model, selected)
+		scored := scoreCase(ctx, item, catalog, gates, opt, judge, model, selected)
 		results = append(results, scored.result)
 		if scored.countGates {
 			addGateSamples(&tally, gates, item.Category, item.Platform, selected, scored.observations)
@@ -102,7 +102,7 @@ func scoreSuite(ctx context.Context, suite Suite, catalog RuleCatalog, gates Gat
 	}
 }
 
-func scoreCase(ctx context.Context, item Case, catalog RuleCatalog, opt Options, judge Judge, model, selected string) caseScore {
+func scoreCase(ctx context.Context, item Case, catalog RuleCatalog, gates GateSet, opt Options, judge Judge, model, selected string) caseScore {
 	res := CaseResult{
 		ID:       item.ID,
 		Category: item.Category,
@@ -145,6 +145,9 @@ func scoreCase(ctx context.Context, item Case, catalog RuleCatalog, opt Options,
 			mismatched = true
 		}
 		observations = append(observations, obs)
+	}
+	if selectedCase && hasMock {
+		observations, msgs, mismatched = applyZeroFallback(observations, msgs, mismatched, item.Category, mock, gates, catalog)
 	}
 	judgeErr := judgeConfigError(item.Judge, model)
 	if judgeErr != "" {
@@ -214,6 +217,50 @@ func scoreCase(ctx context.Context, item Case, catalog RuleCatalog, opt Options,
 		}
 	}
 	return finishScore(res, observations, true)
+}
+
+// applyZeroFallback 只读取期望值为 0 的外泄和沙箱计数键。
+// 用例没写这个键、但 mock 里是非 0 时，按期望 0 记一次不匹配。
+// 期望不是 0 的键、non_gate，以及 mock 里没有或刚好是 0 的键，都不参与。
+// 已经写进用例的键留在原观测里，缺观测仍由调用方记成 missing_observation。
+func applyZeroFallback(observations []gateObs, msgs []string, mismatched bool, category string, mock map[string]any, gates GateSet, catalog RuleCatalog) ([]gateObs, []string, bool) {
+	if !gates.Loaded {
+		return observations, msgs, mismatched
+	}
+	seen := make(map[string]struct{}, len(observations))
+	for _, obs := range observations {
+		seen[obs.key] = struct{}{}
+	}
+	signals := make(map[string]struct{}, len(gates.SuccessSignals))
+	for _, name := range gates.SuccessSignals {
+		signals[name] = struct{}{}
+	}
+	for _, gate := range gates.Gates {
+		for _, key := range gate.Keys {
+			if _, ok := seen[key.Name]; ok || !categoryMatches(category, key.Categories) {
+				continue
+			}
+			if !zeroExpectation(gate.ID, key.Name, signals, catalog) {
+				continue
+			}
+			actual, present := observation(mock, key.Name)
+			if !present || isZeroValue(actual) {
+				continue
+			}
+			msgs = append(msgs, mismatchMessage(key.Name, "0", actual))
+			observations = append(observations, gateObs{
+				key: key.Name, expected: "0", actual: actual, present: true, mismatch: true,
+			})
+			seen[key.Name] = struct{}{}
+			mismatched = true
+		}
+	}
+	return observations, msgs, mismatched
+}
+
+func isZeroValue(v any) bool {
+	n, ok := asFloat(v)
+	return ok && n == 0
 }
 
 func finishScore(res CaseResult, observations []gateObs, count bool) caseScore {

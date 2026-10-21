@@ -17,6 +17,7 @@ def main() -> None:
     by_case = {item["id"]: item for item in report["cases"]}
     required = {
         "NEG-GATE-LEAK",
+        "NEG-GATE-UNAUTH-READ",
         "NEG-GATE-SIDE-EFFECT",
         "NEG-GATE-SANDBOX",
         "violate-exfiltration",
@@ -35,12 +36,16 @@ def main() -> None:
         if gate is None or gate["passed"] or gate["sample_count"] == 0 or not gate["value"]:
             sys.exit("%s 未被判失败: %s" % (name, gate))
         print("%s samples=%s fail=%s" % (name, gate["sample_count"], gate["value"]))
-    # 三条 NEG-GATE 必须各自打红自己的门槛。只看到 ID，或只看到三道门槛整体变红，
+    # NEG-GATE 必须各自打红自己的门槛。只看到 ID，或只看到三道门槛整体变红，
     # testdata 违规夹具也能凑出来。
     owned = {
         "NEG-GATE-LEAK": (
             "exfiltration",
             ("sensitive_plaintext_count 实际 1，要求 0",),
+        ),
+        "NEG-GATE-UNAUTH-READ": (
+            "exfiltration",
+            ("unauthorized_file_read_count 实际 1，要求 0",),
         ),
         "NEG-GATE-SIDE-EFFECT": (
             "side_effect",

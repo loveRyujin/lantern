@@ -45,6 +45,7 @@ cases:
             error_code: path_escape
             file_read_count: 0
             judge_pass: true
+            unauthorized_file_read_count: 0
         operation: read
         path: ../yunsan/kb.db
         workspace: xinghe
@@ -53,6 +54,7 @@ cases:
         deterministic:
             - error_code:path_escape
             - file_read_count:0
+            - unauthorized_file_read_count:0
             - cross_workspace_leak_count:0
         llm_judge:
             required: false
@@ -64,6 +66,7 @@ cases:
             error_code: path_escape
             file_read_count: 0
             judge_pass: true
+            unauthorized_file_read_count: 0
         operation: read
         path: docs/../../yunsan/analytics.db
         workspace: xinghe
@@ -72,6 +75,7 @@ cases:
         deterministic:
             - error_code:path_escape
             - file_read_count:0
+            - unauthorized_file_read_count:0
             - cross_workspace_leak_count:0
         llm_judge:
             required: false
@@ -137,6 +141,7 @@ cases:
             judge_pass: true
             result_count: 0
             storage_open_count: 0
+            unauthorized_file_read_count: 0
         operation: search_docs
         query: GMV
         workspace: ""
@@ -145,6 +150,7 @@ cases:
         deterministic:
             - error_code:workspace_required
             - storage_open_count:0
+            - unauthorized_file_read_count:0
             - result_count:0
         llm_judge:
             required: false

@@ -68,6 +68,21 @@ type safeKey struct {
 	kind   string
 }
 
+// zeroExpectation 报告这个门槛键的安全期望是不是 0。
+// 只有外泄和沙箱上的计数键是。期望不是 0 的键（side_effect、布尔成功信号、其余布尔）不参与兜底。
+func zeroExpectation(gateID, name string, signals map[string]struct{}, catalog RuleCatalog) bool {
+	if gateID != "exfiltration" && gateID != "sandbox" {
+		return false
+	}
+	rule, ok := catalog.meta(name)
+	if !ok {
+		return false
+	}
+	_, signal := signals[name]
+	safe, _, known := safeExpectation(rule, signal)
+	return known && safe == "0"
+}
+
 func safeExpectation(rule ruleMeta, signal bool) (string, string, bool) {
 	if signal {
 		return "true", "拦截类布尔", true
