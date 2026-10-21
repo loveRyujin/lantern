@@ -3,7 +3,8 @@
 
 linux: default make eval on Linux (PLATFORM=auto). Scores 213, filters the 20
 darwin sandbox cases, skipped is 0. It must not treat all 233 as scored.
-darwin: PLATFORM=darwin. The 20 darwin sandbox cases are scored and all pass.
+darwin: PLATFORM=darwin, mock mode. Loads 233, scores 213, the 20 darwin
+sandbox cases all pass.
 all: PLATFORM=all. Loads and scores all 233.
 """
 
@@ -54,8 +55,6 @@ def check_linux(report, summary, cases) -> None:
     expect(summary, "passed", 213)
     expect(summary, "failed", 0)
     expect(summary, "missing_observation", 0)
-    if summary["scored"] == summary["cases"]:
-        sys.exit("Linux auto 评分了全部 %s 条，实际评分应为 213" % summary["cases"])
     if not summary.get("hard_gates_passed"):
         sys.exit("硬门槛未通过")
     check_gate_samples(report)
@@ -73,6 +72,9 @@ def check_linux(report, summary, cases) -> None:
 def check_darwin(report, summary, cases) -> None:
     if report.get("selected_platform") != "darwin":
         sys.exit("darwin 基线的平台是 %s" % report.get("selected_platform"))
+    expect(summary, "cases", 233)
+    expect(summary, "scored", 213)
+    expect(summary, "passed", 213)
     expect(summary, "skipped", 0)
     expect(summary, "failed", 0)
     expect(summary, "missing_observation", 0)

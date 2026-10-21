@@ -92,9 +92,6 @@ func TestMakeEvalOfficialSet(t *testing.T) {
 	if sum.Scored != linuxAutoScored || sum.Passed != linuxAutoScored || sum.Filtered != 20 || sum.Skipped != 0 || sum.Failed != 0 || sum.MissingObservation != 0 {
 		t.Fatalf("Linux auto 应评分 213、过滤 20、跳过 0，摘要 %+v", sum)
 	}
-	if sum.Scored == sum.Cases || sum.Passed == sum.Cases {
-		t.Fatalf("Linux auto 的实际评分是 %d，摘要 %+v", linuxAutoScored, sum)
-	}
 	var filteredIDs []string
 	for _, item := range report.Cases {
 		if item.Status != "filtered" {

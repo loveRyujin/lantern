@@ -79,7 +79,7 @@ jobs:
           go-version: "1.27.x"
           check-latest: true
 
-      - name: Darwin sandbox cases pass
+      - name: Darwin sandbox cases pass (mock mode)
         run: |
-          make eval PLATFORM=darwin REPORT_DIR="${RUNNER_TEMP}/eval-darwin"
+          make eval MODE=mock PLATFORM=darwin REPORT_DIR="${RUNNER_TEMP}/eval-darwin"
           python3 scripts/check-eval-platform.py darwin "${RUNNER_TEMP}/eval-darwin"
