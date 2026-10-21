@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# 用和 CI 相同的命令，在临时副本里证明两条约束会被拒绝：
+# 用和 CI 相同的命令，在临时副本里证明这些约束：
 #   1. 引入只含 cgo 的依赖后，CGO_ENABLED=0 go build ./... 失败
 #   2. internal/ui 之外 import github.com/egoist/mygo 后，golangci-lint (depguard) 失败
-# 命令按预期失败时，本脚本成功退出。
+#   3. core/internal/ui 这种路径片段同样被拒绝；模块根下的 internal/ui 及其子包仍然通过
+# 该失败的命令失败、该通过的命令通过时，本脚本成功退出。
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,6 +50,28 @@ expect_fail() {
 		exit 1
 	fi
 	echo "符合预期: 退出码 ${status}，输出匹配 /${pattern}/。"
+	rm -f "$log"
+}
+
+expect_ok() {
+	local title="$1"
+	local dir="$2"
+	shift 2
+
+	echo
+	echo "======== ${title} ========"
+	local log
+	log="$(mktemp)"
+	set +e
+	(cd "$dir" && "$@") >"$log" 2>&1
+	local status=$?
+	set -e
+	cat "$log"
+	if [[ "$status" -ne 0 ]]; then
+		echo "结果不对: 命令失败了，但这里应该成功。" >&2
+		exit 1
+	fi
+	echo "符合预期: 退出码 0。"
 	rm -f "$log"
 }
 
@@ -102,5 +125,45 @@ expect_fail \
 	"$mygo_dir" \
 	golangci-lint run ./...
 
+ui_ok="${work}/ui-ok"
+copy_tree "$ui_ok"
+mkdir -p "${ui_ok}/internal/ui/sub/nested"
+cat >"${ui_ok}/internal/ui/sub/sub.go" <<'EOF'
+package sub
+
+import "github.com/egoist/mygo"
+
+func mygoVersion() string { return mygo.Version }
+EOF
+cat >"${ui_ok}/internal/ui/sub/nested/nested.go" <<'EOF'
+package nested
+
+import "github.com/egoist/mygo"
+
+func mygoVersion() string { return mygo.Version }
+EOF
+
+expect_ok \
+	"模块根下 internal/ui 及其子包 import mygo，golangci-lint 应该通过" \
+	"$ui_ok" \
+	golangci-lint run ./...
+
+ui_bad="${work}/ui-bad"
+copy_tree "$ui_bad"
+mkdir -p "${ui_bad}/core/internal/ui"
+cat >"${ui_bad}/core/internal/ui/probe.go" <<'EOF'
+package ui
+
+import "github.com/egoist/mygo"
+
+func mygoVersion() string { return mygo.Version }
+EOF
+
+expect_fail \
+	"core/internal/ui 下 import mygo 后，golangci-lint 应该失败" \
+	"core/internal/ui" \
+	"$ui_bad" \
+	golangci-lint run ./...
+
 echo
-echo "两条约束都会把对应的 CI 命令打失败。"
+echo "cgo 和 internal/ui 之外的 mygo 引用都会把对应的 CI 命令打失败；core/internal/ui 同样失败，模块根下的 internal/ui 及其子包仍然通过。"
