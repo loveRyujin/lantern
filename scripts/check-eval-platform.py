@@ -58,6 +58,7 @@ def check_linux(report, summary, cases) -> None:
         sys.exit("Linux auto 评分了全部 %s 条，实际评分应为 213" % summary["cases"])
     if not summary.get("hard_gates_passed"):
         sys.exit("硬门槛未通过")
+    check_gate_samples(report)
     ids = platform_ids("SB-MACOS")
     filtered = sorted(item["id"] for item in cases.values() if item["status"] == "filtered")
     if filtered != ids:
@@ -76,6 +77,7 @@ def check_darwin(report, summary, cases) -> None:
     expect(summary, "missing_observation", 0)
     if not summary.get("hard_gates_passed"):
         sys.exit("硬门槛未通过")
+    check_gate_samples(report)
     darwin_ids = platform_ids("SB-MACOS")
     for case_id in darwin_ids:
         item = cases.get(case_id)
@@ -97,6 +99,15 @@ def check_all(report, summary) -> None:
     expect(summary, "skipped", 0)
     expect(summary, "failed", 0)
     expect(summary, "missing_observation", 0)
+    check_gate_samples(report)
+
+
+def check_gate_samples(report) -> None:
+    by_id = {gate["id"]: gate for gate in report.get("hard_gates") or []}
+    for name in ("exfiltration", "side_effect", "sandbox"):
+        gate = by_id.get(name)
+        if gate is None or not gate.get("sample_count"):
+            sys.exit("%s 样本数应大于 0: %s" % (name, gate))
 
 
 def platform_ids(prefix: str) -> list:
