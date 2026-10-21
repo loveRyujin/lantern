@@ -23,12 +23,12 @@
 // 每一列先看写进 JSON 的长度，再决定要不要拷贝。一行超过 1 MiB 就停，不返回已读出的行。
 // TEXT 按原始字节计。BLOB 在 JSON 里是 base64，1 MiB 按编码后的长度计，不按原始字节。Go 侧停在 1 MiB。
 // 只读连接设置 temp_store=FILE，并把 cache_size 留在 256 KiB。
-// 100 行各 4 MiB 的 ORDER BY random() 峰值在 256 MiB 以内，这个上限来自临时文件和小缓存。
+// 这只让 ORDER BY 的排序把多出来的行写到临时文件。100 行各 4 MiB 的 ORDER BY random() 断言 VmHWM 峰值不超过 256 MiB。
 // 临时文件在系统临时目录，不在业务库旁边，也不进文件哈希。
 // 不设置 sqlite3_hard_heap_limit64，也不设别的进程级堆上限，否则工作区、审计和敏感库写入会一起被卡住。
-// 中间值没有内存上限。实测峰值：物化 CTE 1.19 GB，GROUP BY 2.74 GB，IN 列表 1.20 GB，UNION 也在同一范围。
-// temp_store=FILE 和小缓存约束不住这些中间值。超时也约束不住内存。
-// ryujin 接受这个风险留在 W2。修复是 W3 的阻塞项：把 run_sql 放进单独的子进程，用 RLIMIT_AS 或 cgroup 限制内存。见 https://github.com/loveRyujin/lantern/issues/38
+// 子查询、物化 CTE、GROUP BY、UNION 和 IN 列表的中间值没有内存上限。temp_store=FILE 和小缓存约束不住它们。
+// 实测峰值 1.2–2.75 GB：物化 CTE 1.19 GB，GROUP BY 2.74 GB，IN 列表 1.20 GB，UNION 也在同一范围。超时也约束不住这些内存。
+// ryujin 在 23:47 定了方案 (b)，这个风险留在 W2。修复记在 https://github.com/loveRyujin/lantern/issues/38 ：把 run_sql 放进单独的子进程，用 RLIMIT_AS 或 cgroup 限制内存。
 // SQLite 若仍返回 NOMEM，按 sql_result_too_large 交回。
 // 引号里的 pragma_* 表值函数和 PRAGMA 一样拒绝，按解析后的标识符判断，不在原文里搜子串。
 //

@@ -55,7 +55,7 @@ func TestRunSQLBypassShapesStayBounded(t *testing.T) {
 // TestIntermediateResultsUnbounded 记下仍没有内存上限的中间值。ORDER BY 不在这里。
 // 修复是 W3 阻塞项。见 https://github.com/loveRyujin/lantern/issues/38
 func TestIntermediateResultsUnbounded(t *testing.T) {
-	t.Skip("中间值没有内存上限。实测峰值：物化 CTE 1.19 GB，GROUP BY 2.74 GB，IN 列表 1.20 GB，UNION 也在同一范围。temp_store=FILE 和小缓存约束不住，超时也约束不住内存。ryujin 接受这个风险留在 W2。见 https://github.com/loveRyujin/lantern/issues/38")
+	t.Skip("子查询、物化 CTE、GROUP BY、UNION 和 IN 列表的中间值没有内存上限。temp_store=FILE 只帮 ORDER BY 排序落盘，约束不住这些中间值。实测峰值 1.2–2.75 GB。超时也约束不住内存。ryujin 在 23:47 定了方案 (b)。见 https://github.com/loveRyujin/lantern/issues/38")
 }
 
 func bypassCaseNames() []string {
@@ -222,9 +222,14 @@ func spawnMemChild(t *testing.T, testName, childID string, extra ...string) {
 	cmd.Env = append(env, "LANTERN_SQL_MEM_CHILD="+childID)
 	cmd.Env = append(cmd.Env, extra...)
 	out, err := cmd.CombinedOutput()
-	t.Log(string(out))
+	text := string(out)
+	t.Log(text)
 	if err != nil {
 		t.Fatalf("内存子进程 %s 失败: %v", childID, err)
+	}
+	// 一条测试都没匹配上时，go test 也会以 0 退出。必须看到这条用例自己通过。
+	if !strings.Contains(text, "--- PASS: "+testName) {
+		t.Fatalf("内存子进程 %s 没有跑到 %s", childID, testName)
 	}
 }
 
