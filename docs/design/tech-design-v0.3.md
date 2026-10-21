@@ -82,7 +82,7 @@ lantern/
 - 只读连接不加 `immutable`。导入、种子或迁移写入时拿着锁。`run_sql` 拿不到这把锁，就返回可重试的 `data_busy`，不把行交给模型。库已经是 WAL 模式、旁边却没有 `-wal` 时，只读打开会把 `-wal` 建出来；查询前后的哈希从这次连接建立之后开始算。
 - 每次查询后再核对一次。主库哈希变了、已有 `-wal` 的哈希变了，或者新出现了 `-wal`，这次结果丢掉，同样返回可重试的 `data_busy`。可能过期的行不会交给模型。Open 之后才出现 `-wal` 时也是 `data_busy`，避免连接还停在打开时的快照上。`-shm` 不参与哈希：它是 WAL 的共享内存索引，只读连接为了协调也会改它，里面没有业务行。
 - `PRAGMA` 和 `pragma_*` 表值函数都拒绝。双引号、方括号、反引号里的名字按解析后的标识符判断，不在整段 SQL 里搜子串。
-- `SELECT sqlite_master` 允许，看到的是业务库自己的表。连接只打开 `analytics.db`。`sensitive.db` 不能靠文件路径、符号链接、`ATTACH` 或 URI 参数进来。
+- `SELECT sqlite_master` 允许，看到的是业务库自己的表。连接只打开工作区登记的那一个业务库（`analytics.db`）。要打开的路径和登记路径都先做绝对化和 `EvalSymlinks`，再比较，并用 `os.SameFile` 核对文件身份。指向别处的符号链接、改名副本和硬链接都打不开。`sensitive.db` 也不能靠 `ATTACH` 或 URI 参数进来。
 
 ## 7. 沙箱
 统一接口 `Sandbox.Run(ctx, Spec) (Result, error)`，错误类型分为 `timeout | oom | killed | error | runtime_unavailable`。

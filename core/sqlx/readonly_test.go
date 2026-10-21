@@ -435,7 +435,7 @@ func TestSnapshotNoticesByteChange(t *testing.T) {
 
 func openRO(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	db, err := sqlx.Open(t.Context(), path)
+	db, err := sqlx.Open(t.Context(), path, path)
 	if err != nil {
 		t.Fatal(err)
 	}

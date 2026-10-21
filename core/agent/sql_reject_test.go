@@ -81,12 +81,12 @@ func newSQLHarness(t *testing.T, steps ...llm.Step) (*harness, *countingTool) {
 	}
 	t.Cleanup(func() { _ = ws.Close() })
 	path := filepath.Join(ws.Dir, "analytics.db")
-	db, err := sqlx.Open(t.Context(), path)
+	db, err := sqlx.Open(t.Context(), path, path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	inner, err := sqlx.NewTool(db, path, nil)
+	inner, err := sqlx.NewTool(db, path, path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

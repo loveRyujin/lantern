@@ -46,24 +46,19 @@ func (c roConnector) Connect(ctx context.Context) (driver.Conn, error) {
 
 func (c roConnector) Driver() driver.Driver { return c.drv }
 
-// Open 用 mode=ro 打开 path 指向的业务库，并在每条连接（含连接池重建）上打开 query_only、拒绝 ATTACH。
-// path 会先做 EvalSymlinks，打开的是解析后的那个文件。文件不存在时不会创建。
-// 敏感库不在这条路径上：路径、符号链接指向的目标、URI 参数都不能把连接指到 sensitive.db。
-func Open(ctx context.Context, path string) (*sql.DB, error) {
+// Open 用 mode=ro 打开业务库，并在每条连接（含连接池重建）上打开 query_only、拒绝 ATTACH。
+// path 必须和 allowed 是同一个文件。allowed 是工作区登记的那一个业务库路径。
+// 两条路径都先做绝对路径和 EvalSymlinks，再比较；文件身份再用 os.SameFile 核对，硬链接过不了。
+// 打开的是解析后的那个文件。文件不存在时不会创建。URI 参数不接受。
+func Open(ctx context.Context, path, allowed string) (*sql.DB, error) {
 	if ctx == nil {
 		return nil, errors.New("sqlx: ctx 不能为 nil")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := rejectSensitiveTarget(path); err != nil {
-		return nil, err
-	}
-	resolved, err := Resolve(path)
+	resolved, err := allowBusiness(path, allowed)
 	if err != nil {
-		return nil, err
-	}
-	if err := rejectSensitiveTarget(resolved); err != nil {
 		return nil, err
 	}
 	info, err := os.Stat(resolved)
@@ -111,9 +106,42 @@ func readOnlyDSN(path string) (string, error) {
 	return u.String(), nil
 }
 
-// rejectSensitiveTarget 拒绝把只读连接指到敏感库。
-// URI（file: 或查询参数）也不接受：那是换库或换打开方式的入口，业务库只用文件路径。
-func rejectSensitiveTarget(path string) error {
+// allowBusiness 只接受工作区登记的那一个业务库。
+// 先拒绝 URI。两条路径都走绝对路径和 EvalSymlinks，解析结果必须相同。
+// os.SameFile 再核对文件身份，硬链接和登记文件不是同一个 inode 时也会被拒绝。
+// 返回解析后的 path，供打开使用。
+func allowBusiness(path, allowed string) (string, error) {
+	if err := plainFilePath(path); err != nil {
+		return "", err
+	}
+	if err := plainFilePath(allowed); err != nil {
+		return "", err
+	}
+	resolved, err := Resolve(path)
+	if err != nil {
+		return "", err
+	}
+	registered, err := Resolve(allowed)
+	if err != nil {
+		return "", err
+	}
+	got, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("sqlx: 分析库路径: %w", err)
+	}
+	want, err := os.Stat(registered)
+	if err != nil {
+		return "", fmt.Errorf("sqlx: 分析库路径: %w", err)
+	}
+	sameFile := os.SameFile(got, want)
+	if resolved != registered || !sameFile {
+		return "", errors.New("sqlx: 只能打开工作区登记的业务库")
+	}
+	return resolved, nil
+}
+
+// plainFilePath 拒绝空路径和 URI。file: 或查询参数是换库、换打开方式的入口，业务库只用文件路径。
+func plainFilePath(path string) error {
 	if path == "" {
 		return errors.New("sqlx: 分析库路径为空")
 	}
@@ -121,9 +149,6 @@ func rejectSensitiveTarget(path string) error {
 	lower := strings.ToLower(trimmed)
 	if strings.HasPrefix(lower, "file:") || strings.ContainsAny(trimmed, "?\x00") {
 		return errors.New("sqlx: 只打开业务库文件")
-	}
-	if strings.EqualFold(filepath.Base(path), "sensitive.db") {
-		return errors.New("sqlx: 不能打开敏感库")
 	}
 	return nil
 }

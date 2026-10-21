@@ -21,12 +21,12 @@ func TestExecuteDetectsFileChange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "analytics.db")
 	createEmptyDB(t, path)
 	ctx := t.Context()
-	db, err := Open(ctx, path)
+	db, err := Open(ctx, path, path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	tool, err := NewTool(db, path, nil)
+	tool, err := NewTool(db, path, path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

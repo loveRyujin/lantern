@@ -16,6 +16,8 @@
 // 结果除了行数上限，还有 1 MiB 的总字节上限。读到超出的那一行就停下。
 // 引号里的 pragma_* 表值函数和 PRAGMA 一样拒绝，按解析后的标识符判断，不在原文里搜子串。
 //
-// 连接只打开业务库。sensitive.db 不能靠路径、符号链接、ATTACH 或 URI 参数进来。
+// 连接只打开工作区登记的那一个业务库。要打开的路径和登记路径都先做绝对化和 EvalSymlinks，
+// 再比较；文件身份用 os.SameFile 再对一次。指向别处的符号链接、改名副本和硬链接都打不开。
+// sensitive.db 也不能靠 ATTACH 或 URI 参数进来。
 // SELECT sqlite_master 可以，看到的是业务库自己的表。
 package sqlx

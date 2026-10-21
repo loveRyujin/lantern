@@ -43,21 +43,15 @@ type Tool struct {
 	after func()
 }
 
-// NewTool 绑定已经用 [Open] 打开的只读库。path 必须是打开时用的那个路径，哈希按它来核对。
-// log 可以为 nil，此时拒绝语句不会写审计。
+// NewTool 绑定已经用 [Open] 打开的只读库。
+// path 必须是打开时用的那个路径，而且和 allowed 是同一个文件。allowed 是工作区登记的业务库。
+// 哈希按 path 来核对。log 可以为 nil，此时拒绝语句不会写审计。
 // 调用方把 [Event] 转成自己的审计记录即可，字段已经带好 actor、action 和 RunID。
-func NewTool(db Queryer, path string, log Logger) (*Tool, error) {
+func NewTool(db Queryer, path, allowed string, log Logger) (*Tool, error) {
 	if db == nil {
 		return nil, errors.New("sqlx: 没有数据库")
 	}
-	if err := rejectSensitiveTarget(path); err != nil {
-		return nil, err
-	}
-	resolved, err := Resolve(path)
-	if err != nil {
-		return nil, err
-	}
-	if err := rejectSensitiveTarget(resolved); err != nil {
+	if _, err := allowBusiness(path, allowed); err != nil {
 		return nil, err
 	}
 	return &Tool{db: db, path: path, log: log}, nil

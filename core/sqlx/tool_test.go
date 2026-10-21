@@ -413,16 +413,49 @@ func TestRunSQLOnlyReachesBusinessDB(t *testing.T) {
 	if err := os.Symlink(sens, posed); err != nil {
 		t.Fatal(err)
 	}
+	// 改名副本和硬链接都不再叫 sensitive.db，文件名黑名单会放行。
+	renamed := filepath.Join(t.TempDir(), "analytics.db")
+	copyFile(t, sens, renamed)
+	hardDir := filepath.Join(h.Dir, "nested")
+	if err := os.Mkdir(hardDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hard := filepath.Join(hardDir, "analytics.db")
+	if err := os.Link(sens, hard); err != nil {
+		t.Fatal(err)
+	}
 	sensBefore := hashFile(t, sens)
 
-	for _, path := range []string{sens, link, posed, "file:" + sens + "?mode=rwc", sens + "?mode=rw&immutable=0"} {
-		if _, err := sqlx.Open(ctx, path); err == nil {
-			t.Fatalf("打开了不该打开的路径 %s", filepath.Base(path))
+	for _, path := range []string{sens, link, posed, renamed, hard} {
+		db, err := sqlx.Open(ctx, path, business)
+		if err == nil {
+			_ = db.Close()
+			t.Fatalf("打开了不该打开的路径 %s", path)
+		}
+		if !strings.Contains(err.Error(), "只能打开工作区登记的业务库") {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if strings.Contains(err.Error(), "13800138000") || strings.Contains(err.Error(), sens) {
+			t.Fatalf("错误带了敏感库: %v", err)
+		}
+		if _, err := sqlx.NewTool(noopQuery{}, path, business, nil); err == nil {
+			t.Fatalf("工具绑到了 %s", path)
 		}
 	}
-	if _, err := sqlx.NewTool(noopQuery{}, sens, nil); err == nil {
-		t.Fatal("工具绑到了敏感库路径")
+	for _, path := range []string{"file:" + sens + "?mode=rwc", sens + "?mode=rw&immutable=0"} {
+		if _, err := sqlx.Open(ctx, path, business); err == nil {
+			t.Fatalf("打开了不该打开的路径 %s", path)
+		}
 	}
+	bizLink := filepath.Join(t.TempDir(), "business-link.db")
+	if err := os.Symlink(business, bizLink); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := sqlx.Open(ctx, bizLink, business)
+	if err != nil {
+		t.Fatalf("指向业务库的符号链接被拒绝了: %v", err)
+	}
+	_ = opened.Close()
 	if hashFile(t, sens) != sensBefore {
 		t.Fatal("拒绝打开时改了敏感库")
 	}
@@ -491,6 +524,20 @@ func TestRunSQLOnlyReachesBusinessDB(t *testing.T) {
 	}
 	assertPathNotOpen(t, sens)
 	assertPathNotOpen(t, link)
+	assertPathNotOpen(t, posed)
+	assertPathNotOpen(t, renamed)
+	assertPathNotOpen(t, hard)
+}
+
+func copyFile(t *testing.T, src, dst string) {
+	t.Helper()
+	body, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type noopQuery struct{}
@@ -725,13 +772,13 @@ func newFixture(t *testing.T) (string, *sql.DB, *sqlx.Tool, *spyDB, *audit.Memor
 
 func openTool(t *testing.T, path string, log audit.Log) (string, *sql.DB, *sqlx.Tool, *spyDB, audit.Log) {
 	t.Helper()
-	db, err := sqlx.Open(t.Context(), path)
+	db, err := sqlx.Open(t.Context(), path, path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	spy := &spyDB{DB: db}
-	tool, err := sqlx.NewTool(spy, path, asAudit(log))
+	tool, err := sqlx.NewTool(spy, path, path, asAudit(log))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -843,12 +890,12 @@ func TestRunSQLWALCreatedAfterOpenIsBusy(t *testing.T) {
 	}
 	removeSidecars(path)
 
-	db, err := sqlx.Open(ctx, path)
+	db, err := sqlx.Open(ctx, path, path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	tool, err := sqlx.NewTool(db, path, nil)
+	tool, err := sqlx.NewTool(db, path, path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -895,12 +942,12 @@ func TestRunSQLBusyWhileWriterHoldsLock(t *testing.T) {
 	w := openWritable(t, path, "DELETE")
 	seedTable(t, w)
 	removeSidecars(path)
-	db, err := sqlx.Open(ctx, path)
+	db, err := sqlx.Open(ctx, path, path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	tool, err := sqlx.NewTool(db, path, nil)
+	tool, err := sqlx.NewTool(db, path, path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
