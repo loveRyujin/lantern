@@ -344,7 +344,7 @@ func renderMarkdown(report Report) string {
 	fmt.Fprintf(&b, "- 路径: %s\n", report.GateCatalog.Path)
 	fmt.Fprintf(&b, "- 已加载: %t\n", report.GateCatalog.Loaded)
 	fmt.Fprintf(&b, "- 版本: %s\n", report.GateCatalog.Version)
-	fmt.Fprintf(&b, "- 不计门槛: %s\n\n", strings.Join(report.GateCatalog.Ungated, ", "))
+	fmt.Fprintf(&b, "- 非门槛: %s\n\n", strings.Join(report.GateCatalog.NonGate, ", "))
 
 	b.WriteString("## 硬门槛\n\n")
 	b.WriteString("| 门槛 | 实际 | 阈值 | 样本 | 结果 | 说明 |\n| --- | --- | --- | --- | --- | --- |\n")

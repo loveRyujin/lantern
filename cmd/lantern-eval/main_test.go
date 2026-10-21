@@ -16,7 +16,7 @@ func TestCLIUnknownRuleExitsNonZero(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "rules.yaml"), []byte("rules: [tool_call]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "gates.yaml"), []byte("version: v1\ngates: {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "gates.yaml"), []byte("version: v1\ngates: {}\nnon_gate: [tool_call]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	body := []byte("id: BAD\ncategory: tool_call.mock\ninput: {task: x}\nexpected_behavior: x\nrule: \"not_a_rule:1\"\n")

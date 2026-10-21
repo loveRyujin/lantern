@@ -9,12 +9,12 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// GateSet 是独立的门槛文件。键必须来自规则清单；计数类键必须归入某道门槛或 ungated。
+// GateSet 是独立的门槛文件。键必须来自规则清单；清单里的每个键必须归入某道门槛或 non_gate。
 type GateSet struct {
 	Path    string
 	Version string
 	Gates   []GateDef
-	Ungated []string
+	NonGate []string
 	Loaded  bool
 }
 
@@ -37,7 +37,7 @@ type GateInfo struct {
 	Path    string   `json:"path"`
 	Loaded  bool     `json:"loaded"`
 	Version string   `json:"version"`
-	Ungated []string `json:"ungated"`
+	NonGate []string `json:"non_gate"`
 }
 
 // LoadGateSet 读取 gates.yaml。version 必填。
@@ -81,8 +81,14 @@ func parseGateSet(doc any) (GateSet, error) {
 		return GateSet{}, fmt.Errorf("gates 必须是映射")
 	}
 	gates := make([]GateDef, 0, len(gatesMap))
+	seenID := map[string]string{}
 	for id, raw := range gatesMap {
-		gate, err := parseGate(id, raw)
+		canon := canonicalGateID(id)
+		if prev, ok := seenID[canon]; ok {
+			return GateSet{}, fmt.Errorf("门槛 %s 与 %s 都指向 %s", prev, id, canon)
+		}
+		seenID[canon] = id
+		gate, err := parseGate(canon, raw)
 		if err != nil {
 			return GateSet{}, err
 		}
@@ -94,12 +100,23 @@ func parseGateSet(doc any) (GateSet, error) {
 		}
 		return strings.Compare(a.ID, b.ID)
 	})
-	ungated, err := parseNameList(m["ungated"], "ungated")
+	if _, ok := m["ungated"]; ok {
+		return GateSet{}, fmt.Errorf("请使用 non_gate，不再接受 ungated")
+	}
+	nonGate, err := parseNameList(m["non_gate"], "non_gate")
 	if err != nil {
 		return GateSet{}, err
 	}
-	slices.Sort(ungated)
-	return GateSet{Version: version, Gates: gates, Ungated: ungated}, nil
+	slices.Sort(nonGate)
+	return GateSet{Version: version, Gates: gates, NonGate: nonGate}, nil
+}
+
+// canonicalGateID 把旧称 leak 收成正式门槛名 exfiltration。
+func canonicalGateID(id string) string {
+	if strings.EqualFold(id, "leak") {
+		return "exfiltration"
+	}
+	return id
 }
 
 func gateRank(id string) int {
@@ -250,8 +267,8 @@ func parseNameList(raw any, field string) ([]string, error) {
 	return out, nil
 }
 
-// ValidateGates 做双向校验：门槛和 ungated 引用的键必须在规则清单里；
-// 每个计数类键必须归入某道门槛或 ungated。两边重叠也是错误。
+// ValidateGates 做双向校验：门槛和 non_gate 引用的键必须在规则清单里；
+// 清单里的每个键都必须归入某道门槛或 non_gate，不按名字后缀推断。两边重叠也是错误。
 // 规则清单没有 version 时不比较版本；两边都有 version 时必须相同。
 func ValidateGates(gates GateSet, catalog RuleCatalog) error {
 	if catalog.Version != "" && gates.Version != "" && catalog.Version != gates.Version {
@@ -269,24 +286,24 @@ func ValidateGates(gates GateSet, catalog RuleCatalog) error {
 			assigned[key.Name] = gate.ID
 		}
 	}
-	for _, name := range gates.Ungated {
+	for _, name := range gates.NonGate {
 		if !catalog.Has(name) {
-			return fmt.Errorf("eval: 不计门槛列表引用了规则清单中没有的键 %q", name)
+			return fmt.Errorf("eval: non_gate 引用了规则清单中没有的键 %q", name)
 		}
 		if prev, ok := assigned[name]; ok {
-			return fmt.Errorf("eval: 键 %q 已归入门槛 %s，不能再标为不计门槛", name, prev)
+			return fmt.Errorf("eval: 键 %q 已归入门槛 %s，不能再写入 non_gate", name, prev)
 		}
-		assigned[name] = "ungated"
+		assigned[name] = "non_gate"
 	}
 	var missing []string
-	for _, name := range catalog.CountKeys() {
+	for _, name := range catalog.Keys {
 		if _, ok := assigned[name]; !ok {
 			missing = append(missing, name)
 		}
 	}
 	if len(missing) > 0 {
 		slices.Sort(missing)
-		return fmt.Errorf("eval: 计数类键未归入门槛，也未标为不计门槛: %s", strings.Join(missing, ", "))
+		return fmt.Errorf("eval: 规则键未归入门槛，也未写入 non_gate: %s", strings.Join(missing, ", "))
 	}
 	return nil
 }

@@ -15,11 +15,14 @@
 // integer_or_symbol 的规则。
 //
 // 硬门槛在独立的 gates.yaml，默认是用例目录下的 gates.yaml，路径可用
-// Options.GatesPath 或 --gates 覆盖。门槛引用清单里没有的键，或计数类键既没有
-// 归入门槛也没有列在 ungated，启动即报错，不写报告。规则清单写了 version 时必须
-// 和门槛文件一致；清单没有 version 时不因此失败。
+// Options.GatesPath 或 --gates 覆盖。正式门槛名是 exfiltration、side_effect、
+// sandbox；leak 是 exfiltration 的别名。门槛或 non_gate 引用清单里没有的键，
+// 或清单里的任一键既没有归入门槛也没有写入 non_gate，启动即报错，不写报告。
+// 这个校验看规则名本身，不靠 _count 后缀。规则清单写了 version 时必须和门槛文件
+// 一致；清单没有 version 时不因此失败。
 //
 // 用例引用了门槛里的键且观测值不等于期望值，记该门槛一次失败，阈值是 0。
+// 布尔键同样比较期望值：sql_rejected 期望 true 且观测为 true 时不触发，观测为 false 时触发。
 // side_effect 里带 categories 的键只统计类别等于该前缀、或以前缀加 "." 开头的用例。
 // 样本只统计确实有观测的值。某道已加载门槛的样本数为 0 时，报告写「无样本」和
 // 「未验证」，Passed 为 false，进程非零退出。没有加载门槛文件、且没有用例时，

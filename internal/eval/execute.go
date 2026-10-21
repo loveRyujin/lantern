@@ -176,15 +176,15 @@ func Execute(ctx context.Context, opt Options) (Result, error) {
 		Version: catalog.Version,
 		Keys:    catalog.Keys,
 	}
-	ungated := gates.Ungated
-	if ungated == nil {
-		ungated = []string{}
+	nonGate := gates.NonGate
+	if nonGate == nil {
+		nonGate = []string{}
 	}
 	report.GateCatalog = GateInfo{
 		Path:    gatesPath,
 		Loaded:  gates.Loaded,
 		Version: gates.Version,
-		Ungated: ungated,
+		NonGate: nonGate,
 	}
 	report, err = report.withDigest()
 	if err != nil {

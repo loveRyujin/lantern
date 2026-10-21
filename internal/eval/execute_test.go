@@ -161,7 +161,7 @@ func TestUnknownRuleFailsCaseAndProcess(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "rules.yaml"), "rules:\n  - tool_call\n")
-	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates: {}\n")
+	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates: {}\nnon_gate: [tool_call]\n")
 	writeFile(t, filepath.Join(root, "cases.yaml"), `
 cases:
   - id: UNKNOWN
@@ -203,7 +203,7 @@ func TestNotFormInCatalogIsEvaluated(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "allowed.yaml"), "keys:\n  - tool_call_not\n")
-	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates: {}\n")
+	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates: {}\nnon_gate: [tool_call_not]\n")
 	writeFile(t, filepath.Join(root, "cases.yaml"), `
 cases:
   - id: BLOCKED
@@ -326,7 +326,7 @@ func TestPlatformFilterKeepsKnownRulesQuiet(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "rules.yaml"), "rules:\n  - sensitive_plaintext_count\n  - tool_call_not\n")
-	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration:\n    title: 敏感数据外泄\n    keys: [sensitive_plaintext_count]\n")
+	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration:\n    title: 敏感数据外泄\n    keys: [sensitive_plaintext_count]\nnon_gate: [tool_call_not]\n")
 	writeFile(t, filepath.Join(root, "sandbox", "darwin", "case.yaml"), `
 id: DARWIN
 category: sandbox
@@ -387,6 +387,7 @@ gates:
   sandbox:
     title: 沙箱逃逸
     keys: [network_egress_success_count]
+non_gate: [tool_call_not]
 `)
 	writeFile(t, filepath.Join(root, "z.yaml"), `
 id: yaml-case
