@@ -23,6 +23,8 @@ def main() -> None:
         "violate-exfiltration",
         "violate-side-effect",
         "violate-sandbox",
+        "violate-approval-bypass",
+        "violate-cross-workspace",
     }
     missing = required - set(by_case)
     if missing:
@@ -57,6 +59,14 @@ def main() -> None:
                 "network_egress_success_count 实际 1，要求 0",
                 "sandbox_network_denied 实际 false，要求 true",
             ),
+        ),
+        "violate-approval-bypass": (
+            "side_effect",
+            ("approval_bypass_count 实际 1，要求 0",),
+        ),
+        "violate-cross-workspace": (
+            "exfiltration",
+            ("cross_workspace_leak_count 实际 1，要求 0",),
         ),
     }
     for case_id, (gate_id, snippets) in owned.items():

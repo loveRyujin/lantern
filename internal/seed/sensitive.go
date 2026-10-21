@@ -35,7 +35,11 @@ func writeSensitive(ctx context.Context, h *workspace.Handle, rows []contact) (*
 	if err != nil {
 		return nil, err
 	}
-	grant, err := h.ConfirmExport(ctx, approvalID, seedExportObject)
+	cc, err := SeedConsumeContext(approvalID, seedExportObject)
+	if err != nil {
+		return nil, err
+	}
+	grant, err := h.ConfirmExport(ctx, approvalID, cc, seedExportObject)
 	if err != nil {
 		return nil, fmt.Errorf("seed: 确认导出: %w", err)
 	}
@@ -82,11 +86,12 @@ func insertContacts(ctx context.Context, db *sql.DB, rows []contact) error {
 	return nil
 }
 
-// RecordExportApproval 直接写入一条已经批准的导出审批，不经过审批状态机。
-// 只供种子和测试使用，业务代码不能调用。
-// W2 的审批状态机落地后，要把它收进内部包，或者改成只有状态机能调用。
+// RecordExportApproval 为种子准备一张已经批准的导出确认。
+// 只供 internal/seed 和它的测试使用，别的包不能调用。
 //
-// 记录属于 h 的工作区，动作是 export_data，对象是 exportObject，决定为批准，一小时内有效。
+// 确认单的插入和批准只走审批状态机。运行行不是审批决定，所以仍由种子写入，
+// 并且和确认单放在同一个事务里，失败就一起回滚。
+// 运行标识是 seed-<approvalID>，步骤是 seed。一小时内有效。
 // 不打开 sensitive.db，也不调用 ConfirmExport。调用方拿到记录后再自己确认。
 func RecordExportApproval(ctx context.Context, h *workspace.Handle, approvalID, exportObject string) error {
 	if err := ctx.Err(); err != nil {
@@ -98,45 +103,66 @@ func RecordExportApproval(ctx context.Context, h *workspace.Handle, approvalID, 
 	if !validSeedToken(approvalID) || !validSeedToken(exportObject) {
 		return errors.New("seed: 确认单标识或导出对象不合法")
 	}
+	ticket, err := seedTicket(h.ID, approvalID, exportObject, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	machine := approval.New(h.Runs)
+	err = machine.Transact(ctx, func(tx *sql.Tx) error {
+		created := ticket.ExpiresAt.Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO runs (id, state, version, context, created_at, updated_at)
+			VALUES (?, 'completed', 0, '', ?, ?)`, ticket.RunID, created, created); err != nil {
+			return fmt.Errorf("seed: 写入种子运行: %w", err)
+		}
+		if err := machine.CreateTx(ctx, tx, ticket); err != nil {
+			return err
+		}
+		if err := machine.DecideTx(ctx, tx, approvalID, approval.Decision{Action: approval.ActionApprove}); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("seed: 写入导出确认: %w", err)
+	}
+	return nil
+}
+
+// SeedConsumeContext 按种子确认单的约定拼出消费上下文。
+// 它只能用于种子：运行标识是 seed-<approvalID>，步骤固定是 seed，哈希和 RecordExportApproval 用的是同一份参数。
+// 业务路径必须从当前步骤拿真实的运行、步骤和参数哈希，不能按确认单 ID 反推。
+func SeedConsumeContext(approvalID, exportObject string) (approval.ConsumeContext, error) {
+	ticket, err := seedTicket("workspace", approvalID, exportObject, time.Now().UTC())
+	if err != nil {
+		return approval.ConsumeContext{}, err
+	}
+	return approval.ConsumeContext{RunID: ticket.RunID, StepID: ticket.StepID, ArgsHash: ticket.ParamsHash}, nil
+}
+
+func seedTicket(workspaceID, approvalID, exportObject string, now time.Time) (approval.Ticket, error) {
 	params, err := json.Marshal(map[string]string{
 		"action": "export_data",
 		"object": exportObject,
 	})
 	if err != nil {
-		return fmt.Errorf("seed: 确认单参数: %w", err)
+		return approval.Ticket{}, fmt.Errorf("seed: 确认单参数: %w", err)
 	}
 	hash, err := approval.ParamsHash(params)
 	if err != nil {
-		return fmt.Errorf("seed: 确认单哈希: %w", err)
+		return approval.Ticket{}, fmt.Errorf("seed: 确认单哈希: %w", err)
 	}
-	now := time.Now().UTC()
-	created := now.Format(time.RFC3339Nano)
-	expires := now.Add(time.Hour).Format(time.RFC3339Nano)
-	runID := "seed-" + approvalID
-	tx, err := h.Runs.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("seed: 确认单事务: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO runs (id, state, version, context, created_at, updated_at)
-		VALUES (?, 'completed', 0, '', ?, ?)`, runID, created, created); err != nil {
-		return fmt.Errorf("seed: 写入种子运行: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO approvals (
-			id, run_id, step_id, params_hash, params_json, decision, created_at, decided_at,
-			workspace_id, action, export_object, expires_at
-		) VALUES (?, ?, 'seed', ?, ?, ?, ?, ?, ?, 'export_data', ?, ?)`,
-		approvalID, runID, hash, string(params), string(approval.ActionApprove), created, created,
-		h.ID, exportObject, expires,
-	); err != nil {
-		return fmt.Errorf("seed: 写入导出确认: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("seed: 提交确认单: %w", err)
-	}
-	return nil
+	return approval.Ticket{
+		ID:           approvalID,
+		RunID:        "seed-" + approvalID,
+		StepID:       "seed",
+		WorkspaceID:  workspaceID,
+		Action:       "export_data",
+		ExportObject: exportObject,
+		Params:       params,
+		ParamsHash:   hash,
+		ExpiresAt:    now.Add(time.Hour),
+	}, nil
 }
 
 // writeSeedApproval 为这次种子写入签发一张新的确认单，并记入 runs.approvals。

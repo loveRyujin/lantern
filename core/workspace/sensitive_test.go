@@ -20,13 +20,13 @@ func TestSensitiveStaysClosedUntilConfirmed(t *testing.T) {
 	t.Cleanup(func() { _ = h.Close() })
 	assertSensitiveAbsent(t, h.Dir)
 
-	if _, err := h.ConfirmExport(ctx, "", exportObjectContacts); !errors.Is(err, ErrInvalidApproval) || !errors.Is(err, ErrExportUnconfirmed) {
+	if _, err := h.ConfirmExport(ctx, "", exportCC(""), exportObjectContacts); !errors.Is(err, ErrInvalidApproval) || !errors.Is(err, ErrExportUnconfirmed) {
 		t.Fatalf("empty approval: %v", err)
 	}
-	if _, err := h.ConfirmExport(ctx, "  ", exportObjectContacts); !errors.Is(err, ErrInvalidApproval) {
+	if _, err := h.ConfirmExport(ctx, "  ", exportCC("  "), exportObjectContacts); !errors.Is(err, ErrInvalidApproval) {
 		t.Fatalf("blank approval: %v", err)
 	}
-	if _, err := h.ConfirmExport(ctx, "不存在", exportObjectContacts); !errors.Is(err, ErrExportUnconfirmed) {
+	if _, err := h.ConfirmExport(ctx, "不存在", exportCC("不存在"), exportObjectContacts); !errors.Is(err, ErrExportUnconfirmed) {
 		t.Fatalf("missing approval: %v", err)
 	} else if code, ok := errcode.CodeOf(err); !ok || code != errcode.ExportUnconfirmed {
 		t.Fatalf("missing approval code = %s, ok %v", code, ok)
@@ -39,12 +39,12 @@ func TestSensitiveStaysClosedUntilConfirmed(t *testing.T) {
 	}
 	assertSensitiveAbsent(t, h.Dir)
 
-	if _, err := h.ConfirmExport(ctx, "确认-1", exportObjectContacts); !errors.Is(err, ErrExportUnconfirmed) {
+	if _, err := h.ConfirmExport(ctx, "确认-1", exportCC("确认-1"), exportObjectContacts); !errors.Is(err, ErrExportUnconfirmed) {
 		t.Fatalf("unrecorded approval: %v", err)
 	}
 	assertSensitiveAbsent(t, h.Dir)
 	mustApproveExport(t, ctx, h, "确认-1", exportObjectContacts)
-	grant, err := h.ConfirmExport(ctx, "确认-1", exportObjectContacts)
+	grant, err := h.ConfirmExport(ctx, "确认-1", exportCC("确认-1"), exportObjectContacts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestSensitiveStaysClosedUntilConfirmed(t *testing.T) {
 	if _, err := h.OpenSensitive(ctx, grant); !errors.Is(err, ErrExportUnconfirmed) {
 		t.Fatalf("second open: %v", err)
 	}
-	if _, err := h.ConfirmExport(ctx, "确认-1", exportObjectContacts); !errors.Is(err, ErrExportUnconfirmed) {
+	if _, err := h.ConfirmExport(ctx, "确认-1", exportCC("确认-1"), exportObjectContacts); !errors.Is(err, ErrExportUnconfirmed) {
 		t.Fatalf("second confirm: %v", err)
 	}
 }
@@ -127,7 +127,7 @@ func TestGrantIsBoundToIssuingWorkspace(t *testing.T) {
 	t.Cleanup(func() { _ = b.Close() })
 
 	mustApproveExport(t, ctx, a, "apr-a", exportObjectContacts)
-	grant, err := a.ConfirmExport(ctx, "apr-a", exportObjectContacts)
+	grant, err := a.ConfirmExport(ctx, "apr-a", exportCC("apr-a"), exportObjectContacts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestCanceledOpenDoesNotSpendGrant(t *testing.T) {
 	h := mustCreate(t, ctx, t.TempDir(), "cancel")
 	t.Cleanup(func() { _ = h.Close() })
 	mustApproveExport(t, ctx, h, "apr-cancel", exportObjectContacts)
-	grant, err := h.ConfirmExport(ctx, "apr-cancel", exportObjectContacts)
+	grant, err := h.ConfirmExport(ctx, "apr-cancel", exportCC("apr-cancel"), exportObjectContacts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestCloseRevokesGrant(t *testing.T) {
 	ctx := t.Context()
 	h := mustCreate(t, ctx, t.TempDir(), "revoke")
 	mustApproveExport(t, ctx, h, "apr-revoke", exportObjectContacts)
-	grant, err := h.ConfirmExport(ctx, "apr-revoke", exportObjectContacts)
+	grant, err := h.ConfirmExport(ctx, "apr-revoke", exportCC("apr-revoke"), exportObjectContacts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestCloseRevokesGrant(t *testing.T) {
 	if _, err := h.OpenSensitive(ctx, grant); !errors.Is(err, ErrExportUnconfirmed) {
 		t.Fatalf("open after close: %v", err)
 	}
-	if _, err := h.ConfirmExport(ctx, "apr-new", exportObjectContacts); !errors.Is(err, ErrExportUnconfirmed) {
+	if _, err := h.ConfirmExport(ctx, "apr-new", exportCC("apr-new"), exportObjectContacts); !errors.Is(err, ErrExportUnconfirmed) {
 		t.Fatalf("confirm after close: %v", err)
 	}
 	assertSensitiveAbsent(t, h.Dir)
@@ -274,7 +274,7 @@ func TestOneGrantOpensOnceUnderRace(t *testing.T) {
 	h := mustCreate(t, ctx, t.TempDir(), "race")
 	t.Cleanup(func() { _ = h.Close() })
 	mustApproveExport(t, ctx, h, "apr-race", exportObjectContacts)
-	grant, err := h.ConfirmExport(ctx, "apr-race", exportObjectContacts)
+	grant, err := h.ConfirmExport(ctx, "apr-race", exportCC("apr-race"), exportObjectContacts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +314,7 @@ func TestOneGrantOpensOnceUnderRace(t *testing.T) {
 
 func TestNilHandleRejectsExport(t *testing.T) {
 	var h *Handle
-	if _, err := h.ConfirmExport(t.Context(), "apr", exportObjectContacts); !errors.Is(err, ErrExportUnconfirmed) {
+	if _, err := h.ConfirmExport(t.Context(), "apr", exportCC("apr"), exportObjectContacts); !errors.Is(err, ErrExportUnconfirmed) {
 		t.Fatalf("nil confirm: %v", err)
 	}
 	if _, err := h.OpenSensitive(t.Context(), ExportGrant{}); !errors.Is(err, ErrExportUnconfirmed) {

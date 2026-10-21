@@ -10,6 +10,9 @@ const (
 	// CodeHashMismatch 表示执行前的参数和校验或确认时的哈希不一致。
 	// 批准带回的另一份参数对不上冻结快照，也用这个码。
 	CodeHashMismatch = "hash_mismatch"
+	// CodeAnswerIncomplete 表示这次没有工具调用，只有最终回答被截断。
+	// 运行就此结束，可以整段重试。它不是工具失败，不计入连续校验失败。
+	CodeAnswerIncomplete = "answer_incomplete"
 )
 
 const (

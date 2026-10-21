@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Action 是确认单上的决定。
@@ -42,6 +43,12 @@ type Ticket struct {
 	EstimatedRows int64
 	// Risk 是给用户看的风险说明。
 	Risk string
+	// StepID 是当前步骤。调用方传入，状态机不会从别的字段反推。
+	StepID string
+	// ExportObject 是导出对象。不是导出确认时可以空着。
+	ExportObject string
+	// ExpiresAt 是确认单失效时间。零值时创建逻辑用 24 小时。
+	ExpiresAt time.Time
 }
 
 // Decision 是 Approver 的返回。

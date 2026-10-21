@@ -266,8 +266,8 @@ func TestLoopSQLiteApprovalOnlyAfterValidation(t *testing.T) {
 		h.loop.Tickets = store
 		h.approver.Responses = []approval.Response{{Action: approval.ActionApprove}}
 		out, err := h.run()
-		if err != nil || out.State != StateCompleted || exp.n() != 1 {
-			t.Fatalf("%+v %v exec=%d", out, err, exp.n())
+		if err == nil || out.State != StateFailed || exp.n() != 0 || !strings.Contains(err.Error(), "不能写决定") {
+			t.Fatalf("不能写决定时应失败且不执行: %+v %v exec=%d", out, err, exp.n())
 		}
 		var n int
 		var params, hash string
@@ -584,12 +584,17 @@ func TestLoopReplacementParamsRevalidated(t *testing.T) {
 			Params: []byte(`{"object":1}`),
 		}}
 		out, err := h.run()
-		if err != nil || out.State != StateCompleted || out.ModelCalls != 2 || exp.n() != 0 {
+		if out.ModelCalls != 1 || out.State != StateAwaitingApproval || exp.n() != 0 || err == nil {
 			t.Fatalf("%+v %v exec=%d", out, err, exp.n())
 		}
-		text := requestText(h.provider.requests()[1])
-		if !strings.Contains(text, tools.CodeArgumentsInvalid) || strings.Contains(text, CodeHashMismatch) {
-			t.Fatalf("回给模型的文本 = %s", text)
+		if errorCode(err) != "" && errorCode(err) != tools.CodeArgumentsInvalid && !strings.Contains(err.Error(), tools.CodeArgumentsInvalid) {
+			t.Fatalf("校验错误没有回到调用方: %v", err)
+		}
+		if !strings.Contains(err.Error(), tools.CodeArgumentsInvalid) {
+			t.Fatalf("校验错误没有回到调用方: %v", err)
+		}
+		if len(h.provider.requests()) != 1 {
+			t.Fatalf("校验错误交给了模型: %d", len(h.provider.requests()))
 		}
 		if len(h.audit.Records()) != 0 {
 			t.Fatal("Schema 失败不应记成哈希不一致")
@@ -991,8 +996,15 @@ func (p *countingPolicy) Decide(ctx context.Context, req policy.Request) (policy
 }
 
 type memTickets struct {
-	mu      sync.Mutex
-	tickets []approval.Ticket
+	mu    sync.Mutex
+	items []memTicket
+}
+
+type memTicket struct {
+	ticket   approval.Ticket
+	state    approval.State
+	version  int64
+	decision string
 }
 
 func (m *memTickets) Create(ctx context.Context, ticket approval.Ticket) error {
@@ -1000,20 +1012,114 @@ func (m *memTickets) Create(ctx context.Context, ticket approval.Ticket) error {
 		return err
 	}
 	m.mu.Lock()
-	m.tickets = append(m.tickets, ticket)
+	m.items = append(m.items, memTicket{ticket: ticket, state: approval.StatePending})
 	m.mu.Unlock()
+	return nil
+}
+
+func (m *memTickets) Decide(ctx context.Context, id string, decision approval.Decision) (approval.DecideResult, error) {
+	if err := ctx.Err(); err != nil {
+		return approval.DecideResult{}, err
+	}
+	if err := decision.Validate(); err != nil {
+		return approval.DecideResult{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec := m.find(id)
+	if rec == nil {
+		return approval.DecideResult{}, approval.ErrNotFound
+	}
+	if decision.Action == approval.ActionDefer {
+		if rec.state != approval.StatePending {
+			return approval.DecideResult{}, approval.ErrIllegalTransition
+		}
+		return approval.DecideResult{State: rec.state, Version: rec.version}, nil
+	}
+	if decision.OverridesSnapshot() {
+		sum, err := approval.ParamsHash(decision.Params)
+		if err != nil {
+			return approval.DecideResult{}, err
+		}
+		if sum != rec.ticket.ParamsHash {
+			return approval.DecideResult{}, approval.ErrSnapshotMismatch
+		}
+	}
+	if decision.Action == approval.ActionApprove && rec.decision == string(approval.ActionApprove) &&
+		(rec.state == approval.StateApproved || rec.state == approval.StateConsumed) {
+		return approval.DecideResult{State: rec.state, Version: rec.version, Duplicate: true}, nil
+	}
+	if decision.Action == approval.ActionReject && rec.decision == string(approval.ActionReject) && rec.state == approval.StateRejected {
+		return approval.DecideResult{State: rec.state, Version: rec.version, Duplicate: true}, nil
+	}
+	if rec.state != approval.StatePending {
+		return approval.DecideResult{}, approval.ErrIllegalTransition
+	}
+	switch decision.Action {
+	case approval.ActionApprove:
+		rec.state = approval.StateApproved
+		rec.decision = string(approval.ActionApprove)
+	case approval.ActionReject:
+		rec.state = approval.StateRejected
+		rec.decision = string(approval.ActionReject)
+	default:
+		return approval.DecideResult{}, approval.ErrInvalidDecision
+	}
+	rec.version++
+	return approval.DecideResult{State: rec.state, Version: rec.version}, nil
+}
+
+func (m *memTickets) Consume(ctx context.Context, id string, cc approval.ConsumeContext) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec := m.find(id)
+	if rec == nil {
+		return approval.ErrNotFound
+	}
+	if rec.ticket.RunID != cc.RunID || rec.ticket.StepID != cc.StepID || rec.ticket.ParamsHash != cc.ArgsHash {
+		return approval.ErrMismatch
+	}
+	if rec.state != approval.StateApproved {
+		return approval.ErrIllegalTransition
+	}
+	rec.state = approval.StateConsumed
+	rec.version++
+	return nil
+}
+
+func (m *memTickets) find(id string) *memTicket {
+	for i := range m.items {
+		if m.items[i].ticket.ID == id {
+			return &m.items[i]
+		}
+	}
 	return nil
 }
 
 func (m *memTickets) list() []approval.Ticket {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]approval.Ticket(nil), m.tickets...)
+	out := make([]approval.Ticket, len(m.items))
+	for i := range m.items {
+		out[i] = m.items[i].ticket
+	}
+	return out
 }
 
 type sqlTickets struct {
 	db *sql.DB
 	n  int
+}
+
+func (s *sqlTickets) Decide(context.Context, string, approval.Decision) (approval.DecideResult, error) {
+	return approval.DecideResult{}, errors.New("agent: 确认单存储不能写决定")
+}
+
+func (s *sqlTickets) Consume(context.Context, string, approval.ConsumeContext) error {
+	return errors.New("agent: 确认单存储不能消费")
 }
 
 func (s *sqlTickets) Create(ctx context.Context, ticket approval.Ticket) error {

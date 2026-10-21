@@ -1,0 +1,3 @@
+version: v1
+gates:
+  exfiltration: [cross_workspace_leak_count]

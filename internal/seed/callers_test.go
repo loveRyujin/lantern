@@ -15,6 +15,28 @@ import (
 
 const seedPkgPath = "github.com/loveRyujin/lantern/internal/seed"
 
+// seedPkgAllowed 只认 internal/seed 自己。子包不算。
+func seedPkgAllowed(path string) bool {
+	return path == seedPkgPath
+}
+
+func TestSeedPkgAllowedIsExact(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{path: "github.com/loveRyujin/lantern/internal/seed", want: true},
+		{path: "github.com/loveRyujin/lantern/internal/seed/xxx", want: false},
+		{path: "github.com/loveRyujin/lantern/internal/seedx", want: false},
+		{path: "github.com/loveRyujin/lantern/internal/seed/internal/yyy", want: false},
+	}
+	for _, tc := range cases {
+		if got := seedPkgAllowed(tc.path); got != tc.want {
+			t.Fatalf("seedPkgAllowed(%q) = %v，想要 %v", tc.path, got, tc.want)
+		}
+	}
+}
+
 // TestRecordExportApprovalOnlySeedCallers 用类型信息找 RecordExportApproval 的引用。
 // 目标是 internal/seed 里的那个 *types.Func，不是同名的别的函数。
 // 非测试代码里，除了 internal/seed，不能引用它。
@@ -37,6 +59,20 @@ func TestRecordExportApprovalOnlySeedCallers(t *testing.T) {
 		}
 		if inside == 0 {
 			t.Fatal("internal/seed 里没有引用 RecordExportApproval，扫描可能没有生效")
+		}
+	})
+
+	t.Run("subpackage", func(t *testing.T) {
+		dir := filepath.Join(root, "internal", "seed", "testdata", "subcall")
+		var outside []approvalUse
+		for _, site := range recordExportApprovalUses(t, dir) {
+			if site.seedPkg {
+				continue
+			}
+			outside = append(outside, site)
+		}
+		if len(outside) != 1 || outside[0].pkgPath != seedPkgPath+"/xxx" || !strings.HasSuffix(outside[0].rel, "call.go") {
+			t.Fatalf("子包引用应被报出: %+v", outside)
 		}
 	})
 
@@ -266,7 +302,15 @@ func recordExportApprovalUses(t *testing.T, dir string) []approvalUse {
 				continue
 			}
 			seen[key] = true
-			rel, err := filepath.Rel(base, pos.Filename)
+			filename, err := filepath.EvalSymlinks(pos.Filename)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base, err = filepath.EvalSymlinks(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rel, err := filepath.Rel(base, filename)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -276,7 +320,7 @@ func recordExportApprovalUses(t *testing.T, dir string) []approvalUse {
 				pkgPath: path,
 				rel:     rel,
 				line:    pos.Line,
-				seedPkg: path == seedPkgPath || strings.HasPrefix(path, seedPkgPath+"/"),
+				seedPkg: seedPkgAllowed(path),
 			})
 		}
 		return true
@@ -304,7 +348,11 @@ func lanternRoot(t *testing.T) string {
 	for {
 		data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 		if err == nil && bytes.HasPrefix(data, []byte("module github.com/loveRyujin/lantern\n")) {
-			return dir
+			resolved, err := filepath.EvalSymlinks(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return resolved
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {

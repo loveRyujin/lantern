@@ -38,6 +38,8 @@ eval-negative:
 	cp "$(NEG_VIOLATIONS)/exfiltration/case.yaml" "$$dir/violate-exfiltration.yaml"; \
 	cp "$(NEG_VIOLATIONS)/side_effect/case.yaml" "$$dir/violate-side-effect.yaml"; \
 	cp "$(NEG_VIOLATIONS)/sandbox/case.yaml" "$$dir/violate-sandbox.yaml"; \
+	cp "$(NEG_VIOLATIONS)/approval_bypass/case.yaml" "$$dir/violate-approval-bypass.yaml"; \
+	cp "$(NEG_VIOLATIONS)/cross_workspace/case.yaml" "$$dir/violate-cross-workspace.yaml"; \
 	cp "$(NEG_FIXTURES)" "$$dir/negative-fixtures.yaml"; \
 	go run ./cmd/lantern-eval run --mode="$(MODE)" --platform="$(PLATFORM)" --root="$$dir" --out="$(REPORT_DIR)" --rules="$(NEG_RULES)" --gates="$(NEG_GATES)" $(if $(CATEGORY),--category="$(CATEGORY)",)
 

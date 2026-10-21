@@ -68,13 +68,22 @@ type Loop struct {
 	Tools    *tools.Registry
 	Policy   policy.Policy
 	Approver approval.Approver
-	Tickets  approval.Store
-	Events   events.Publisher
-	Log      RunLog
-	Audit    audit.Log
-	Status   StatusStore
-	Config   Config
-	now      func() time.Time
+	// Tickets 必须能创建、写决定并消费。只实现 Create 的存储不能赋给这个字段。
+	// Decide 或 Consume 返回错误时，循环失败并且不执行工具。
+	Tickets interface {
+		Create(ctx context.Context, ticket approval.Ticket) error
+		Decide(ctx context.Context, id string, decision approval.Decision) (approval.DecideResult, error)
+		Consume(ctx context.Context, id string, cc approval.ConsumeContext) error
+	}
+	// ExportConfirm 非空时，export_data 用它消费确认单，而不是 Consumer.Consume。
+	// 工作区的 ConfirmExport 接在这里，执行前完成 CAS，工具再拿凭证打开敏感库。
+	ExportConfirm func(ctx context.Context, approvalID string, cc approval.ConsumeContext, exportObject string) error
+	Events        events.Publisher
+	Log           RunLog
+	Audit         audit.Log
+	Status        StatusStore
+	Config        Config
+	now           func() time.Time
 }
 
 type callItem struct {
@@ -85,6 +94,9 @@ type callItem struct {
 	summary  string
 	duration time.Duration
 	executed bool
+	ticketID string
+	stepID   string
+	consumed bool
 }
 
 // Run 执行循环。参数校验失败不会执行工具，也不会生成确认单。
@@ -143,6 +155,9 @@ func (l *Loop) Run(ctx context.Context, in Input) (Outcome, error) {
 				return l.finish(runCtx, in, modelCalls, statusFromContext(runCtx), contextError(runCtx))
 			}
 			if isStreamTruncated(err) {
+				if recErr := l.recordArgTruncation(runCtx, in); recErr != nil {
+					return l.finish(runCtx, in, modelCalls, StateFailed, recErr)
+				}
 				out, stop := l.noteArgument(runCtx, in, modelCalls, &failures, tools.CodeArgumentsIncomplete)
 				if stop {
 					return out, out.Err
@@ -162,15 +177,9 @@ func (l *Loop) Run(ctx context.Context, in Input) (Outcome, error) {
 
 		if len(resp.Message.ToolCalls) == 0 {
 			if tools.TruncatedFinish(resp.FinishReason) {
-				out, stop := l.noteArgument(runCtx, in, modelCalls, &failures, tools.CodeArgumentsIncomplete)
-				if stop {
-					return out, out.Err
-				}
-				messages = append(messages, llm.Message{
-					Role:    llm.RoleUser,
-					Content: feedback(tools.CodeArgumentsIncomplete, "回复因输出截断而不完整"),
-				})
-				continue
+				// 只有最终回答被截断。这不是工具失败，不计入连续校验失败。
+				err := agentErr(CodeAnswerIncomplete, "最终回答因输出截断而不完整", true)
+				return l.finish(runCtx, in, modelCalls, StateFailed, err)
 			}
 			return l.finish(runCtx, in, modelCalls, StateCompleted, nil, resp.Message.Content)
 		}
@@ -204,6 +213,16 @@ func (l *Loop) handleCalls(ctx context.Context, in Input, resp llm.Response, fai
 		}
 	}
 	if bad {
+		for i := range items {
+			err := items[i].err
+			if err == nil {
+				err = tools.Skip()
+			}
+			if recErr := l.recordCallError(ctx, in, &items[i], err); recErr != nil {
+				out, _ := l.finish(ctx, in, modelCalls, StateFailed, recErr)
+				return out, false, nil
+			}
+		}
 		if argBad && failures.noteArgumentStep() {
 			code := tools.CodeArgumentsInvalid
 			for _, item := range items {
@@ -233,8 +252,22 @@ func (l *Loop) handleCalls(ctx context.Context, in Input, resp llm.Response, fai
 			return out, false, nil
 		}
 		if items[i].err != nil {
+			if recErr := l.recordCallError(ctx, in, &items[i], items[i].err); recErr != nil {
+				out, _ := l.finish(ctx, in, modelCalls, StateFailed, recErr)
+				return out, false, nil
+			}
+			if items[i].consumed {
+				code, _ := tools.CodeOf(items[i].err)
+				if code == "" {
+					code = "tool_failed"
+				}
+				if aerr := l.writeAudit(ctx, in.RunID, "tool_failed", "ticket="+items[i].ticketID+" result="+code); aerr != nil {
+					out, _ := l.finish(ctx, in, modelCalls, StateFailed, aerr)
+					return out, false, nil
+				}
+			}
 			if tools.ArgumentFailure(items[i].err) {
-				// 替换参数没通过校验。计数已在 runPrepared 里记过。
+				// 用户批准时带回的替换参数没通过校验。不计入连续失败。
 			} else {
 				failures.noteExecutionFailure()
 			}
@@ -268,7 +301,7 @@ func (l *Loop) runPrepared(ctx context.Context, in Input, resp llm.Response, ite
 		return Outcome{}, false
 	}
 	if decision.NeedsConfirm {
-		out, stop, ok := l.confirm(ctx, in, resp, item, decision, failures, modelCalls)
+		out, stop, ok := l.confirm(ctx, in, resp, item, decision, modelCalls)
 		if stop || !ok {
 			return out, stop
 		}
@@ -279,7 +312,7 @@ func (l *Loop) runPrepared(ctx context.Context, in Input, resp llm.Response, ite
 	if out, stop := l.hashMismatch(ctx, in, modelCalls, item.prepared.Args, item.prepared.Hash, "执行前参数哈希不一致"); stop {
 		return out, true
 	}
-	result, dur, err := l.execute(ctx, in, item.prepared, stepTimeout)
+	result, dur, err := l.execute(ctx, in, item, stepTimeout)
 	item.duration = dur
 	if err != nil {
 		if errors.Is(err, errToolIgnoredTimeout) {
@@ -308,15 +341,20 @@ func (l *Loop) runPrepared(ctx context.Context, in Input, resp llm.Response, ite
 
 // confirm 落库并征求决定。ok 为 false 表示这个调用不执行，错误在 item.err。
 // stop 表示整次运行结束。
-func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *callItem, decision policy.Decision, failures *failureCounter, modelCalls int) (Outcome, bool, bool) {
+func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *callItem, decision policy.Decision, modelCalls int) (Outcome, bool, bool) {
 	if l.Tickets == nil || l.Approver == nil {
 		item.err = plain("需要确认但没有确认单存储或 Approver")
 		return Outcome{}, false, false
 	}
 	p := item.prepared
+	stepID := item.call.ID
+	if stepID == "" {
+		stepID = newID()
+	}
 	ticket := approval.Ticket{
 		ID:            newID(),
 		RunID:         in.RunID,
+		StepID:        stepID,
 		WorkspaceID:   in.WorkspaceID,
 		Prompt:        in.Prompt,
 		Action:        p.Name,
@@ -325,6 +363,8 @@ func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *c
 		Sensitive:     append([]string(nil), decision.Sensitive...),
 		EstimatedRows: decision.EstimatedRows,
 		Risk:          decision.Risk,
+		ExpiresAt:     l.clock()().Add(24 * time.Hour),
+		ExportObject:  exportObject(p.Name, p.Args),
 	}
 	if ticket.Risk == "" {
 		ticket.Risk = decision.Reason
@@ -359,6 +399,10 @@ func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *c
 	}
 	switch choice.Action {
 	case approval.ActionReject:
+		if _, err := l.applyDecision(ctx, ticket.ID, choice); err != nil {
+			out, _ := l.finish(ctx, in, modelCalls, StateFailed, err)
+			return out, true, false
+		}
 		out, _ := l.finish(ctx, in, modelCalls, StateRejected, agentErr("approval_rejected", "确认被拒绝", false))
 		return out, true, false
 	case approval.ActionDefer:
@@ -367,13 +411,10 @@ func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *c
 	case approval.ActionApprove:
 		if choice.OverridesSnapshot() {
 			if _, err := l.Tools.PrepareRaw(p.Name, choice.Params); err != nil {
-				item.err = err
-				if tools.ArgumentFailure(err) && failures.noteArgumentStep() {
-					code, _ := tools.CodeOf(err)
-					out, _ := l.noteArgumentAlreadyCounted(ctx, in, modelCalls, code)
-					return out, true, false
-				}
-				return Outcome{}, false, false
+				// 替换参数不符合 Schema：不执行，不交给模型，也不计入连续失败。
+				// 确认单保持 pending，用户可以在 expires_at 之前重新提交。
+				out, _ := l.finish(ctx, in, modelCalls, StateAwaitingApproval, err)
+				return out, true, false
 			}
 			if out, stop := l.hashMismatch(ctx, in, modelCalls, choice.Params, ticket.ParamsHash, "批准带回的参数和冻结快照不一致"); stop {
 				return out, true, false
@@ -386,6 +427,30 @@ func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *c
 		if out, stop := l.hashMismatch(ctx, in, modelCalls, p.Args, p.Hash, "执行前参数哈希不一致"); stop {
 			return out, true, false
 		}
+		decided, err := l.applyDecision(ctx, ticket.ID, choice)
+		if err != nil {
+			out, _ := l.finish(ctx, in, modelCalls, StateFailed, err)
+			return out, true, false
+		}
+		if decided.Duplicate {
+			// 同一个决定已经生效。不再消费，也不再执行。
+			return Outcome{State: StateCompleted, ModelCalls: modelCalls}, true, false
+		}
+		// 先消费再执行。条件更新没成功就停在这里，工具一次都不跑。
+		// 步骤号用确认单上已经记下的值：call.ID 为空时只在创建时生成一次，这里不再生成。
+		cc := approval.ConsumeContext{RunID: ticket.RunID, StepID: ticket.StepID, ArgsHash: ticket.ParamsHash}
+		if ticket.Action == "export_data" && l.ExportConfirm != nil {
+			if err := l.ExportConfirm(ctx, ticket.ID, cc, ticket.ExportObject); err != nil {
+				out, _ := l.finish(ctx, in, modelCalls, StateFailed, err)
+				return out, true, false
+			}
+		} else if err := l.consumeForExecution(ctx, ticket); err != nil {
+			out, _ := l.finish(ctx, in, modelCalls, StateFailed, err)
+			return out, true, false
+		}
+		item.ticketID = ticket.ID
+		item.stepID = ticket.StepID
+		item.consumed = true
 		return Outcome{}, false, true
 	default:
 		out, _ := l.finish(ctx, in, modelCalls, StateFailed, plain("确认决定不合法"))
@@ -393,9 +458,11 @@ func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *c
 	}
 }
 
-func (l *Loop) execute(ctx context.Context, in Input, prepared tools.Prepared, stepTimeout time.Duration) (tools.Result, time.Duration, error) {
+func (l *Loop) execute(ctx context.Context, in Input, item *callItem, stepTimeout time.Duration) (tools.Result, time.Duration, error) {
+	prepared := item.prepared
 	attempts := prepared.Spec.MaxAttempts
-	if attempts < 1 {
+	if item.consumed || attempts < 1 {
+		// 确认单已经消费。失败后不能靠同一次调用的重试再跑。
 		attempts = 1
 	}
 	timeout := stepTimeout
@@ -413,6 +480,9 @@ func (l *Loop) execute(ctx context.Context, in Input, prepared tools.Prepared, s
 		Hash:        prepared.Hash,
 		RunID:       in.RunID,
 		WorkspaceID: in.WorkspaceID,
+		ApprovalID:  item.ticketID,
+		StepID:      item.stepID,
+		ArgsHash:    prepared.Hash,
 	}
 	var last error
 	var total time.Duration
@@ -489,6 +559,81 @@ func runTool(ctx context.Context, tool tools.Tool, call tools.Call) (tools.Resul
 			return tools.Result{}, errToolIgnoredTimeout, true
 		}
 	}
+}
+
+func (l *Loop) applyDecision(ctx context.Context, id string, decision approval.Decision) (approval.DecideResult, error) {
+	if l == nil || l.Tickets == nil {
+		return approval.DecideResult{}, plain("确认单存储不能写决定")
+	}
+	return l.Tickets.Decide(ctx, id, decision)
+}
+
+// consumeForExecution 用当前运行、步骤和参数哈希消费确认单。
+// 这三个值来自刚落库的确认单，不从库里反推，也不重新生成步骤号。
+func (l *Loop) consumeForExecution(ctx context.Context, ticket approval.Ticket) error {
+	consumer, ok := l.Tickets.(approval.Consumer)
+	if !ok || consumer == nil {
+		return plain("确认单存储不能消费")
+	}
+	return consumer.Consume(ctx, ticket.ID, approval.ConsumeContext{
+		RunID:    ticket.RunID,
+		StepID:   ticket.StepID,
+		ArgsHash: ticket.ParamsHash,
+	})
+}
+
+func (l *Loop) recordCallError(ctx context.Context, in Input, item *callItem, callErr error) error {
+	if l == nil || l.Log == nil || callErr == nil || item == nil {
+		return nil
+	}
+	code, _ := tools.CodeOf(callErr)
+	if code == "" {
+		code = "tool_failed"
+	}
+	name := item.call.Name
+	if name == "" {
+		name = item.prepared.Name
+	}
+	status := "failed"
+	if code == tools.CodeCallSkipped {
+		status = "skipped"
+	}
+	return l.Log.Append(ctx, RunEvent{
+		RunID:      in.RunID,
+		Kind:       code,
+		ToolName:   name,
+		ParamsHash: item.prepared.Hash,
+		Summary:    code,
+		Status:     status,
+		Code:       code,
+		TicketID:   item.ticketID,
+	})
+}
+
+func (l *Loop) recordArgTruncation(ctx context.Context, in Input) error {
+	if l == nil || l.Log == nil {
+		return nil
+	}
+	return l.Log.Append(ctx, RunEvent{
+		RunID:   in.RunID,
+		Kind:    tools.CodeArgumentsIncomplete,
+		Summary: tools.CodeArgumentsIncomplete,
+		Status:  "failed",
+		Code:    tools.CodeArgumentsIncomplete,
+	})
+}
+
+func exportObject(name string, args []byte) string {
+	if name != "export_data" {
+		return ""
+	}
+	var body struct {
+		Object string `json:"object"`
+	}
+	if err := json.Unmarshal(args, &body); err != nil {
+		return ""
+	}
+	return body.Object
 }
 
 func (l *Loop) recordTool(ctx context.Context, in Input, item *callItem, tokens int) error {
