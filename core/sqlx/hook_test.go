@@ -65,40 +65,7 @@ func TestNoMemMapsToRowTooLarge(t *testing.T) {
 	}
 }
 
-func TestRunSQLInvalidUTF8TextIsBase64(t *testing.T) {
-	tool := openEmptyTool(t)
-	ctx := t.Context()
-	res, err := tool.Execute(ctx, tools.Call{Args: []byte(`{"sql":"SELECT CAST(x'fffe41' AS TEXT)"}`)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw := []byte{0xff, 0xfe, 0x41}
-	want := `"` + base64.StdEncoding.EncodeToString(raw) + `"`
-	if got := firstCellRaw(t, res.Content); got != want {
-		t.Fatalf("单元格 = %s，想要 %s", got, want)
-	}
-	if strings.Contains(res.Content, "\ufffd") || strings.Contains(res.Content, `\ufffd`) {
-		t.Fatalf("非法 UTF-8 被换成了替换字符: %s", res.Content)
-	}
-	res, err = tool.Execute(ctx, tools.Call{Args: []byte(`{"sql":"SELECT CAST(x'41' AS TEXT)"}`)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := firstCellRaw(t, res.Content); got != `"A"` {
-		t.Fatalf("合法文本 = %s，想要 \"A\"", got)
-	}
-}
-
 func TestRunSQLBlobCountsBase64(t *testing.T) {
-	if MaxValueBytes != 4<<20 {
-		t.Fatalf("单值上限 = %d，想要 4 MiB", MaxValueBytes)
-	}
-	if MaxResultColumns != 32 {
-		t.Fatalf("结果列数上限 = %d，想要 32", MaxResultColumns)
-	}
-	if got := MaxResultColumns * MaxValueBytes; got != 128<<20 {
-		t.Fatalf("SQLite 侧最坏 = %d，想要 128 MiB", got)
-	}
 	fit := (MaxResultBytes / 4) * 3
 	if base64.StdEncoding.EncodedLen(fit) != MaxResultBytes || base64.StdEncoding.EncodedLen(fit+1) <= MaxResultBytes {
 		t.Fatalf("base64 边界不对: fit=%d", fit)

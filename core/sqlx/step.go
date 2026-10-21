@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"sync/atomic"
-	"unicode/utf8"
 	"unsafe"
 
 	"modernc.org/libc"
@@ -117,7 +116,7 @@ func prepare(tls *libc.TLS, db uintptr, query string) (uintptr, error) {
 }
 
 // readRow 逐列看这一列写进 JSON 之后的长度。这一列放不进 1 MiB 时，不拷贝它，整行失败。
-// BLOB 和非法 UTF-8 的 TEXT 在 JSON 里是 base64，按编码后的长度计。合法 TEXT 按原始字节计。
+// BLOB 在 JSON 里是 base64，按编码后的长度计。TEXT 按原始字节计。
 func readRow(tls *libc.TLS, stmt uintptr, n int) ([]any, int, error) {
 	row := make([]any, n)
 	sum := 0
@@ -141,7 +140,7 @@ func readRow(tls *libc.TLS, stmt uintptr, n int) ([]any, int, error) {
 }
 
 // columnSize 返回原始字节数和写进 JSON 的长度。拷贝用原始字节数。
-// BLOB 和非法 UTF-8 的 TEXT 在 JSON 里是 base64，长度大约多三分之一。
+// BLOB 在 JSON 里是 base64，长度大约比原始字节多三分之一。
 func columnSize(tls *libc.TLS, stmt uintptr, i, typ int32) (raw, jsonN int, err error) {
 	switch typ {
 	case sqlite3.SQLITE_NULL:
@@ -158,9 +157,6 @@ func columnSize(tls *libc.TLS, stmt uintptr, i, typ int32) (raw, jsonN int, err 
 		n, err := columnBytes(tls, stmt, i)
 		if err != nil {
 			return 0, 0, err
-		}
-		if textIsBinary(tls, stmt, i, n) {
-			return n, base64.StdEncoding.EncodedLen(n), nil
 		}
 		return n, n, nil
 	case sqlite3.SQLITE_BLOB:
@@ -199,28 +195,13 @@ func columnBytes(tls *libc.TLS, stmt uintptr, i int32) (int, error) {
 	return n, nil
 }
 
-// textIsBinary 表示这段 TEXT 不是合法 UTF-8。JSON 会把这种字符串换成 U+FFFD，所以调用方改按 BLOB 返回。
-func textIsBinary(tls *libc.TLS, stmt uintptr, i int32, n int) bool {
-	if n == 0 {
-		return false
-	}
-	p := sqlite3.Xsqlite3_column_text(tls, stmt, i)
-	if p == 0 {
-		return false
-	}
-	return !utf8.Valid(libc.GoBytes(p, n))
-}
-
-func copyText(tls *libc.TLS, stmt uintptr, i int32, n int) any {
+func copyText(tls *libc.TLS, stmt uintptr, i int32, n int) string {
 	if n == 0 {
 		return ""
 	}
 	b := copyCBytes(sqlite3.Xsqlite3_column_text(tls, stmt, i), n)
 	if len(b) == 0 {
 		return ""
-	}
-	if !utf8.Valid(b) {
-		return b
 	}
 	return unsafe.String(unsafe.SliceData(b), len(b))
 }
