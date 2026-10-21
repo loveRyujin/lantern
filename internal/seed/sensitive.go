@@ -2,7 +2,9 @@ package seed
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,9 +15,9 @@ import (
 	"github.com/loveRyujin/lantern/core/workspace"
 )
 
-// SeedApprovalID 是种子工具写入敏感库时使用的确认单标识。
-// 业务导出不要复用这个标识。
-const SeedApprovalID = "lantern-seed"
+// seedApprovalPrefix 是种子确认单标识的前缀。每次写入都另加一段随机后缀，
+// 避免同一工作区再次生成时主键冲突。业务导出不要复用这个前缀。
+const seedApprovalPrefix = "lantern-seed-"
 
 // seedExportObject 是种子写入的导出对象，对应 sensitive.user_contacts。
 const seedExportObject = "user_contacts"
@@ -24,18 +26,16 @@ const seedExportObject = "user_contacts"
 // 种子工具只有这个函数访问敏感库。连接由 Handle.Close 关闭，这里不关闭。
 //
 // 先在本工作区的 runs.approvals 写入一条已批准、未过期的 export_data 确认，
-// 再 ConfirmExport。没有这条记录就拿不到连接。
+// 再 ConfirmExport。没有这条记录就拿不到连接。每次调用使用新的确认单标识。
 func writeSensitive(ctx context.Context, h *workspace.Handle, rows []contact) (*sql.DB, error) {
-	if SeedApprovalID == "" {
-		return nil, errors.New("seed: 缺少敏感库确认单标识")
-	}
 	if h == nil {
 		return nil, errors.New("seed: 工作区没有打开")
 	}
-	if err := RecordExportApproval(ctx, h, SeedApprovalID, seedExportObject); err != nil {
+	approvalID, err := writeSeedApproval(ctx, h)
+	if err != nil {
 		return nil, err
 	}
-	grant, err := h.ConfirmExport(ctx, SeedApprovalID, seedExportObject)
+	grant, err := h.ConfirmExport(ctx, approvalID, seedExportObject)
 	if err != nil {
 		return nil, fmt.Errorf("seed: 确认导出: %w", err)
 	}
@@ -82,7 +82,10 @@ func insertContacts(ctx context.Context, db *sql.DB, rows []contact) error {
 	return nil
 }
 
-// RecordExportApproval 在这个工作区的 runs.approvals 写入一张尚未使用的导出确认。
+// RecordExportApproval 直接写入一条已经批准的导出审批，不经过审批状态机。
+// 只供种子和测试使用，业务代码不能调用。
+// W2 的审批状态机落地后，要把它收进内部包，或者改成只有状态机能调用。
+//
 // 记录属于 h 的工作区，动作是 export_data，对象是 exportObject，决定为批准，一小时内有效。
 // 不打开 sensitive.db，也不调用 ConfirmExport。调用方拿到记录后再自己确认。
 func RecordExportApproval(ctx context.Context, h *workspace.Handle, approvalID, exportObject string) error {
@@ -110,12 +113,17 @@ func RecordExportApproval(ctx context.Context, h *workspace.Handle, approvalID, 
 	created := now.Format(time.RFC3339Nano)
 	expires := now.Add(time.Hour).Format(time.RFC3339Nano)
 	runID := "seed-" + approvalID
-	if _, err := h.Runs.ExecContext(ctx, `
+	tx, err := h.Runs.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("seed: 确认单事务: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO runs (id, state, version, context, created_at, updated_at)
 		VALUES (?, 'completed', 0, '', ?, ?)`, runID, created, created); err != nil {
 		return fmt.Errorf("seed: 写入种子运行: %w", err)
 	}
-	if _, err := h.Runs.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO approvals (
 			id, run_id, step_id, params_hash, params_json, decision, created_at, decided_at,
 			workspace_id, action, export_object, expires_at
@@ -125,7 +133,30 @@ func RecordExportApproval(ctx context.Context, h *workspace.Handle, approvalID, 
 	); err != nil {
 		return fmt.Errorf("seed: 写入导出确认: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("seed: 提交确认单: %w", err)
+	}
 	return nil
+}
+
+// writeSeedApproval 为这次种子写入签发一张新的确认单，并记入 runs.approvals。
+func writeSeedApproval(ctx context.Context, h *workspace.Handle) (string, error) {
+	id, err := newSeedApprovalID()
+	if err != nil {
+		return "", err
+	}
+	if err := RecordExportApproval(ctx, h, id, seedExportObject); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func newSeedApprovalID() (string, error) {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("seed: 确认单标识: %w", err)
+	}
+	return seedApprovalPrefix + hex.EncodeToString(buf[:]), nil
 }
 
 func validSeedToken(s string) bool {
