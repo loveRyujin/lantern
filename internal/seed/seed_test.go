@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loveRyujin/lantern/core/errcode"
 	"github.com/loveRyujin/lantern/core/workspace"
 	"github.com/loveRyujin/lantern/internal/seed"
 
@@ -185,14 +186,37 @@ func TestDatasetShape(t *testing.T) {
 func TestForceRebuildAndRejectExisting(t *testing.T) {
 	root := t.TempDir()
 	first := mustRun(t, root, seed.DefaultSeed, false)
+	marker := filepath.Join(first.Workspaces[0].Dir, "marker.txt")
+	if err := os.WriteFile(marker, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	_, err := seed.Run(t.Context(), seed.Options{Root: root, Seed: seed.DefaultSeed, Force: false})
 	if !errors.Is(err, workspace.ErrExists) {
 		t.Fatalf("second Run: %v", err)
+	}
+	if body, err := os.ReadFile(marker); err != nil || string(body) != "old" {
+		t.Fatalf("rejected run changed the workspace: %v %q", err, body)
 	}
 	second := mustRun(t, root, seed.DefaultSeed, true)
 	if second.Hash != first.Hash {
 		t.Fatalf("force rebuild hash %s vs %s", second.Hash, first.Hash)
 	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("old workspace was not replaced: %v", err)
+	}
+	prefix := root + string(filepath.Separator)
+	for _, ws := range second.Workspaces {
+		if filepath.Base(ws.Dir) != ws.ID || !strings.HasPrefix(ws.Dir, prefix) {
+			t.Fatalf("dir %s id %s", ws.Dir, ws.ID)
+		}
+		if strings.Contains(ws.Dir, ".lantern-seed-") {
+			t.Fatalf("dir still in scratch: %s", ws.Dir)
+		}
+		if _, err := os.Stat(filepath.Join(ws.Dir, "analytics.db")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertNoScratch(t, root)
 }
 
 func TestForceRejectsSymlinks(t *testing.T) {
@@ -210,7 +234,7 @@ func TestForceRejectsSymlinks(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := seed.Run(t.Context(), seed.Options{Root: root, Seed: seed.DefaultSeed, Force: true})
-		if err == nil || !strings.Contains(err.Error(), "符号链接") {
+		if !errors.Is(err, workspace.ErrPathEscape) {
 			t.Fatalf("Run: %v", err)
 		}
 		if _, err := os.Stat(secret); err != nil {
@@ -233,7 +257,7 @@ func TestForceRejectsSymlinks(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := seed.Run(t.Context(), seed.Options{Root: root, Seed: seed.DefaultSeed, Force: true})
-		if err == nil || !strings.Contains(err.Error(), "符号链接") {
+		if !errors.Is(err, workspace.ErrPathEscape) {
 			t.Fatalf("Run: %v", err)
 		}
 		if _, err := os.Stat(secret); err != nil {
@@ -249,14 +273,106 @@ func TestForceRejectsSymlinks(t *testing.T) {
 	})
 }
 
-func TestSeedApprovalID(t *testing.T) {
-	if seed.SeedApprovalID != "lantern-seed" {
-		t.Fatalf("approval id %q", seed.SeedApprovalID)
+func TestRecordExportApprovalRollsBack(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	h, err := workspace.Create(ctx, root, "星禾")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.ContainsFunc(seed.SeedApprovalID, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == '\n'
-	}) {
-		t.Fatalf("approval id %q has whitespace", seed.SeedApprovalID)
+	t.Cleanup(func() { _ = h.Close() })
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := h.Runs.ExecContext(ctx, `
+		INSERT INTO runs (id, state, version, context, created_at, updated_at)
+		VALUES ('other-dup', 'completed', 0, '', ?, ?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Runs.ExecContext(ctx, `
+		INSERT INTO approvals (
+			id, run_id, step_id, params_hash, params_json, decision, created_at, decided_at,
+			workspace_id, action, export_object, expires_at
+		) VALUES ('dup', 'other-dup', 'seed', ?, '{}', 'approve', ?, ?, '星禾', 'export_data', 'user_contacts', ?)`,
+		strings.Repeat("ab", 32), now, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	err = seed.RecordExportApproval(ctx, h, "dup", "user_contacts")
+	if err == nil {
+		t.Fatal("duplicate approval id succeeded")
+	}
+	var runs int
+	if err := h.Runs.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE id = 'seed-dup'`).Scan(&runs); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 0 {
+		t.Fatalf("orphan runs = %d", runs)
+	}
+	var approvals int
+	if err := h.Runs.QueryRowContext(ctx, `SELECT COUNT(*) FROM approvals WHERE id = 'dup'`).Scan(&approvals); err != nil {
+		t.Fatal(err)
+	}
+	if approvals != 1 {
+		t.Fatalf("approvals = %d, want the original row only", approvals)
+	}
+}
+
+func TestNoGrantCannotWriteSensitive(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	h, err := workspace.Create(ctx, root, "星禾")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	assertSensitiveMissing(t, h.Dir)
+
+	_, err = h.ConfirmExport(ctx, "lantern-seed-missing", "user_contacts")
+	if !errors.Is(err, workspace.ErrExportUnconfirmed) {
+		t.Fatalf("ConfirmExport without approval: %v", err)
+	}
+	code, ok := errcode.CodeOf(err)
+	if !ok || code != errcode.ExportUnconfirmed {
+		t.Fatalf("code = %s ok=%v", code, ok)
+	}
+	if _, err := h.OpenSensitive(ctx, workspace.ExportGrant{}); !errors.Is(err, workspace.ErrExportUnconfirmed) {
+		t.Fatalf("OpenSensitive without grant: %v", err)
+	}
+	assertSensitiveMissing(t, h.Dir)
+
+	if err := seed.RecordExportApproval(ctx, h, "lantern-seed-ok", "user_contacts"); err != nil {
+		t.Fatal(err)
+	}
+	grant, err := h.ConfirmExport(ctx, "lantern-seed-ok", "user_contacts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := h.OpenSensitive(ctx, grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO user_contacts (user_id, phone, email) VALUES ('u1', '13800138000', 'a@example.com')
+	`); err != nil {
+		t.Fatal(err)
+	}
+	var phone string
+	if err := db.QueryRowContext(ctx, `SELECT phone FROM user_contacts WHERE user_id = 'u1'`).Scan(&phone); err != nil {
+		t.Fatal(err)
+	}
+	if phone != "13800138000" {
+		t.Fatalf("phone = %s", phone)
+	}
+}
+
+func assertSensitiveMissing(t *testing.T, dir string) {
+	t.Helper()
+	for _, name := range []string{"sensitive.db", "sensitive.db-wal", "sensitive.db-shm"} {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s exists or stat failed: %v", name, err)
+		}
 	}
 }
 
@@ -306,6 +422,19 @@ func TestDataDocuments(t *testing.T) {
 	}
 	if strings.Contains(string(xh), yunshanGMV) {
 		t.Fatal("星禾口径写成了云杉的 GMV")
+	}
+}
+
+func assertNoScratch(t *testing.T, root string) {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".lantern-seed-") {
+			t.Fatalf("scratch left behind: %s", entry.Name())
+		}
 	}
 }
 

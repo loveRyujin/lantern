@@ -16,6 +16,13 @@ import (
 	"github.com/loveRyujin/lantern/core/workspace"
 )
 
+// errForceBusy 表示同一数据目录已经有一次 -force 拿着文件锁。
+var errForceBusy = errors.New("seed: 已有一次 -force 在进行")
+
+// forceLockName 是数据目录下的 -force 文件锁。
+// CleanScratch 只删 `.lantern-seed-` 前缀，不会把这个锁文件清掉。
+const forceLockName = ".lantern-seed.lock"
+
 // DefaultSeed 是命令行和 make seed 使用的随机种子。
 const DefaultSeed uint64 = 20261021
 
@@ -47,7 +54,9 @@ type Result struct {
 }
 
 // Run 在 root 下创建星禾、云杉两个工作区并写入合成数据。
-// root 为空时使用 workspace.DefaultRoot。Force 为真时先删除这两个工作区目录。
+// root 为空时使用 workspace.DefaultRoot。
+// Force 为真时先在临时目录生成两份，都成功后才替换原来的工作区。
+// 生成失败时原来的目录保持不动。符号链接不会被跟着删掉。
 func Run(ctx context.Context, opt Options) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
@@ -56,14 +65,64 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	out := Result{Root: root, Seed: opt.Seed, Workspaces: make([]Summary, 0, len(profiles))}
+	if opt.Force {
+		return runStaged(ctx, root, opt.Seed)
+	}
+	return runInPlace(ctx, root, opt.Seed)
+}
+
+func runInPlace(ctx context.Context, root string, seedN uint64) (Result, error) {
+	return runProfiles(ctx, root, seedN, root)
+}
+
+func runStaged(ctx context.Context, root string, seedN uint64) (Result, error) {
+	unlock, err := lockForce(root)
+	if err != nil {
+		return Result{}, err
+	}
+	defer unlock()
+	if err := workspace.CleanScratch(root); err != nil {
+		return Result{}, err
+	}
 	for _, profile := range profiles {
-		if opt.Force {
-			if err := removeWorkspace(root, profile.ID); err != nil {
-				return Result{}, err
-			}
+		if err := workspace.Replaceable(root, profile.ID); err != nil {
+			return Result{}, err
 		}
-		sum, err := seedWorkspace(ctx, root, opt.Seed, profile)
+	}
+	staging, err := workspace.ScratchDir(root)
+	if err != nil {
+		return Result{}, err
+	}
+	defer os.RemoveAll(staging)
+
+	out, err := runProfiles(ctx, root, seedN, staging)
+	if err != nil {
+		return Result{}, err
+	}
+	ids := make([]string, len(profiles))
+	for i, profile := range profiles {
+		ids[i] = profile.ID
+	}
+	dirs, err := workspace.Install(root, staging, ids)
+	if err != nil {
+		return Result{}, err
+	}
+	if len(dirs) != len(out.Workspaces) {
+		return Result{}, fmt.Errorf("seed: 装回了 %d 个工作区，想要 %d", len(dirs), len(out.Workspaces))
+	}
+	for i := range out.Workspaces {
+		out.Workspaces[i].Dir = dirs[i]
+	}
+	return out, nil
+}
+
+func runProfiles(ctx context.Context, resultRoot string, seedN uint64, writeRoot string) (Result, error) {
+	out := Result{Root: resultRoot, Seed: seedN, Workspaces: make([]Summary, 0, len(profiles))}
+	for _, profile := range profiles {
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
+		sum, err := seedProfile(ctx, writeRoot, seedN, profile)
 		if err != nil {
 			return Result{}, err
 		}
@@ -93,43 +152,8 @@ func resolveRoot(root string) (string, error) {
 	return filepath.Clean(abs), nil
 }
 
-func removeWorkspace(root, id string) error {
-	// Lstat 不跟随最后一级。workspaces 若是符号链接，后面对工作区路径的
-	// Lstat 仍会在路径遍历时走进目标目录，所以父目录要单独看。
-	workspaces := filepath.Join(root, "workspaces")
-	parent, err := os.Lstat(workspaces)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("seed: 删除工作区 %s: %w", id, err)
-	}
-	if parent.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("seed: workspaces 是符号链接，拒绝删除")
-	}
-	if !parent.IsDir() {
-		return fmt.Errorf("seed: workspaces 不是目录，拒绝删除")
-	}
-
-	dir := filepath.Join(workspaces, id)
-	info, err := os.Lstat(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("seed: 删除工作区 %s: %w", id, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("seed: 工作区 %s 是符号链接，拒绝删除", id)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("seed: 工作区 %s 不是目录，拒绝删除", id)
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("seed: 删除工作区 %s: %w", id, err)
-	}
-	return nil
-}
+// seedProfile 生成一个工作区。测试替换它，用来模拟后面的工作区失败。
+var seedProfile = seedWorkspace
 
 func seedWorkspace(ctx context.Context, root string, seedN uint64, profile profile) (sum Summary, err error) {
 	data, err := generate(profile, seedN)
@@ -147,7 +171,7 @@ func seedWorkspace(ctx context.Context, root string, seedN uint64, profile profi
 	defer func() {
 		cerr := h.Close()
 		if !ok {
-			_ = os.RemoveAll(h.Dir)
+			_ = workspace.Remove(root, profile.ID)
 			return
 		}
 		if err == nil && cerr != nil {

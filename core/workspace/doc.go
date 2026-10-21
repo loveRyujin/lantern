@@ -22,4 +22,8 @@
 // 没有“共用一个库再过滤”的做法。每条由本包打开的连接（含确认后的 sensitive）都把
 // SQLITE_LIMIT_ATTACHED 设为 0，并安装 authorizer 拒绝 ATTACH。analytics 是会执行
 // 外部 SQL 的那条连接，因此它打不开 sensitive.db。
+//
+// [Remove] 删除一个工作区目录。目录不存在时什么也不做。符号链接和逃出 workspaces
+// 的路径返回 [ErrPathEscape]，不会跟着链到外面删文件。[Install] 在全部检查通过之后，
+// 才把另一份数据目录里已经建好的工作区换进来。
 package workspace
