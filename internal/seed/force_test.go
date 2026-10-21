@@ -11,6 +11,9 @@ import (
 	"github.com/loveRyujin/lantern/core/workspace"
 )
 
+// TestConsecutiveSeed 连续生成两次，内容哈希应相同。
+// 第二次 Run 带 -force，会在临时目录里新建 runs.db，所以这两次生成本身不会撞上确认单主键。
+// 同一工作区里不撞主键，靠后面两次直接调用 writeSeedApproval 验证。
 func TestConsecutiveSeed(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()
