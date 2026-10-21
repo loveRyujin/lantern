@@ -266,8 +266,8 @@ func TestLoopSQLiteApprovalOnlyAfterValidation(t *testing.T) {
 		h.loop.Tickets = store
 		h.approver.Responses = []approval.Response{{Action: approval.ActionApprove}}
 		out, err := h.run()
-		if err != nil || out.State != StateCompleted || exp.n() != 1 {
-			t.Fatalf("%+v %v exec=%d", out, err, exp.n())
+		if err == nil || out.State != StateFailed || exp.n() != 0 || !strings.Contains(err.Error(), "不能写决定") {
+			t.Fatalf("不能写决定时应失败且不执行: %+v %v exec=%d", out, err, exp.n())
 		}
 		var n int
 		var params, hash string
@@ -991,8 +991,15 @@ func (p *countingPolicy) Decide(ctx context.Context, req policy.Request) (policy
 }
 
 type memTickets struct {
-	mu      sync.Mutex
-	tickets []approval.Ticket
+	mu    sync.Mutex
+	items []memTicket
+}
+
+type memTicket struct {
+	ticket   approval.Ticket
+	state    approval.State
+	version  int64
+	decision string
 }
 
 func (m *memTickets) Create(ctx context.Context, ticket approval.Ticket) error {
@@ -1000,15 +1007,94 @@ func (m *memTickets) Create(ctx context.Context, ticket approval.Ticket) error {
 		return err
 	}
 	m.mu.Lock()
-	m.tickets = append(m.tickets, ticket)
+	m.items = append(m.items, memTicket{ticket: ticket, state: approval.StatePending})
 	m.mu.Unlock()
+	return nil
+}
+
+func (m *memTickets) Decide(ctx context.Context, id string, decision approval.Decision) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := decision.Validate(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec := m.find(id)
+	if rec == nil {
+		return approval.ErrNotFound
+	}
+	if decision.Action == approval.ActionDefer {
+		if rec.state != approval.StatePending {
+			return approval.ErrIllegalTransition
+		}
+		return nil
+	}
+	if decision.OverridesSnapshot() {
+		sum, err := approval.ParamsHash(decision.Params)
+		if err != nil {
+			return err
+		}
+		if sum != rec.ticket.ParamsHash {
+			return approval.ErrSnapshotMismatch
+		}
+	}
+	if rec.state != approval.StatePending {
+		return approval.ErrIllegalTransition
+	}
+	switch decision.Action {
+	case approval.ActionApprove:
+		rec.state = approval.StateApproved
+		rec.decision = string(approval.ActionApprove)
+	case approval.ActionReject:
+		rec.state = approval.StateRejected
+		rec.decision = string(approval.ActionReject)
+	default:
+		return approval.ErrInvalidDecision
+	}
+	rec.version++
+	return nil
+}
+
+func (m *memTickets) Consume(ctx context.Context, id string, cc approval.ConsumeContext) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec := m.find(id)
+	if rec == nil {
+		return approval.ErrNotFound
+	}
+	if rec.ticket.RunID != cc.RunID || rec.ticket.StepID != cc.StepID || rec.ticket.ParamsHash != cc.ArgsHash {
+		return approval.ErrMismatch
+	}
+	if rec.state != approval.StateApproved {
+		return approval.ErrIllegalTransition
+	}
+	rec.state = approval.StateConsumed
+	rec.version++
+	return nil
+}
+
+func (m *memTickets) find(id string) *memTicket {
+	for i := range m.items {
+		if m.items[i].ticket.ID == id {
+			return &m.items[i]
+		}
+	}
 	return nil
 }
 
 func (m *memTickets) list() []approval.Ticket {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]approval.Ticket(nil), m.tickets...)
+	out := make([]approval.Ticket, len(m.items))
+	for i := range m.items {
+		out[i] = m.items[i].ticket
+	}
+	return out
 }
 
 type sqlTickets struct {

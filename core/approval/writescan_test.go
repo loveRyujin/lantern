@@ -22,6 +22,9 @@ var (
 	reTouchState     = regexp.MustCompile(`(?is)update\s+approvals\b[^;]*\bstate\b`)
 )
 
+// TestNoDirectApprovalWritesOutsideStateMachine 只扫字符串常量和它们的拼接。
+// fmt.Sprintf、变量和 builder 拼出来的 SQL 它看不见。这只是第一道过滤；
+// 真正的保证是 #34 的只读连接，再加上文件哈希校验。
 func TestNoDirectApprovalWritesOutsideStateMachine(t *testing.T) {
 	root := moduleRoot(t)
 	var hits []string

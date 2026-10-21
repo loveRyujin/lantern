@@ -130,7 +130,8 @@ func RecordExportApproval(ctx context.Context, h *workspace.Handle, approvalID, 
 }
 
 // SeedConsumeContext 按种子确认单的约定拼出消费上下文。
-// 运行标识是 seed-<approvalID>，步骤是 seed，哈希和 RecordExportApproval 用的是同一份参数。
+// 它只能用于种子：运行标识是 seed-<approvalID>，步骤固定是 seed，哈希和 RecordExportApproval 用的是同一份参数。
+// 业务路径必须从当前步骤拿真实的运行、步骤和参数哈希，不能按确认单 ID 反推。
 func SeedConsumeContext(approvalID, exportObject string) (approval.ConsumeContext, error) {
 	ticket, err := seedTicket("workspace", approvalID, exportObject, time.Now().UTC())
 	if err != nil {

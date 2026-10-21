@@ -12,8 +12,14 @@ type Store interface {
 }
 
 // Decider 把 Approver 返回的决定写回确认单。
-// 只有状态机能改审批决定。Agent 在 Create 并征求决定之后，
-// 如果存储同时实现了 Decider，就调用 Decide。内存假存储可以只实现 Store。
+// 只有状态机能改审批决定。Agent 在批准或拒绝时必须拿到 Decider，
+// 存储没实现这个接口就直接失败，不会静默跳过再去执行工具。
 type Decider interface {
 	Decide(ctx context.Context, id string, decision Decision) error
+}
+
+// Consumer 在执行前把已批准的确认单消费掉。
+// 调用方传入当前运行、步骤和参数哈希。条件更新成功之后才能执行。
+type Consumer interface {
+	Consume(ctx context.Context, id string, cc ConsumeContext) error
 }

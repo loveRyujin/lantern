@@ -35,8 +35,9 @@ type Machine struct {
 }
 
 var (
-	_ Store   = (*Machine)(nil)
-	_ Decider = (*Machine)(nil)
+	_ Store    = (*Machine)(nil)
+	_ Decider  = (*Machine)(nil)
+	_ Consumer = (*Machine)(nil)
 )
 
 // New 使用已经打开的 runs 库。

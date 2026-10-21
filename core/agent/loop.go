@@ -404,6 +404,12 @@ func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *c
 			out, _ := l.finish(ctx, in, modelCalls, StateFailed, err)
 			return out, true, false
 		}
+		// 先消费再执行。条件更新没成功就停在这里，工具一次都不跑。
+		// 步骤号用确认单上已经记下的值：call.ID 为空时只在创建时生成一次，这里不再生成。
+		if err := l.consumeForExecution(ctx, ticket); err != nil {
+			out, _ := l.finish(ctx, in, modelCalls, StateFailed, err)
+			return out, true, false
+		}
 		return Outcome{}, false, true
 	default:
 		out, _ := l.finish(ctx, in, modelCalls, StateFailed, plain("确认决定不合法"))
@@ -512,9 +518,23 @@ func runTool(ctx context.Context, tool tools.Tool, call tools.Call) (tools.Resul
 func (l *Loop) applyDecision(ctx context.Context, id string, decision approval.Decision) error {
 	decider, ok := l.Tickets.(approval.Decider)
 	if !ok || decider == nil {
-		return nil
+		return plain("确认单存储不能写决定")
 	}
 	return decider.Decide(ctx, id, decision)
+}
+
+// consumeForExecution 用当前运行、步骤和参数哈希消费确认单。
+// 这三个值来自刚落库的确认单，不从库里反推，也不重新生成步骤号。
+func (l *Loop) consumeForExecution(ctx context.Context, ticket approval.Ticket) error {
+	consumer, ok := l.Tickets.(approval.Consumer)
+	if !ok || consumer == nil {
+		return plain("确认单存储不能消费")
+	}
+	return consumer.Consume(ctx, ticket.ID, approval.ConsumeContext{
+		RunID:    ticket.RunID,
+		StepID:   ticket.StepID,
+		ArgsHash: ticket.ParamsHash,
+	})
 }
 
 func (l *Loop) recordCallError(ctx context.Context, in Input, item *callItem, callErr error) error {

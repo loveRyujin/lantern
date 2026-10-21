@@ -2,12 +2,15 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/loveRyujin/lantern/core/approval"
 	"github.com/loveRyujin/lantern/core/llm"
+	"github.com/loveRyujin/lantern/core/policy"
 	"github.com/loveRyujin/lantern/core/tools"
 )
 
@@ -172,7 +175,7 @@ func TestMachinePersistsApprovalDecision(t *testing.T) {
 		if err := ws.Runs.QueryRowContext(t.Context(), `SELECT state, version, step_id, decision FROM approvals`).Scan(&state, &version, &stepID, &decision); err != nil {
 			t.Fatal(err)
 		}
-		if state != string(approval.StateApproved) || version != 1 || stepID != "e" || decision != string(approval.ActionApprove) {
+		if state != string(approval.StateConsumed) || version != 2 || stepID != "e" || decision != string(approval.ActionApprove) {
 			t.Fatalf("state=%s version=%d step=%s decision=%s", state, version, stepID, decision)
 		}
 	})
@@ -219,4 +222,223 @@ func TestMachinePersistsApprovalDecision(t *testing.T) {
 			t.Fatalf("state=%s version=%d decision=%s", state, version, decision)
 		}
 	})
+}
+
+func TestConsumeBeforeExecution(t *testing.T) {
+	exportCall := llm.ToolCall{ID: "e", Name: "export_data", Arguments: `{"object":"contacts"}`}
+
+	t.Run("执行后已消费", func(t *testing.T) {
+		h, exp, _, db := newExportHarness(t, exportCall)
+		out, err := h.run()
+		if err != nil || out.State != StateCompleted || exp.n() != 1 {
+			t.Fatalf("%+v %v exec=%d", out, err, exp.n())
+		}
+		state, stepID, decision, version, consumed := approvalRow(t, db)
+		ticket := h.approver.Tickets()[0]
+		if state != string(approval.StateConsumed) || version != 2 || !consumed.Valid || consumed.String == "" {
+			t.Fatalf("state=%s version=%d consumed=%v", state, version, consumed)
+		}
+		if stepID != ticket.StepID || stepID != "e" || decision != string(approval.ActionApprove) {
+			t.Fatalf("step=%s ticket=%s decision=%s", stepID, ticket.StepID, decision)
+		}
+	})
+
+	t.Run("空的调用号只生成一次步骤", func(t *testing.T) {
+		ws := openRuns(t)
+		h := newHarness(t, echoSpec(), llm.Say("结束"))
+		exp := h.add(tools.SpecExportData)
+		h.loop.Tickets = approval.New(ws.Runs)
+		h.approver.Responses = []approval.Response{{Action: approval.ActionApprove}}
+		prepared, err := h.reg.Prepare(tools.CallInput{Name: "export_data", Arguments: `{"object":"contacts"}`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		item := &callItem{call: llm.ToolCall{Name: "export_data"}, prepared: prepared}
+		in := Input{RunID: "run-1", WorkspaceID: "ws-1", Prompt: "导出"}
+		out, stop, ok := h.loop.confirm(t.Context(), in, llm.Response{}, item, policy.Decision{NeedsConfirm: true}, 1)
+		if stop || !ok || out.Err != nil {
+			t.Fatalf("stop=%v ok=%v %+v", stop, ok, out)
+		}
+		if _, _, err := h.loop.execute(t.Context(), in, item.prepared, time.Second); err != nil {
+			t.Fatal(err)
+		}
+		state, stepID, _, version, _ := approvalRow(t, ws.Runs)
+		ticket := h.approver.Tickets()[0]
+		if ticket.StepID == "" || stepID != ticket.StepID || state != string(approval.StateConsumed) || version != 2 || exp.n() != 1 {
+			t.Fatalf("state=%s version=%d step=%s ticket=%s exec=%d", state, version, stepID, ticket.StepID, exp.n())
+		}
+	})
+
+	t.Run("再次消费失败且不再执行", func(t *testing.T) {
+		h, exp, m, _ := newExportHarness(t, exportCall)
+		out, err := h.run()
+		if err != nil || out.State != StateCompleted || exp.n() != 1 {
+			t.Fatalf("%+v %v exec=%d", out, err, exp.n())
+		}
+		ticket := h.approver.Tickets()[0]
+		// 消费成功才执行。第一次已经消费过，这里必须失败，工具次数停在 1。
+		consumeErr := executeIfConsumed(t.Context(), m, ticket, exp)
+		if consumeErr == nil || exp.n() != 1 {
+			t.Fatalf("再次消费=%v exec=%d", consumeErr, exp.n())
+		}
+		if !errors.Is(consumeErr, approval.ErrIllegalTransition) || !errors.Is(consumeErr, approval.ErrTerminal) {
+			t.Fatalf("再次消费 = %v", consumeErr)
+		}
+	})
+
+	t.Run("条件更新冲突时不执行", func(t *testing.T) {
+		h, exp, m, db := newExportHarness(t, exportCall)
+		hits := 0
+		m.SetGate(func() {
+			hits++
+			if hits != 2 {
+				return
+			}
+			// 循环已经读到 approved，写锁还没加上。这里先把同一版本消费掉。
+			m.SetGate(nil)
+			var id, runID, stepID, hash string
+			if err := db.QueryRowContext(context.Background(), `SELECT id, run_id, step_id, params_hash FROM approvals`).Scan(&id, &runID, &stepID, &hash); err != nil {
+				t.Errorf("读取确认单: %v", err)
+				return
+			}
+			if err := m.Consume(context.Background(), id, approval.ConsumeContext{RunID: runID, StepID: stepID, ArgsHash: hash}); err != nil {
+				t.Errorf("抢先消费: %v", err)
+			}
+		})
+		out, err := h.run()
+		if hits != 2 || exp.n() != 0 || !errors.Is(err, approval.ErrVersionConflict) || out.State != StateFailed {
+			t.Fatalf("hits=%d exec=%d %+v %v", hits, exp.n(), out, err)
+		}
+	})
+
+	t.Run("重复同一决定只执行一次", func(t *testing.T) {
+		h, exp, m, db := newExportHarness(t, exportCall)
+		out, err := h.run()
+		if err != nil || out.State != StateCompleted || exp.n() != 1 {
+			t.Fatalf("%+v %v exec=%d", out, err, exp.n())
+		}
+		state, stepID, decision, version, consumed := approvalRow(t, db)
+		if state != string(approval.StateConsumed) || version != 2 || !consumed.Valid {
+			t.Fatalf("第一次执行后 state=%s version=%d consumed=%v", state, version, consumed)
+		}
+		ticket := h.approver.Tickets()[0]
+		// 同一个批准再提交一次：不改状态、不改版本，工具不再跑。
+		err = m.Decide(t.Context(), ticket.ID, approval.Decision{Action: approval.ActionApprove})
+		if err == nil {
+			_, _ = exp.Execute(t.Context(), tools.Call{Name: ticket.Action, Args: ticket.Params})
+		}
+		if exp.n() != 1 {
+			t.Fatalf("重复决定又执行了 %d 次", exp.n())
+		}
+		if !errors.Is(err, approval.ErrIllegalTransition) {
+			t.Fatalf("重复决定 = %v", err)
+		}
+		againState, againStep, againDecision, againVersion, againConsumed := approvalRow(t, db)
+		if againState != state || againVersion != version || againStep != stepID || againDecision != decision || againConsumed != consumed {
+			t.Fatalf("重复决定改了确认单: %s/%d/%s -> %s/%d/%s", state, version, consumed.String, againState, againVersion, againConsumed.String)
+		}
+	})
+}
+
+func TestStoreThatCannotDecideDoesNotExecute(t *testing.T) {
+	h := newHarness(t, echoSpec(), llm.CallTools(llm.ToolCall{
+		ID: "e", Name: "export_data", Arguments: `{"object":"contacts"}`,
+	}), llm.Say("不该走到这里"))
+	exp := h.add(tools.SpecExportData)
+	h.loop.Tickets = createOnlyStore{}
+	h.approver.Responses = []approval.Response{{Action: approval.ActionApprove}}
+	out, err := h.run()
+	if err == nil || out.State != StateFailed || exp.n() != 0 || strings.Contains(out.Text, "不该走到这里") {
+		t.Fatalf("%+v %v exec=%d", out, err, exp.n())
+	}
+	if !strings.Contains(err.Error(), "不能写决定") {
+		t.Fatalf("错误 = %v", err)
+	}
+}
+
+func TestDeciderWithoutConsumeDoesNotExecute(t *testing.T) {
+	h := newHarness(t, echoSpec(), llm.CallTools(llm.ToolCall{
+		ID: "e", Name: "export_data", Arguments: `{"object":"contacts"}`,
+	}), llm.Say("不该走到这里"))
+	exp := h.add(tools.SpecExportData)
+	store := &decideOnlyStore{}
+	h.loop.Tickets = store
+	h.approver.Responses = []approval.Response{{Action: approval.ActionApprove}}
+	out, err := h.run()
+	if store.decisions != 1 || err == nil || out.State != StateFailed || exp.n() != 0 {
+		t.Fatalf("decisions=%d %+v %v exec=%d", store.decisions, out, err, exp.n())
+	}
+	if !strings.Contains(err.Error(), "不能消费") {
+		t.Fatalf("错误 = %v", err)
+	}
+}
+
+func newExportHarness(t *testing.T, call llm.ToolCall) (*harness, *fnTool, *approval.Machine, *sql.DB) {
+	t.Helper()
+	ws := openRuns(t)
+	h := newHarness(t, echoSpec(), llm.CallTools(call), llm.Say("结束"))
+	exp := h.add(tools.SpecExportData)
+	m := approval.New(ws.Runs)
+	h.loop.Tickets = m
+	h.approver.Responses = []approval.Response{{Action: approval.ActionApprove}}
+	return h, exp, m, ws.Runs
+}
+
+// executeIfConsumed 和循环一样：消费的条件更新成功才执行工具。
+func executeIfConsumed(ctx context.Context, m *approval.Machine, ticket approval.Ticket, tool *fnTool) error {
+	err := m.Consume(ctx, ticket.ID, approval.ConsumeContext{
+		RunID:    ticket.RunID,
+		StepID:   ticket.StepID,
+		ArgsHash: ticket.ParamsHash,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = tool.Execute(ctx, tools.Call{Name: ticket.Action, Args: ticket.Params})
+	return err
+}
+
+func approvalRow(t *testing.T, db *sql.DB) (state, stepID, decision string, version int64, consumed sql.NullString) {
+	t.Helper()
+	err := db.QueryRowContext(t.Context(), `SELECT state, version, step_id, decision, consumed_at FROM approvals`).Scan(
+		&state, &version, &stepID, &decision, &consumed,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+type createOnlyStore struct{}
+
+func (createOnlyStore) Create(ctx context.Context, ticket approval.Ticket) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return ticket.Validate()
+}
+
+type decideOnlyStore struct {
+	decisions int
+}
+
+func (s *decideOnlyStore) Create(ctx context.Context, ticket approval.Ticket) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return ticket.Validate()
+}
+
+func (s *decideOnlyStore) Decide(ctx context.Context, id string, decision approval.Decision) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == "" {
+		return approval.ErrNotFound
+	}
+	if err := decision.Validate(); err != nil {
+		return err
+	}
+	s.decisions++
+	return nil
 }
