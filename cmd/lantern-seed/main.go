@@ -26,7 +26,7 @@ func run(args []string) error {
 	fs.SetOutput(os.Stderr)
 	root := fs.String("root", "", "应用数据目录，默认是本机 Lantern 数据目录")
 	seedN := fs.Uint64("seed", seed.DefaultSeed, "随机种子")
-	force := fs.Bool("force", false, "星禾或云杉已存在时删除后重建")
+	force := fs.Bool("force", false, "已存在时重建；两份都生成成功后才替换原来的工作区")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "用法: lantern-seed [-root dir] [-seed n] [-force]\n\n")
 		fs.PrintDefaults()

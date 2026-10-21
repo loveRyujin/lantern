@@ -185,14 +185,37 @@ func TestDatasetShape(t *testing.T) {
 func TestForceRebuildAndRejectExisting(t *testing.T) {
 	root := t.TempDir()
 	first := mustRun(t, root, seed.DefaultSeed, false)
+	marker := filepath.Join(first.Workspaces[0].Dir, "marker.txt")
+	if err := os.WriteFile(marker, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	_, err := seed.Run(t.Context(), seed.Options{Root: root, Seed: seed.DefaultSeed, Force: false})
 	if !errors.Is(err, workspace.ErrExists) {
 		t.Fatalf("second Run: %v", err)
+	}
+	if body, err := os.ReadFile(marker); err != nil || string(body) != "old" {
+		t.Fatalf("rejected run changed the workspace: %v %q", err, body)
 	}
 	second := mustRun(t, root, seed.DefaultSeed, true)
 	if second.Hash != first.Hash {
 		t.Fatalf("force rebuild hash %s vs %s", second.Hash, first.Hash)
 	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("old workspace was not replaced: %v", err)
+	}
+	prefix := root + string(filepath.Separator)
+	for _, ws := range second.Workspaces {
+		if filepath.Base(ws.Dir) != ws.ID || !strings.HasPrefix(ws.Dir, prefix) {
+			t.Fatalf("dir %s id %s", ws.Dir, ws.ID)
+		}
+		if strings.Contains(ws.Dir, ".lantern-seed-") {
+			t.Fatalf("dir still in scratch: %s", ws.Dir)
+		}
+		if _, err := os.Stat(filepath.Join(ws.Dir, "analytics.db")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertNoScratch(t, root)
 }
 
 func TestForceRejectsSymlinks(t *testing.T) {
@@ -210,7 +233,7 @@ func TestForceRejectsSymlinks(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := seed.Run(t.Context(), seed.Options{Root: root, Seed: seed.DefaultSeed, Force: true})
-		if err == nil || !strings.Contains(err.Error(), "符号链接") {
+		if !errors.Is(err, workspace.ErrPathEscape) {
 			t.Fatalf("Run: %v", err)
 		}
 		if _, err := os.Stat(secret); err != nil {
@@ -233,7 +256,7 @@ func TestForceRejectsSymlinks(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := seed.Run(t.Context(), seed.Options{Root: root, Seed: seed.DefaultSeed, Force: true})
-		if err == nil || !strings.Contains(err.Error(), "符号链接") {
+		if !errors.Is(err, workspace.ErrPathEscape) {
 			t.Fatalf("Run: %v", err)
 		}
 		if _, err := os.Stat(secret); err != nil {
@@ -306,6 +329,19 @@ func TestDataDocuments(t *testing.T) {
 	}
 	if strings.Contains(string(xh), yunshanGMV) {
 		t.Fatal("星禾口径写成了云杉的 GMV")
+	}
+}
+
+func assertNoScratch(t *testing.T, root string) {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".lantern-seed-") {
+			t.Fatalf("scratch left behind: %s", entry.Name())
+		}
 	}
 }
 

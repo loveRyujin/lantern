@@ -82,7 +82,10 @@ func insertContacts(ctx context.Context, db *sql.DB, rows []contact) error {
 	return nil
 }
 
-// RecordExportApproval 在这个工作区的 runs.approvals 写入一张尚未使用的导出确认。
+// RecordExportApproval 直接写入一条已经批准的导出审批，不经过审批状态机。
+// 只供种子和测试使用，业务代码不能调用。
+// W2 的审批状态机落地后，要把它收进内部包，或者改成只有状态机能调用。
+//
 // 记录属于 h 的工作区，动作是 export_data，对象是 exportObject，决定为批准，一小时内有效。
 // 不打开 sensitive.db，也不调用 ConfirmExport。调用方拿到记录后再自己确认。
 func RecordExportApproval(ctx context.Context, h *workspace.Handle, approvalID, exportObject string) error {
