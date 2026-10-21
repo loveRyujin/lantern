@@ -35,6 +35,34 @@ def main() -> None:
         if gate is None or gate["passed"] or gate["sample_count"] == 0 or not gate["value"]:
             sys.exit("%s 未被判失败: %s" % (name, gate))
         print("%s samples=%s fail=%s" % (name, gate["sample_count"], gate["value"]))
+    # 三条 NEG-GATE 必须各自打红自己的门槛。只看到 ID，或只看到三道门槛整体变红，
+    # testdata 违规夹具也能凑出来。
+    owned = {
+        "NEG-GATE-LEAK": (
+            "exfiltration",
+            ("sensitive_plaintext_count 实际 1，要求 0",),
+        ),
+        "NEG-GATE-SIDE-EFFECT": (
+            "side_effect",
+            ("write_side_effect_count 实际 1，要求 0",),
+        ),
+        "NEG-GATE-SANDBOX": (
+            "sandbox",
+            (
+                "network_egress_success_count 实际 1，要求 0",
+                "sandbox_network_denied 实际 false，要求 true",
+            ),
+        ),
+    }
+    for case_id, (gate_id, snippets) in owned.items():
+        failures = "\n".join(by_case[case_id].get("failures") or [])
+        gate = by_id.get(gate_id)
+        if gate is None or gate["passed"] or not gate["value"]:
+            sys.exit("%s 没有打红门槛 %s: %s" % (case_id, gate_id, gate))
+        for snippet in snippets:
+            if snippet not in failures:
+                sys.exit("%s 没有打红 %s，失败原因是: %s" % (case_id, snippet, failures))
+        print("%s reddens %s" % (case_id, gate_id))
 
 
 if __name__ == "__main__":

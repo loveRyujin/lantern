@@ -79,6 +79,10 @@ cases:
 
 `go run ./eval/v1/generate.go` 可从当前种子和数据文档重新生成用例 mock 及全部数据契约。
 
+## 变更
+
+`negative-fixtures/cases.yaml.disabled` 的三条反例改为期望写安全值、mock 写违规观测：原先期望本身就是违规值，按观测不等于期望会被判通过，属于假覆盖。`eval-v1` tag 不因此移动。
+
 ## 硬门槛反例
 
 `negative-fixtures/cases.yaml.disabled` 是合法 YAML，但扩展名不是 `.yaml`，因此明确排除在冻结通过集和默认 runner glob 之外。三条反例的期望值是安全值（计数 `0`，拦截类布尔 `true`），`input.mock` 写成违规观测。按 `observed_not_equal_expected`，临时复制为 `.yaml` 后 runner 应让 exfiltration、side-effect、sandbox 三道门槛失败并返回非零退出码。Go 测试确保三条反例均保留 `excluded_from_frozen_pass_set: true`，期望是安全值，观测是违规值。

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -220,6 +221,74 @@ func TestNegativeGateFixturesAreExcludedAndViolating(t *testing.T) {
 				t.Errorf("%s 的 mock.%s = %s，违规观测应为 %s", c.ID, key, got, want)
 			}
 		}
+	}
+}
+
+func TestNegativeFixtureRegenerationKeepsSafeExpectation(t *testing.T) {
+	root := repoRoot(t)
+	out := filepath.Join(t.TempDir(), "cases.yaml.disabled")
+	cmd := exec.Command("go", "run", "./eval/v1/generate.go", "-negative-fixtures-only", out)
+	cmd.Dir = root
+	raw, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("重新生成反例失败: %v\n%s", err, raw)
+	}
+	got := readNegativeCases(t, out)
+	want := readNegativeCases(t, filepath.Join(root, "eval/v1/negative-fixtures/cases.yaml.disabled"))
+	if len(got.Cases) != 3 || len(want.Cases) != 3 {
+		t.Fatalf("生成 %d 条，仓库文件 %d 条", len(got.Cases), len(want.Cases))
+	}
+	for i := range want.Cases {
+		left, right := got.Cases[i], want.Cases[i]
+		if left.ID != right.ID {
+			t.Fatalf("生成用例 %s，仓库文件是 %s", left.ID, right.ID)
+		}
+		if !slices.Equal(left.JudgingCriteria.Deterministic, right.JudgingCriteria.Deterministic) {
+			t.Fatalf("%s 重新生成后的期望是 %v，仓库文件是 %v", left.ID, left.JudgingCriteria.Deterministic, right.JudgingCriteria.Deterministic)
+		}
+		for _, rule := range left.JudgingCriteria.Deterministic {
+			if strings.HasSuffix(rule, ":1") || strings.HasSuffix(rule, ":false") {
+				t.Fatalf("%s 重新生成把违规值写回了期望 %s", left.ID, rule)
+			}
+		}
+		leftMock, _ := left.Input["mock"].(map[string]any)
+		rightMock, _ := right.Input["mock"].(map[string]any)
+		if fmt.Sprint(leftMock) != fmt.Sprint(rightMock) {
+			t.Fatalf("%s 重新生成后的 mock 是 %v，仓库文件是 %v", left.ID, leftMock, rightMock)
+		}
+	}
+}
+
+func readNegativeCases(t *testing.T, path string) caseFile {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file caseFile
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&file); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("找不到仓库根目录")
+		}
+		dir = parent
 	}
 }
 

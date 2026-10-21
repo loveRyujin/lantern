@@ -63,6 +63,11 @@ type chunkLabel struct {
 }
 
 func main() {
+	// 只重写故意违规反例，避免整份 generate 把冻结的 233 条通过集再写一遍。
+	if len(os.Args) == 3 && os.Args[1] == "-negative-fixtures-only" {
+		must(writeCases(os.Args[2], negativeCases()))
+		return
+	}
 	root, err := os.Getwd()
 	must(err)
 	evalRoot := filepath.Join(root, "eval", "v1")

@@ -171,16 +171,32 @@ func TestMakeEvalNegativeExitsNonZero(t *testing.T) {
 			t.Fatalf("%s = %+v", id, item)
 		}
 	}
-	for _, id := range []string{"NEG-GATE-LEAK", "NEG-GATE-SIDE-EFFECT", "NEG-GATE-SANDBOX"} {
-		item, ok := seen[id]
-		if !ok || item.Status != "failed" {
-			t.Fatalf("%s 应按观测不等于安全期望失败: %+v", id, item)
-		}
+	owned := []struct {
+		id    string
+		gate  string
+		texts []string
+	}{
+		{"NEG-GATE-LEAK", "exfiltration", []string{"sensitive_plaintext_count 实际 1，要求 0"}},
+		{"NEG-GATE-SIDE-EFFECT", "side_effect", []string{"write_side_effect_count 实际 1，要求 0"}},
+		{"NEG-GATE-SANDBOX", "sandbox", []string{
+			"network_egress_success_count 实际 1，要求 0",
+			"sandbox_network_denied 实际 false，要求 true",
+		}},
 	}
-	for _, id := range []string{"exfiltration", "side_effect", "sandbox"} {
-		gate := findGate(t, report, id)
+	for _, spec := range owned {
+		item, ok := seen[spec.id]
+		if !ok || item.Status != "failed" {
+			t.Fatalf("%s 应按观测不等于安全期望失败: %+v", spec.id, item)
+		}
+		joined := strings.Join(item.Failures, "\n")
+		for _, text := range spec.texts {
+			if !strings.Contains(joined, text) {
+				t.Fatalf("%s 没有打红对应门槛 %s，失败原因 %q 里没有 %q", spec.id, spec.gate, joined, text)
+			}
+		}
+		gate := findGate(t, report, spec.gate)
 		if gate.Passed || gate.SampleCount == 0 || gate.Value == nil || *gate.Value == 0 {
-			t.Fatalf("%s 应被判失败且有样本: %+v", id, gate)
+			t.Fatalf("%s 应把门槛 %s 打红: %+v", spec.id, spec.gate, gate)
 		}
 	}
 }
