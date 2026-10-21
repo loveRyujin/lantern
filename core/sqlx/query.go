@@ -55,7 +55,7 @@ type Result struct {
 // Go 这边停在 1 MiB，不再把超出的列拷进来。最终结果最多 32 列，返回的每一行最多 1 MiB。
 // 中间值没有内存上限。实测峰值：物化 CTE 1.19 GB，GROUP BY 2.74 GB，IN 列表 1.20 GB，UNION 也在同一范围。
 // temp_store=FILE 和较小的 cache_size 约束不住这些中间值。超时也约束不住内存。
-// ryujin 接受这个风险留在 W2。修复是 W3 的阻塞项：把 run_sql 放进单独的子进程，用 RLIMIT_AS 或 cgroup 限制内存。TODO(W3 issue #?)
+// ryujin 接受这个风险留在 W2。修复是 W3 的阻塞项：把 run_sql 放进单独的子进程，用 RLIMIT_AS 或 cgroup 限制内存。见 https://github.com/loveRyujin/lantern/issues/38
 // ORDER BY 的峰值在 256 MiB 以内，来自临时文件和小缓存。不设进程级堆上限。
 func Query(ctx context.Context, db Queryer, query string, limit int) (Result, error) {
 	if err := ctx.Err(); err != nil {

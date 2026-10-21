@@ -28,7 +28,7 @@
 // 不设置 sqlite3_hard_heap_limit64，也不设别的进程级堆上限，否则工作区、审计和敏感库写入会一起被卡住。
 // 中间值没有内存上限。实测峰值：物化 CTE 1.19 GB，GROUP BY 2.74 GB，IN 列表 1.20 GB，UNION 也在同一范围。
 // temp_store=FILE 和小缓存约束不住这些中间值。超时也约束不住内存。
-// ryujin 接受这个风险留在 W2。修复是 W3 的阻塞项：把 run_sql 放进单独的子进程，用 RLIMIT_AS 或 cgroup 限制内存。TODO(W3 issue #?)
+// ryujin 接受这个风险留在 W2。修复是 W3 的阻塞项：把 run_sql 放进单独的子进程，用 RLIMIT_AS 或 cgroup 限制内存。见 https://github.com/loveRyujin/lantern/issues/38
 // SQLite 若仍返回 NOMEM，按 sql_result_too_large 交回。
 // 引号里的 pragma_* 表值函数和 PRAGMA 一样拒绝，按解析后的标识符判断，不在原文里搜子串。
 //

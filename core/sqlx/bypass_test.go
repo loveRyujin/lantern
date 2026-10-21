@@ -53,9 +53,9 @@ func TestRunSQLBypassShapesStayBounded(t *testing.T) {
 }
 
 // TestIntermediateResultsUnbounded 记下仍没有内存上限的中间值。ORDER BY 不在这里。
-// 修复是 W3 阻塞项。TODO(W3 issue #?)
+// 修复是 W3 阻塞项。见 https://github.com/loveRyujin/lantern/issues/38
 func TestIntermediateResultsUnbounded(t *testing.T) {
-	t.Skip("中间值没有内存上限。实测峰值：物化 CTE 1.19 GB，GROUP BY 2.74 GB，IN 列表 1.20 GB，UNION 也在同一范围。temp_store=FILE 和小缓存约束不住，超时也约束不住内存。ryujin 接受这个风险留在 W2。TODO(W3 issue #?)")
+	t.Skip("中间值没有内存上限。实测峰值：物化 CTE 1.19 GB，GROUP BY 2.74 GB，IN 列表 1.20 GB，UNION 也在同一范围。temp_store=FILE 和小缓存约束不住，超时也约束不住内存。ryujin 接受这个风险留在 W2。见 https://github.com/loveRyujin/lantern/issues/38")
 }
 
 func bypassCaseNames() []string {
