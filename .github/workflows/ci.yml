@@ -66,6 +66,7 @@ jobs:
 
   # W1：确认 GitHub 托管的 macOS runner 还能不能调用 sandbox-exec。
   # 结论写在 docs/adr/0003-python-runtime.md，不在这里安装 Python 依赖。
+  # 同一台 runner 上跑 go test ./core/pyrt/，用假解释器，不联网装 pandas。
   macos-sandbox-exec:
     runs-on: macos-latest
     timeout-minutes: 10
@@ -81,6 +82,11 @@ jobs:
         with:
           go-version: "1.27.x"
           check-latest: true
+
+      # #25 里祖先符号链接被误判为 path_escape，就是因为当时没有 macOS 的 go test。
+      # 这里不设置 PYRT_ENSURE_REAL，不下载 wheel。
+      - name: Test pyrt
+        run: go test ./core/pyrt/
 
       - name: Darwin sandbox cases pass (mock)
         run: |

@@ -142,11 +142,13 @@ Runner 镜像在作业设置阶段报的是 macOS 26.6.2（25G83），镜像名 
 
 因此 W4 的 macOS 沙箱评测可以留在 GitHub Actions 的 `macos-latest` 上，不必因为 runner 缺少 `sandbox-exec` 而改到本机跑。
 
+同一个 `macos-sandbox-exec` job 在探测之后跑 `go test ./core/pyrt/`。#25 复盘时，`$TMPDIR` 经过 `/var` → `/private/var` 这类祖先符号链接，`Ensure` 被误判成 `path_escape`；当时 CI 只有 Linux 的 `go test`，所以没拦住。跟进时决定把这一步加到 macOS runner 上。它不设置 `PYRT_ENSURE_REAL`，不下载 wheel，也不代替 Linux 上的 `pyrt-install`。
+
 ## 后果
 
 - 桌面端准备运行时只调用 `pyrt.Config.Ensure`。替换锁文件版本要改 `requirements.lock` 并更新本节的版本表。
 - 用户机器是 Python 3.14 或更高时，现在会明确失败，而不是装上一半。
-- `sandbox-exec` 的探测和 Python 安装互相独立。macOS job 不下载 pandas。2026-10-21 的 `macos-latest`（macOS 26.6.2）上探测通过，后续 macOS 沙箱评测可以挂在这个 runner 上。
+- `sandbox-exec` 的探测和 Python 安装互相独立。macOS job 不下载 pandas。2026-10-21 的 `macos-latest`（macOS 26.6.2）上探测通过，后续 macOS 沙箱评测可以挂在这个 runner 上。同一 job 会跑 `go test ./core/pyrt/`（假解释器，不联网安装）。
 - 参数快照另补了一条回归：`ParamsHash("[]")` 不得等于 `ParamsHash("null")`。空数组必须保持为数组。这与运行时无关，只是同一批改动里带上的。
 
 ## 不在本次范围
