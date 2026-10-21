@@ -15,9 +15,6 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
-// sqliteMinLength 是 SQLite 允许的 SQLITE_LIMIT_LENGTH 下限。再小会被抬回这个值。
-const sqliteMinLength = 30
-
 // Queryer 是只读查询用的连接池。*sql.DB 满足它。
 type Queryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
@@ -26,7 +23,12 @@ type Queryer interface {
 // 结果字节上限。和行数上限一起生效。单个单元格也算进这个总数。
 const (
 	MaxResultBytes = 1 << 20
-	TruncateBytes  = "bytes"
+	// MaxResultColumns 是一条结果最多能有的列数。
+	// 单个值的 SQLITE_LIMIT_LENGTH 保持 MaxResultBytes，表达式的中间值也可以到这个大小。
+	// 列数不封顶的话，一行里每列都略小于 1 MiB 时，整行会在计数之前进内存。
+	// 连接上把 SQLITE_LIMIT_COLUMN 设成这个值，列数乘以 1 MiB 就是一行最多能分配的内存。
+	MaxResultColumns = 32
+	TruncateBytes    = "bytes"
 )
 
 // Result 是截断之后的查询结果。RowCount 是实际返回的行数，不是库里的总行数。
@@ -41,10 +43,11 @@ type Result struct {
 
 // Query 执行一条已经通过扫描的语句，最多取 limit 行，并且不超过 MaxResultBytes。
 // 不改写 SQL。多读一行只为了判断要不要标 truncated。limit 必须在 1 和 MaxLimit 之间。
-// 字节按读到的单元格累计。单独一行超过 MaxResultBytes 时返回 [errRowTooLarge]，
-// 这次已读出的行也不返回。多行各自没超限、加在一起超了，才截断并保留已经放下的行。
-// 列数多于 1 时，先把 SQLITE_LIMIT_LENGTH 收成剩余预算除以列数，再执行。
-// SQLite 在生成超限的值之前就会返回 TOOBIG，整行不会先进入内存。
+// 字节按读到的单元格累计。单独一行超过 MaxResultBytes，或者 SQLite 报 TOOBIG、列数超过
+// [MaxResultColumns] 时，返回 [errRowTooLarge]，这次已读出的行也不返回。
+// 多行各自没超限、加在一起超了，才截断并保留已经放下的行。
+// 单个值的长度上限装在只读连接上，保持 MaxResultBytes，不按列数再收紧。
+// 收紧会把 length、group_concat 这类中间值一并拦住，哪怕最后结果只有几十字节。
 func Query(ctx context.Context, db Queryer, query string, limit int) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, &codedTimeout{err: err}
@@ -55,81 +58,7 @@ func Query(ctx context.Context, db Queryer, query string, limit int) (Result, er
 	if limit < 1 || limit > MaxLimit {
 		return Result{}, errors.New("sqlx: 行数上限不在允许范围内")
 	}
-	if pool, ok := db.(interface {
-		Conn(context.Context) (*sql.Conn, error)
-	}); ok {
-		return queryCapped(ctx, pool, query, limit)
-	}
 	return queryRows(ctx, db, query, limit)
-}
-
-func queryCapped(ctx context.Context, pool interface {
-	Conn(context.Context) (*sql.Conn, error)
-}, query string, limit int) (Result, error) {
-	conn, err := pool.Conn(ctx)
-	if err != nil {
-		if isTimeout(ctx, err) {
-			return Result{}, &codedTimeout{err: err}
-		}
-		return Result{}, err
-	}
-	defer conn.Close()
-	nCols, err := resultColumns(ctx, conn, query)
-	if err != nil {
-		if isTimeout(ctx, err) {
-			return Result{}, &codedTimeout{err: err}
-		}
-		if isTooBig(err) {
-			return Result{}, errRowTooLarge
-		}
-		return Result{}, err
-	}
-	per := cellLimit(nCols)
-	if _, err := sqlite.Limit(conn, sqlite3.SQLITE_LIMIT_LENGTH, per); err != nil {
-		return Result{}, err
-	}
-	defer func() {
-		_, _ = sqlite.Limit(conn, sqlite3.SQLITE_LIMIT_LENGTH, MaxResultBytes)
-	}()
-	return queryRows(ctx, conn, query, limit)
-}
-
-// cellLimit 是这一行里单个值允许的最大字节数。
-// 各列之和不超过 MaxResultBytes，SQLite 才不会在我们计数之前把整行分配出来。
-func cellLimit(nCols int) int {
-	if nCols < 1 {
-		nCols = 1
-	}
-	per := MaxResultBytes / nCols
-	if per < sqliteMinLength {
-		per = sqliteMinLength
-	}
-	if per > MaxResultBytes {
-		return MaxResultBytes
-	}
-	return per
-}
-
-func resultColumns(ctx context.Context, conn *sql.Conn, query string) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	var n int
-	err := conn.Raw(func(dc any) error {
-		describer, ok := dc.(interface {
-			ColumnInfo(string) ([]sqlite.ColumnInfo, error)
-		})
-		if !ok {
-			return fmt.Errorf("sqlx: 连接无法读取列数 (%T)", dc)
-		}
-		info, err := describer.ColumnInfo(query)
-		if err != nil {
-			return err
-		}
-		n = len(info)
-		return nil
-	})
-	return n, err
 }
 
 func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result, error) {
@@ -138,7 +67,7 @@ func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result
 		if isTimeout(ctx, err) {
 			return Result{}, &codedTimeout{err: err}
 		}
-		if isTooBig(err) {
+		if rowTooLarge(err) {
 			return Result{}, errRowTooLarge
 		}
 		return Result{}, err
@@ -169,7 +98,7 @@ func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result
 			if isTimeout(ctx, err) {
 				return Result{}, &codedTimeout{err: err}
 			}
-			if isTooBig(err) {
+			if rowTooLarge(err) {
 				return Result{}, errRowTooLarge
 			}
 			return Result{}, err
@@ -179,6 +108,10 @@ func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result
 			return Result{}, errRowTooLarge
 		}
 		if used+n > MaxResultBytes {
+			// 已经放下的行都没超限，才截断。一行都还没放下时，不能返回 0 行的 truncated。
+			if len(out) == 0 {
+				return Result{}, errRowTooLarge
+			}
 			return cutByBytes(cols, out), nil
 		}
 		used += n
@@ -188,7 +121,7 @@ func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result
 		if isTimeout(ctx, err) {
 			return Result{}, &codedTimeout{err: err}
 		}
-		if isTooBig(err) {
+		if rowTooLarge(err) {
 			return Result{}, errRowTooLarge
 		}
 		return Result{}, err
@@ -259,6 +192,18 @@ func isTooBig(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "sqlite_toobig") || strings.Contains(msg, "too big")
+}
+
+// rowTooLarge 是整次查询该失败的结果过大。TOOBIG 包括超长的中间值。
+// 列数超过连接上的 SQLITE_LIMIT_COLUMN 时，查询还没把各列算出来就失败。
+func rowTooLarge(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isTooBig(err) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "too many columns")
 }
 
 func isBusy(err error) bool {

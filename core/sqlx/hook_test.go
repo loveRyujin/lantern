@@ -58,12 +58,11 @@ func TestCellBytesCountsBase64(t *testing.T) {
 	if got, want := cellBytes(raw), base64.StdEncoding.EncodedLen(len(raw)); got != want {
 		t.Fatalf("[]byte 按原始长度计了 %d，编码后是 %d", got, want)
 	}
-	if cellLimit(1) != MaxResultBytes {
-		t.Fatalf("单列上限 %d", cellLimit(1))
+	if MaxResultColumns < 10 {
+		t.Fatalf("列数上限 %d，10 列的小结果会被误伤", MaxResultColumns)
 	}
-	per := cellLimit(400)
-	if per*400 > MaxResultBytes {
-		t.Fatalf("400 列时一行能到 %d", per*400)
+	if bound := MaxResultColumns * MaxResultBytes; bound <= 0 {
+		t.Fatalf("一行的内存上限 %d", bound)
 	}
 }
 

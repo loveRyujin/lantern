@@ -174,7 +174,7 @@ func resultTooLarge() error {
 	return &tools.Error{
 		Code:      CodeResultTooLarge,
 		Retryable: false,
-		Message:   "单行结果超过 1 MiB，这次没有返回任何行。请少选几列，或用 substr 截短字段。",
+		Message:   "单行结果超过 1 MiB，这次没有返回任何行。请少选几列，或用 substr 截短字段。group_concat 这类中间值超过 1 MiB 时也是这个错误。",
 	}
 }
 

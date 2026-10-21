@@ -81,8 +81,9 @@ func denyReadOnly(_ *libc.TLS, _ uintptr, action int32, arg1, arg2, _, _ uintptr
 	return sqlite3.SQLITE_OK
 }
 
-// limitResultLength 让单个单元格到不了结果字节上限以上。超限时驱动返回 SQLITE_TOOBIG，
-// 查询层把它记成按字节截断，而不是把整格读进内存再交出去。
+// limitResultLength 把单个值限制在结果字节上限。中间值也受这一个上限约束，但不按列数再除小。
+// 超限时驱动返回 SQLITE_TOOBIG，查询层整次失败，不返回部分行。
+// 列数单独封顶，避免一行里很多略小于上限的值在计数之前被分配出来。
 func limitResultLength(conn sqlite.ExecQuerierContext) error {
 	db, tls, err := sqliteConn(conn)
 	if err != nil {
@@ -93,6 +94,12 @@ func limitResultLength(conn sqlite.ExecQuerierContext) error {
 	}
 	if got := sqlite3.Xsqlite3_limit(tls, db, sqlite3.SQLITE_LIMIT_LENGTH, -1); got != MaxResultBytes {
 		return fmt.Errorf("sqlx: SQLITE_LIMIT_LENGTH = %d，想要 %d", got, MaxResultBytes)
+	}
+	if got := sqlite3.Xsqlite3_limit(tls, db, sqlite3.SQLITE_LIMIT_COLUMN, MaxResultColumns); got < 0 {
+		return fmt.Errorf("sqlx: sqlite3_limit(SQLITE_LIMIT_COLUMN): %d", got)
+	}
+	if got := sqlite3.Xsqlite3_limit(tls, db, sqlite3.SQLITE_LIMIT_COLUMN, -1); got != MaxResultColumns {
+		return fmt.Errorf("sqlx: SQLITE_LIMIT_COLUMN = %d，想要 %d", got, MaxResultColumns)
 	}
 	return nil
 }

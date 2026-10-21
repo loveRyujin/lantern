@@ -936,6 +936,112 @@ func assertResultTooLarge(t *testing.T, res tools.Result, err error) {
 	}
 }
 
+func TestRunSQLIntermediateValue(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "analytics.db")
+	w := openWritable(t, path, "DELETE")
+	if _, err := w.ExecContext(ctx, `CREATE TABLE docs (id INTEGER PRIMARY KEY, title TEXT, body TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Repeat("a", 600*1024)
+	for id := 1; id <= 2; id++ {
+		if _, err := w.ExecContext(ctx, `INSERT INTO docs (id, title, body) VALUES (?, 't', ?)`, id, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	removeSidecars(path)
+	_, _, tool, _, _ := openTool(t, path, nil)
+
+	// 10 列，中间值 600 KB，结果只有几十字节。按列收紧长度上限时这里会 TOOBIG。
+	small, err := tool.Execute(ctx, callSQL(`SELECT id, title, 1, 2, 3, 4, 5, 6, 7, length(body) FROM docs WHERE id = 1`, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotSmall := decodeResult(t, small)
+	if gotSmall.Truncated || gotSmall.RowCount != 1 || len(gotSmall.Columns) != 10 {
+		t.Fatalf("小结果 = %+v", gotSmall)
+	}
+	if cellInt(gotSmall.Rows[0][9]) != int64(len(body)) {
+		t.Fatalf("length(body) = %v，想要 %d", gotSmall.Rows[0][9], len(body))
+	}
+	if strings.Contains(small.Content, strings.Repeat("a", 64)) {
+		t.Fatal("正文进了结果")
+	}
+
+	grouped, err := tool.Execute(ctx, callSQL(`SELECT length(group_concat(body)), 1 FROM docs WHERE id = 1`, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotGrouped := decodeResult(t, grouped)
+	if gotGrouped.Truncated || gotGrouped.RowCount != 1 || cellInt(gotGrouped.Rows[0][0]) != int64(len(body)) || cellInt(gotGrouped.Rows[0][1]) != 1 {
+		t.Fatalf("group_concat 小结果 = %+v", gotGrouped)
+	}
+
+	// length() 本身很小，但两段正文拼起来超过 1 MiB。整次失败，不返回截断的空结果。
+	over, err := tool.Execute(ctx, callSQL(`SELECT length(group_concat(body)), 1 FROM docs`, nil))
+	assertResultTooLarge(t, over, err)
+	if strings.Contains(over.Content, "truncated") || strings.Contains(err.Error(), strings.Repeat("a", 64)) {
+		t.Fatalf("中间值超限仍带回了结果: %+v %v", over, err)
+	}
+}
+
+func TestRunSQLOversizedRowInMiddle(t *testing.T) {
+	_, _, tool, _, _ := newFixture(t)
+	query := `SELECT 'keep-me', 'a' UNION ALL SELECT hex(zeroblob(400000)), hex(zeroblob(400000)) UNION ALL SELECT 'later', 'b'`
+	res, err := tool.Execute(t.Context(), callSQL(query, nil))
+	assertResultTooLarge(t, res, err)
+	if strings.Contains(res.Content, "keep-me") || strings.Contains(res.Content, "later") || strings.Contains(err.Error(), "keep-me") {
+		t.Fatalf("中间行超限仍返回了别的行: %+v %v", res, err)
+	}
+}
+
+func TestRunSQLManyRowsTruncateByBytes(t *testing.T) {
+	_, _, tool, _, _ := newFixture(t)
+	query := `SELECT hex(zeroblob(400000)) UNION ALL SELECT hex(zeroblob(400000)) UNION ALL SELECT hex(zeroblob(400000))`
+	res, err := tool.Execute(t.Context(), callSQL(query, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeResult(t, res)
+	if got.RowCount != 1 || !got.Truncated || got.TruncateReason != sqlx.TruncateBytes {
+		t.Fatalf("多行累计 = %+v summary %s", got, res.Summary)
+	}
+	if !strings.Contains(res.Summary, "字节") {
+		t.Fatalf("摘要没有说明是字节上限: %s", res.Summary)
+	}
+	cell, _ := got.Rows[0][0].(string)
+	if len(cell) == 0 || len(cell) > sqlx.MaxResultBytes {
+		t.Fatalf("保留的单元格有 %d 字节", len(cell))
+	}
+}
+
+func TestRunSQLColumnCap(t *testing.T) {
+	_, _, tool, _, _ := newFixture(t)
+	okQuery := "SELECT " + strings.Join(literalCols(sqlx.MaxResultColumns), ", ")
+	res, err := tool.Execute(t.Context(), callSQL(okQuery, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeResult(t, res)
+	if got.Truncated || got.RowCount != 1 || len(got.Columns) != sqlx.MaxResultColumns {
+		t.Fatalf("列数上限内的小结果 = %+v", got)
+	}
+	over := "SELECT " + strings.Join(literalCols(sqlx.MaxResultColumns+1), ", ")
+	rejected, err := tool.Execute(t.Context(), callSQL(over, nil))
+	assertResultTooLarge(t, rejected, err)
+}
+
+func literalCols(n int) []string {
+	parts := make([]string, n)
+	for i := range parts {
+		parts[i] = itoa(i + 1)
+	}
+	return parts
+}
+
 func TestRunSQLWideRowByteCap(t *testing.T) {
 	_, _, tool, _, _ := newFixture(t)
 	const cols = 400
