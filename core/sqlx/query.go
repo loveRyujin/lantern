@@ -3,10 +3,7 @@ package sqlx
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"errors"
-	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/loveRyujin/lantern/core/errcode"
@@ -52,7 +49,8 @@ type Result struct {
 // Query 执行一条已经通过扫描的语句，最多取 limit 行，并且不超过 MaxResultBytes。
 // 多读一行只为了判断要不要标 truncated。limit 必须在 1 和 MaxLimit 之间。
 // 准备完成就先看结果列数，超过 [MaxResultColumns] 返回 [errTooManyColumns]，此时还没有 step。
-// 每一行按 sqlite3_column_bytes 逐列累加，拷贝之前就停。一行超过 MaxResultBytes，或者 SQLite 报 TOOBIG，
+// 每一行按写进 JSON 的长度逐列累加，拷贝之前就停。BLOB 和非法 UTF-8 的 TEXT 按 base64 长度计，合法 TEXT 按原始字节计。
+// 一行超过 MaxResultBytes，或者 SQLite 报 TOOBIG，
 // 返回 [errRowTooLarge]，这次已读出的行也不返回。
 // 多行各自没超限、加在一起超了，才截断并保留已经放下的完整行。
 // 表达式的中间值不受这 1 MiB 约束，只受连接上的 MaxValueBytes 约束。
@@ -125,29 +123,6 @@ func cutByBytes(cols []string, rows [][]any) Result {
 		RowCount:       len(rows),
 		Truncated:      true,
 		TruncateReason: TruncateBytes,
-	}
-}
-
-func cellBytes(v any) int {
-	switch x := v.(type) {
-	case nil:
-		return 0
-	case string:
-		return len(x)
-	case []byte:
-		// JSON 把 []byte 编成 base64。按模型看到的长度计，不按原始字节数。
-		return base64.StdEncoding.EncodedLen(len(x))
-	case int64:
-		return len(strconv.FormatInt(x, 10))
-	case float64:
-		return len(strconv.FormatFloat(x, 'f', -1, 64))
-	case bool:
-		if x {
-			return 4
-		}
-		return 5
-	default:
-		return len(fmt.Sprint(x))
 	}
 }
 

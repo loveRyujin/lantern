@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -63,11 +65,31 @@ func TestNoMemMapsToRowTooLarge(t *testing.T) {
 	}
 }
 
-func TestCellBytesCountsBase64(t *testing.T) {
-	raw := []byte{0xff, 0x00, 0xfe}
-	if got, want := cellBytes(raw), base64.StdEncoding.EncodedLen(len(raw)); got != want {
-		t.Fatalf("[]byte 按原始长度计了 %d，编码后是 %d", got, want)
+func TestRunSQLInvalidUTF8TextIsBase64(t *testing.T) {
+	tool := openEmptyTool(t)
+	ctx := t.Context()
+	res, err := tool.Execute(ctx, tools.Call{Args: []byte(`{"sql":"SELECT CAST(x'fffe41' AS TEXT)"}`)})
+	if err != nil {
+		t.Fatal(err)
 	}
+	raw := []byte{0xff, 0xfe, 0x41}
+	want := `"` + base64.StdEncoding.EncodeToString(raw) + `"`
+	if got := firstCellRaw(t, res.Content); got != want {
+		t.Fatalf("单元格 = %s，想要 %s", got, want)
+	}
+	if strings.Contains(res.Content, "\ufffd") || strings.Contains(res.Content, `\ufffd`) {
+		t.Fatalf("非法 UTF-8 被换成了替换字符: %s", res.Content)
+	}
+	res, err = tool.Execute(ctx, tools.Call{Args: []byte(`{"sql":"SELECT CAST(x'41' AS TEXT)"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := firstCellRaw(t, res.Content); got != `"A"` {
+		t.Fatalf("合法文本 = %s，想要 \"A\"", got)
+	}
+}
+
+func TestRunSQLBlobCountsBase64(t *testing.T) {
 	if MaxValueBytes != 4<<20 {
 		t.Fatalf("单值上限 = %d，想要 4 MiB", MaxValueBytes)
 	}
@@ -77,6 +99,84 @@ func TestCellBytesCountsBase64(t *testing.T) {
 	if got := MaxResultColumns * MaxValueBytes; got != 128<<20 {
 		t.Fatalf("SQLite 侧最坏 = %d，想要 128 MiB", got)
 	}
+	fit := (MaxResultBytes / 4) * 3
+	if base64.StdEncoding.EncodedLen(fit) != MaxResultBytes || base64.StdEncoding.EncodedLen(fit+1) <= MaxResultBytes {
+		t.Fatalf("base64 边界不对: fit=%d", fit)
+	}
+	if fit+1 > MaxResultBytes {
+		t.Fatal("原始字节已经超过 1 MiB，测不到 base64 记账")
+	}
+	tool := openEmptyTool(t)
+	ctx := t.Context()
+
+	t.Run("small", func(t *testing.T) {
+		raw := []byte{0xff, 0x00, 0xfe}
+		res, err := tool.Execute(ctx, tools.Call{Args: []byte(`{"sql":"SELECT x'ff00fe'"}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := firstCellRaw(t, res.Content)
+		want := `"` + base64.StdEncoding.EncodeToString(raw) + `"`
+		if got != want {
+			t.Fatalf("单元格 = %s，想要 %s", got, want)
+		}
+	})
+	t.Run("base64-fits", func(t *testing.T) {
+		res, err := tool.Execute(ctx, tools.Call{Args: []byte(fmt.Sprintf(`{"sql":"SELECT zeroblob(%d)"}`, fit))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		enc := strings.Trim(firstCellRaw(t, res.Content), `"`)
+		if len(enc) != MaxResultBytes {
+			t.Fatalf("base64 长度 = %d，想要 %d", len(enc), MaxResultBytes)
+		}
+		body, err := base64.StdEncoding.DecodeString(enc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(body) != fit {
+			t.Fatalf("解出来 %d 字节，想要 %d", len(body), fit)
+		}
+	})
+	t.Run("base64-over-cap", func(t *testing.T) {
+		res, err := tool.Execute(ctx, tools.Call{Args: []byte(fmt.Sprintf(`{"sql":"SELECT zeroblob(%d)"}`, fit+1))})
+		var te *tools.Error
+		if !errors.As(err, &te) || te.Code != CodeResultTooLarge || te.Retryable || res.Content != "" {
+			t.Fatalf("err=%v res=%+v", err, res)
+		}
+	})
+}
+
+func openEmptyTool(t *testing.T) *Tool {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "analytics.db")
+	createEmptyDB(t, path)
+	db, err := Open(t.Context(), path, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	tool, err := NewTool(db, path, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tool
+}
+
+func firstCellRaw(t *testing.T, content string) string {
+	t.Helper()
+	var parsed struct {
+		Rows      [][]json.RawMessage `json:"rows"`
+		RowCount  int                 `json:"row_count"`
+		Truncated bool                `json:"truncated"`
+	}
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		t.Fatalf("解析结果: %v body=%s", err, content)
+	}
+	if parsed.RowCount != 1 || parsed.Truncated || len(parsed.Rows) != 1 || len(parsed.Rows[0]) != 1 {
+		t.Fatalf("结果形状不对: %s", content)
+	}
+	return string(parsed.Rows[0][0])
 }
 
 func TestWideRowMemoryBound(t *testing.T) {
