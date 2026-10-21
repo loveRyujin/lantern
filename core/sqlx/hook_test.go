@@ -39,9 +39,13 @@ func TestExecuteDetectsFileChange(t *testing.T) {
 		_, _ = f.Write([]byte{0x1})
 		_ = f.Close()
 	})
-	_, err = tool.Execute(ctx, tools.Call{Args: []byte(`{"sql":"SELECT 1"}`)})
-	if !errors.Is(err, ErrFileChanged) {
-		t.Fatalf("err = %v，想要文件哈希变化", err)
+	res, err := tool.Execute(ctx, tools.Call{Args: []byte(`{"sql":"SELECT 1"}`)})
+	var te *tools.Error
+	if !errors.As(err, &te) || te.Code != CodeBusy || !te.Retryable {
+		t.Fatalf("err = %v，想要可重试的 data_busy", err)
+	}
+	if res.Content != "" {
+		t.Fatalf("文件变了还返回了结果: %s", res.Content)
 	}
 	if strings.Contains(err.Error(), "analytics.db") || strings.Contains(err.Error(), filepath.Dir(path)) {
 		t.Fatalf("哈希错误带了路径: %v", err)

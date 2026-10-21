@@ -44,6 +44,9 @@ func TestRunSQLRejectsBeforeQuery(t *testing.T) {
 		{"I-34-01a-case", "  PrAgMa query_only", "schema"},
 		{"V-34-11", "SELECT * FROM pragma_table_info('users')", "schema"},
 		{"V-34-11-fn", "SELECT * FROM pragma_query_only", "schema"},
+		{"V-34-11-dquote", `SELECT * FROM "pragma_table_info"('users')`, "schema"},
+		{"V-34-11-bracket", "SELECT * FROM [pragma_table_info]('users')", "schema"},
+		{"V-34-11-backtick", "SELECT * FROM `pragma_table_info`('users')", "schema"},
 	}
 	for i, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
@@ -581,8 +584,10 @@ func TestSeededAnalyticsMatchesContract(t *testing.T) {
 			t.Fatalf("契约里没有 %s", ws.ID)
 		}
 		path := filepath.Join(ws.Dir, "analytics.db")
-		before := takeFinger(t, path)
+		// Open 会先连上这个 WAL 库。库已经是 WAL 模式、旁边却没有 -wal 时，
+		// 这次连接会把 -wal 建出来。查询前后的哈希从连接建立之后开始算。
 		_, _, tool, _, _ := openTool(t, path, nil)
+		before := takeFinger(t, path)
 		resOrders, err := tool.Execute(ctx, callSQL("SELECT count(*) FROM orders", nil))
 		if err != nil {
 			t.Fatal(err)
@@ -778,6 +783,145 @@ func assertNoContactValues(t *testing.T, got sqlx.Result) {
 				t.Fatalf("结果里有联系方式: %s", text)
 			}
 		}
+	}
+}
+
+func TestRunSQLByteCap(t *testing.T) {
+	_, _, tool, _, _ := newFixture(t)
+	ctx := t.Context()
+	small, err := tool.Execute(ctx, callSQL(`SELECT hex(zeroblob(8))`, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotSmall := decodeResult(t, small)
+	if gotSmall.Truncated || gotSmall.RowCount != 1 || len(gotSmall.Rows[0][0].(string)) != 16 {
+		t.Fatalf("小结果被截断: %+v", gotSmall)
+	}
+
+	huge, err := tool.Execute(ctx, callSQL(`SELECT hex(zeroblob(`+itoa(sqlx.MaxResultBytes)+`))`, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotHuge := decodeResult(t, huge)
+	if !gotHuge.Truncated || gotHuge.TruncateReason != sqlx.TruncateBytes || gotHuge.RowCount != 0 {
+		t.Fatalf("超大单元格 = %+v", gotHuge)
+	}
+	if !strings.Contains(huge.Summary, "字节") {
+		t.Fatalf("摘要没有说明字节截断: %s", huge.Summary)
+	}
+	if strings.Count(huge.Content, "0") > 64 {
+		t.Fatalf("超大单元格进了结果: %s", huge.Content)
+	}
+
+	both := `SELECT hex(zeroblob(400000)) UNION ALL SELECT hex(zeroblob(400000))`
+	partial, err := tool.Execute(ctx, callSQL(both, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotPartial := decodeResult(t, partial)
+	if gotPartial.RowCount != 1 || !gotPartial.Truncated || gotPartial.TruncateReason != sqlx.TruncateBytes {
+		t.Fatalf("累计超限 = %+v summary %s", gotPartial, partial.Summary)
+	}
+	cell, _ := gotPartial.Rows[0][0].(string)
+	if len(cell) > sqlx.MaxResultBytes {
+		t.Fatalf("返回的单元格有 %d 字节", len(cell))
+	}
+}
+
+func TestRunSQLWALCreatedAfterOpenIsBusy(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "analytics.db")
+	w := openWritable(t, path, "DELETE")
+	if _, err := w.ExecContext(ctx, `CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.ExecContext(ctx, `INSERT INTO t (id, name) VALUES (1, 'old')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	removeSidecars(path)
+
+	db, err := sqlx.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	tool, err := sqlx.NewTool(db, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	db.SetMaxIdleConns(0)
+	db.SetMaxIdleConns(2)
+	w2 := openWritable(t, path, "WAL")
+	if _, err := w2.ExecContext(ctx, `UPDATE t SET name = 'new' WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	var current string
+	if err := w2.QueryRowContext(ctx, `SELECT name FROM t WHERE id = 1`).Scan(&current); err != nil {
+		t.Fatal(err)
+	}
+	if current != "new" {
+		t.Fatalf("库里现在是 %q", current)
+	}
+	if _, err := os.Stat(path + "-wal"); err != nil {
+		t.Fatalf("Open 之后没有 -wal: %v", err)
+	}
+
+	res, err := tool.Execute(ctx, callSQL(`SELECT name FROM t WHERE id = 1`, nil))
+	var te *tools.Error
+	if !errors.As(err, &te) || te.Code != sqlx.CodeBusy || !te.Retryable {
+		t.Fatalf("err = %v res = %+v", err, res)
+	}
+	if res.Content != "" || strings.Contains(err.Error(), "old") || strings.Contains(res.Content, "old") {
+		t.Fatalf("返回了过期数据: %+v %v", res, err)
+	}
+
+	res, err = tool.Execute(ctx, callSQL(`SELECT name FROM t WHERE id = 1`, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeResult(t, res)
+	if got.RowCount != 1 || got.Rows[0][0] != "new" {
+		t.Fatalf("重试读到 %+v，库里已经是 new", got)
+	}
+}
+
+func TestRunSQLBusyWhileWriterHoldsLock(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "analytics.db")
+	w := openWritable(t, path, "DELETE")
+	seedTable(t, w)
+	removeSidecars(path)
+	db, err := sqlx.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	tool, err := sqlx.NewTool(db, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxIdleConns(0)
+	db.SetMaxIdleConns(2)
+	if _, err := w.ExecContext(ctx, `BEGIN EXCLUSIVE`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = w.ExecContext(context.Background(), `ROLLBACK`) })
+
+	start := time.Now()
+	res, err := tool.Execute(ctx, callSQL(`SELECT name FROM t WHERE id = 1`, nil))
+	if time.Since(start) < 2*time.Second {
+		t.Fatalf("%s 就返回了，锁没有挡住查询: %v %+v", time.Since(start), err, res)
+	}
+	var te *tools.Error
+	if !errors.As(err, &te) || te.Code != sqlx.CodeBusy || !te.Retryable {
+		t.Fatalf("err = %v res = %+v", err, res)
+	}
+	if res.Content != "" || strings.Contains(err.Error(), "old") || strings.Contains(res.Content, "a") && strings.Contains(res.Content, "name") {
+		t.Fatalf("拿不到锁仍返回了行: %+v %v", res, err)
 	}
 }
 

@@ -332,14 +332,20 @@ func findForbidden(toks []token) string {
 		}
 	}
 	for i, tok := range toks {
-		if tok.kind != tokIdent || tok.quoted {
+		if tok.kind != tokIdent {
 			continue
 		}
+		// 用解析后的标识符，不用原文子串。双引号、方括号、反引号先脱掉再看。
+		// 字符串和注释不是标识符，里面出现 pragma_ 不会被当成 PRAGMA。
 		upper := strings.ToUpper(tok.text)
 		lower := strings.ToLower(tok.text)
-		switch {
-		case upper == "PRAGMA" || strings.HasPrefix(lower, "pragma_"):
+		if isPragmaIdent(lower) {
 			consider(4, msgPragma)
+		}
+		if tok.quoted {
+			continue
+		}
+		switch {
 		case upper == "ATTACH" || upper == "DETACH":
 			consider(3, msgAttach)
 		case bannedFunc(lower):
@@ -352,6 +358,12 @@ func findForbidden(toks []token) string {
 		}
 	}
 	return msg
+}
+
+// isPragmaIdent 判断解析后的标识符是不是 PRAGMA 或 pragma_* 表值函数。
+// 大小写不敏感。只看这个标识符本身，不在周围的 SQL 里搜子串。
+func isPragmaIdent(lower string) bool {
+	return lower == "pragma" || strings.HasPrefix(lower, "pragma_")
 }
 
 func bannedFunc(lower string) bool {

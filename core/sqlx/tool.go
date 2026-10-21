@@ -31,6 +31,10 @@ type Logger interface {
 // 参数本身不合法仍用 tools 的 tool_arguments_*，那一步在执行前由注册表完成。
 const CodeRejected = "sql_rejected"
 
+// CodeBusy 表示分析库正在被写入，或者查询期间文件发生了变化。
+// 可重试。这次不返回行，避免把可能过期的结果交给模型。
+const CodeBusy = "data_busy"
+
 // Tool 是 run_sql。用 [tools.SpecRunSQL] 注册，不另写一套参数说明。
 type Tool struct {
 	db    Queryer
@@ -81,6 +85,11 @@ func (t *Tool) Execute(ctx context.Context, call tools.Call) (tools.Result, erro
 	if err != nil {
 		return tools.Result{}, ErrFileChanged
 	}
+	// Open 之后才出现 -wal。旧连接可能还停在打开时的快照上，这次不读。
+	if claimNewWAL(before) {
+		dropIdle(t.db)
+		return tools.Result{}, busyErr()
+	}
 	if err := Check(query); err != nil {
 		if aerr := t.writeAudit(ctx, call, err.Error()); aerr != nil {
 			return tools.Result{}, aerr
@@ -102,6 +111,9 @@ func (t *Tool) Execute(ctx context.Context, call tools.Call) (tools.Result, erro
 		if errors.As(qerr, &timeout) {
 			return tools.Result{}, qerr
 		}
+		if isBusy(qerr) {
+			return tools.Result{}, busyErr()
+		}
 		msg := scrub(qerr.Error(), t.path, query)
 		if writeDenied(qerr) {
 			if aerr := t.writeAudit(ctx, call, "只读连接拒绝了写入"); aerr != nil {
@@ -115,7 +127,9 @@ func (t *Tool) Execute(ctx context.Context, call tools.Call) (tools.Result, erro
 		return tools.Result{}, err
 	}
 	summary := fmt.Sprintf("返回 %d 行", result.RowCount)
-	if result.Truncated {
+	if result.TruncateReason == TruncateBytes {
+		summary += "，结果因字节上限被截断"
+	} else if result.Truncated {
 		summary += "，结果已截断"
 	}
 	return tools.Result{Content: string(body), Summary: summary}, nil
@@ -124,7 +138,11 @@ func (t *Tool) Execute(ctx context.Context, call tools.Call) (tools.Result, erro
 func (t *Tool) sameFile(before Snap) error {
 	after, err := Snapshot(t.path)
 	if err != nil || before.Unchanged(after) != nil {
-		return ErrFileChanged
+		if err == nil && !hasWAL(before) && hasWAL(after) {
+			adoptGeneration(after)
+		}
+		dropIdle(t.db)
+		return busyErr()
 	}
 	return nil
 }
@@ -141,14 +159,20 @@ func (t *Tool) writeAudit(ctx context.Context, call tools.Call, detail string) e
 	})
 }
 
-// rejected 把语句拒绝交回模型，让它改写查询。
-// Retryable 为 false，同一条 SQL 不会在这次调用里自动再跑。
-// 这不是参数校验失败：循环既不把它计入连续失败，也不会因此把计数清零。
 // rejected 把语句错误交回模型，让它改写查询。
 // Retryable 为 false：同一条 SQL 不会自动重跑。
 // 这不是参数失败。循环既不把它计入连续失败，也不因此把连续失败清零。
 func rejected(message string) error {
 	return &tools.Error{Code: CodeRejected, Retryable: false, Message: message}
+}
+
+// busyErr 是可重试的 data_busy。结果已经丢掉，消息里不带行，也不带路径。
+func busyErr() error {
+	return &tools.Error{
+		Code:      CodeBusy,
+		Retryable: true,
+		Message:   "分析库正在写入，这次没有返回结果",
+	}
 }
 
 func parseArgs(raw []byte) (string, int, error) {

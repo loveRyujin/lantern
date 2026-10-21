@@ -82,30 +82,26 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlx: 打开分析库: %w", err)
 	}
+	// 记下打开时有没有 -wal。之后才出现的 -wal 说明写入者改了日志模式，
+	// 这条连接上的旧快照不能再交给模型。
+	snap, err := Snapshot(resolved)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	rememberGeneration(resolved, snap)
 	return db, nil
 }
 
 // readOnlyDSN 用 file: URI。mode=ro 由 SQLite 解释，_query_only 由驱动在每条连接上执行。
 // 不设置 journal_mode：那是写操作，只读打开不该改日志模式。
-// 旁边没有 -wal 时加上 immutable。WAL 模式的库在普通只读打开时会把 -wal 建出来，
-// 而文件哈希要求执行前没有 -wal 时执行后也不能有。已有 -wal 时不能加 immutable，
-// 否则读不到还没 checkpoint 的提交。
-//
-// immutable=1 的代价：这次打开不加锁。导入、种子或迁移如果还在写这个库，
-// 查询可能读到旧快照，甚至读到写到一半的页。结果可以是旧的。
+// 不加 immutable。导入、种子或迁移写入时拿着锁；读不到这把锁就返回 data_busy，
+// 不把可能过期的行交给模型。busy_timeout 到点仍拿不到锁，也是同一种结果。
 func readOnlyDSN(path string) (string, error) {
 	q := url.Values{
 		"mode":          {"ro"},
 		"_busy_timeout": {"5000"},
 		"_query_only":   {"on"},
-	}
-	_, err := os.Stat(path + "-wal")
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return "", errors.New("sqlx: 无法确认分析库的 -wal")
-		}
-		// 没有 -wal 说明提交已经在主库里。immutable 让这次打开不去新建 -wal。
-		q.Set("immutable", "1")
 	}
 	u := url.URL{
 		Scheme:   "file",
@@ -162,6 +158,9 @@ func installReadOnly(conn sqlite.ExecQuerierContext) error {
 	if !yes {
 		return errors.New("sqlx: 连接不是以只读方式打开，拒绝使用")
 	}
+	if err := limitResultLength(conn); err != nil {
+		return err
+	}
 	// query_only 已经打开。之后再拦“把它关掉”和 writable_schema，避免连接回到池里时标志被改掉。
 	if err := lockReadOnly(conn); err != nil {
 		return err
@@ -201,4 +200,64 @@ func valueInt(v driver.Value) (int64, error) {
 	default:
 		return 0, fmt.Errorf("sqlx: query_only 的类型是 %T", v)
 	}
+}
+
+// generation 是某次 Open 时的文件状态。之后才出现的 -wal 不能沿用当时的连接。
+type generation struct {
+	mu   sync.Mutex
+	snap Snap
+}
+
+var openGens sync.Map
+
+func rememberGeneration(resolved string, snap Snap) {
+	openGens.Store(resolved, &generation{snap: snap})
+}
+
+func hasWAL(snap Snap) bool {
+	for _, side := range snap.Sides {
+		if side.Exists {
+			return true
+		}
+	}
+	return false
+}
+
+// claimNewWAL 在打开之后才出现 -wal 时返回 true，并把这一代记成当前文件。
+// 调用方丢掉旧连接，这次查询返回 data_busy，下一次再用新连接读。
+func claimNewWAL(current Snap) bool {
+	v, ok := openGens.Load(current.Resolved)
+	if !ok {
+		return false
+	}
+	g := v.(*generation)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if hasWAL(g.snap) || !hasWAL(current) {
+		return false
+	}
+	g.snap = current
+	return true
+}
+
+// adoptGeneration 在查询过程中新出现 -wal 时更新这一代，让下一次重试打开新连接。
+func adoptGeneration(current Snap) {
+	v, ok := openGens.Load(current.Resolved)
+	if !ok {
+		return
+	}
+	g := v.(*generation)
+	g.mu.Lock()
+	g.snap = current
+	g.mu.Unlock()
+}
+
+// dropIdle 关掉池里闲置的连接。Open 之后日志模式变了，那些连接还停在旧快照上。
+func dropIdle(db Queryer) {
+	sqlDB, ok := db.(*sql.DB)
+	if !ok {
+		return
+	}
+	sqlDB.SetMaxIdleConns(0)
+	sqlDB.SetMaxIdleConns(2)
 }

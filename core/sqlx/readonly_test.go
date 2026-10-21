@@ -128,6 +128,44 @@ func TestReadOnlyKeepsExistingWAL(t *testing.T) {
 	before.assertSame(t, path)
 }
 
+func TestReadOnlyRejectsQuotedPragmaFunctions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "analytics.db")
+	w := openWritable(t, path, "DELETE")
+	seedTable(t, w)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	removeSidecars(path)
+	ctx := t.Context()
+	db := openRO(t, path)
+	forms := []string{
+		`SELECT * FROM "pragma_table_info"('t')`,
+		"SELECT * FROM [pragma_table_info]('t')",
+		"SELECT * FROM `pragma_table_info`('t')",
+		`SELECT * FROM "Pragma_Table_Info"('t')`,
+	}
+	for _, query := range forms {
+		t.Run(query, func(t *testing.T) {
+			rows, err := db.QueryContext(ctx, query)
+			if err == nil {
+				_ = rows.Close()
+				t.Fatal("连接放行了 pragma_* 表值函数")
+			}
+			lower := strings.ToLower(err.Error())
+			if !strings.Contains(lower, "not authorized") && !strings.Contains(lower, "authorization denied") && !strings.Contains(lower, "prohibited") {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM t`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("正常查询读到 %d 行", n)
+	}
+}
+
 func TestReadOnlyPragmaCannotEnableWrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "analytics.db")
 	w := openWritable(t, path, "DELETE")

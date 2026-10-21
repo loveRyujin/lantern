@@ -10,7 +10,7 @@ import (
 )
 
 // ErrFileChanged 表示只读查询前后，主库或 -wal 的内容变了，或者多出了不该有的 -wal。
-// 错误文本不带路径。
+// 错误文本不带路径。工具层不把这个错误和行一起交出去，而是改成可重试的 data_busy，并丢掉结果。
 var ErrFileChanged = errors.New("sqlx: 分析库文件在只读查询后发生了变化")
 
 // Snap 是一次文件指纹。路径都是 EvalSymlinks 之后的结果，-wal 同时看解析后的文件名和调用方给出的路径。

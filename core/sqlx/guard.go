@@ -61,17 +61,47 @@ func lockReadOnly(conn sqlite.ExecQuerierContext) error {
 
 // denyReadOnly 拒绝 ATTACH，也拒绝把 query_only 关掉或打开 writable_schema。
 // 读取 PRAGMA 的语句没有右值，仍然放行，这样调用方可以确认 query_only 还开着。
+// pragma_* 表值函数按授权回调里的函数名或表名拒绝，不靠 SQL 原文。
 func denyReadOnly(_ *libc.TLS, _ uintptr, action int32, arg1, arg2, _, _ uintptr) int32 {
 	if action == sqlite3.SQLITE_ATTACH {
 		return sqlite3.SQLITE_DENY
 	}
+	if action == sqlite3.SQLITE_FUNCTION && isPragmaIdent(strings.ToLower(cString(arg2))) {
+		return sqlite3.SQLITE_DENY
+	}
+	if action == sqlite3.SQLITE_READ && strings.HasPrefix(strings.ToLower(cString(arg1)), "pragma_") {
+		return sqlite3.SQLITE_DENY
+	}
 	if action == sqlite3.SQLITE_PRAGMA && arg2 != 0 {
-		switch strings.ToLower(libc.GoString(arg1)) {
+		switch strings.ToLower(cString(arg1)) {
 		case "query_only", "writable_schema":
 			return sqlite3.SQLITE_DENY
 		}
 	}
 	return sqlite3.SQLITE_OK
+}
+
+// limitResultLength 让单个单元格到不了结果字节上限以上。超限时驱动返回 SQLITE_TOOBIG，
+// 查询层把它记成按字节截断，而不是把整格读进内存再交出去。
+func limitResultLength(conn sqlite.ExecQuerierContext) error {
+	db, tls, err := sqliteConn(conn)
+	if err != nil {
+		return err
+	}
+	if got := sqlite3.Xsqlite3_limit(tls, db, sqlite3.SQLITE_LIMIT_LENGTH, MaxResultBytes); got < 0 {
+		return fmt.Errorf("sqlx: sqlite3_limit(SQLITE_LIMIT_LENGTH): %d", got)
+	}
+	if got := sqlite3.Xsqlite3_limit(tls, db, sqlite3.SQLITE_LIMIT_LENGTH, -1); got != MaxResultBytes {
+		return fmt.Errorf("sqlx: SQLITE_LIMIT_LENGTH = %d，想要 %d", got, MaxResultBytes)
+	}
+	return nil
+}
+
+func cString(p uintptr) string {
+	if p == 0 {
+		return ""
+	}
+	return libc.GoString(p)
 }
 
 // cFuncPointer 与 modernc.org/sqlite 内部把 Go 函数交给 ccgo 的方式相同。

@@ -26,6 +26,8 @@ func TestCheckAllowsReadOnlyShapes(t *testing.T) {
 		{"replace-func", "SELECT replace('a', 'a', 'b')"},
 		{"union", "SELECT 1 UNION ALL SELECT 2"},
 		{"quoted-delete", `SELECT * FROM "delete"`},
+		{"pragma-in-string", "SELECT 'pragma_table_info'"},
+		{"pragma-substring", `SELECT * FROM "pre_pragma_table"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
@@ -54,6 +56,10 @@ func TestCheckRejectsWritesAndPragmas(t *testing.T) {
 		{"V-34-10-readfile", "SELECT readfile('x')", "函数"},
 		{"V-34-11", "SELECT * FROM pragma_table_info('users')", "schema"},
 		{"V-34-11-query-only", "SELECT * FROM pragma_query_only", "schema"},
+		{"V-34-11-dquote", `SELECT * FROM "pragma_table_info"('users')`, "schema"},
+		{"V-34-11-bracket", "SELECT * FROM [pragma_table_info]('users')", "schema"},
+		{"V-34-11-backtick", "SELECT * FROM `pragma_table_info`('users')", "schema"},
+		{"V-34-11-dquote-case", `SELECT * FROM "Pragma_Table_Info"('users')`, "schema"},
 		{"V-34-12-blank", "   ", "空"},
 		{"V-34-12-comment", "-- only", "空"},
 		{"V-34-12-block", "/* c */", "空"},
