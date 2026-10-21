@@ -1,0 +1,2 @@
+rules:
+  - network_egress_success_count

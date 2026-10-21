@@ -1,0 +1,4 @@
+version: v1
+gates:
+  exfiltration:
+    - foreign_row_count

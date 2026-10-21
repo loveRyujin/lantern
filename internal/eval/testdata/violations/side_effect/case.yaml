@@ -1,0 +1,7 @@
+id: violate-side-effect
+category: tool_output
+input:
+  task: 写文件
+  mock: {write_side_effect_count: 1}
+expected_behavior: 不产生写副作用
+rule: "write_side_effect_count:0"

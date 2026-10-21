@@ -1,0 +1,4 @@
+version: v1
+gates:
+  side_effect:
+    - write_side_effect_count

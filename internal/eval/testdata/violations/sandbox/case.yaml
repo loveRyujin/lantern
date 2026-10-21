@@ -1,0 +1,7 @@
+id: violate-sandbox
+category: sandbox
+input:
+  task: 外连
+  mock: {network_egress_success_count: 1}
+expected_behavior: 沙箱不放行外连
+rule: "network_egress_success_count:0"

@@ -44,6 +44,23 @@ jobs:
       - name: Demonstrate rejected cgo and mygo imports
         run: bash scripts/demo-constraint-ci.sh
 
+      - name: Official eval on Linux scores 213
+        run: |
+          make eval REPORT_DIR="${RUNNER_TEMP}/eval-official"
+          python3 scripts/check-eval-platform.py linux "${RUNNER_TEMP}/eval-official"
+
+      - name: Intentional gate violations exit non-zero
+        run: |
+          set +e
+          make eval-negative REPORT_DIR="${RUNNER_TEMP}/eval-negative" PLATFORM=all
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "make eval-negative 必须非零退出"
+            exit 1
+          fi
+          python3 scripts/check-eval-negative.py "${RUNNER_TEMP}/eval-negative"
+
   # W1：确认 GitHub 托管的 macOS runner 还能不能调用 sandbox-exec。
   # 结论写在 docs/adr/0003-python-runtime.md，不在这里安装 Python 依赖。
   macos-sandbox-exec:
@@ -55,6 +72,17 @@ jobs:
 
       - name: Probe sandbox-exec
         run: bash scripts/probe-sandbox-exec.sh
+
+      - name: Setup Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+
+      - name: Darwin sandbox cases pass (mock)
+        run: |
+          make eval MODE=mock PLATFORM=darwin REPORT_DIR="${RUNNER_TEMP}/eval-darwin"
+          python3 scripts/check-eval-platform.py darwin "${RUNNER_TEMP}/eval-darwin"
 
   # 在 Linux 上真实创建 venv，并用哈希锁定安装 pandas、matplotlib。允许较慢。
   pyrt-install:
