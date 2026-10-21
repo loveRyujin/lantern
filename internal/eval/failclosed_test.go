@@ -552,6 +552,14 @@ func TestFrozenV1IsNotFalseGreen(t *testing.T) {
 	if sum.Cases == 0 {
 		t.Fatal("仓库里的 eval/v1 没有用例")
 	}
+	if res.ExitCode != eval.ExitOK || !sum.HardGatesPassed || sum.Failed != 0 || sum.MissingObservation != 0 {
+		t.Fatalf("正式集应通过: 退出 %d %+v", res.ExitCode, sum)
+	}
+	for _, item := range res.Report.Cases {
+		if strings.HasPrefix(item.ID, "NEG-GATE-") || strings.HasPrefix(item.ID, "violate-") {
+			t.Fatalf("正式集包含故意违规用例 %s", item.ID)
+		}
+	}
 	wantExit := eval.ExitOK
 	if sum.Failed > 0 || sum.MissingObservation > 0 || !sum.HardGatesPassed {
 		wantExit = eval.ExitFailed

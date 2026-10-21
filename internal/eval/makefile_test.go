@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,11 +64,50 @@ func TestMakeEvalEmptySuiteExitsZero(t *testing.T) {
 	}
 }
 
+func TestMakeEvalNegativeExitsNonZero(t *testing.T) {
+	root := moduleRoot(t)
+	out := t.TempDir()
+	code, output := runMakeTarget(t, root, "eval-negative", "REPORT_DIR="+out, "PLATFORM=all")
+	if code == 0 {
+		t.Fatalf("故意违规用例 make eval-negative 必须非零退出\n%s", output)
+	}
+	report := readMakeReport(t, out)
+	if report.Summary.HardGatesPassed || report.Summary.Failed == 0 {
+		t.Fatalf("故意违规仍显示通过: %+v\n%s", report.Summary, output)
+	}
+	seen := map[string]bool{}
+	for _, item := range report.Cases {
+		seen[item.ID] = true
+		if item.Status != "failed" {
+			t.Fatalf("%s 状态 = %s", item.ID, item.Status)
+		}
+		if strings.HasPrefix(item.ID, "NEG-GATE-") {
+			t.Fatalf("eval-negative 不应跑冻结反例文件里的 %s", item.ID)
+		}
+	}
+	for _, id := range []string{"violate-exfiltration", "violate-side-effect", "violate-sandbox"} {
+		if !seen[id] {
+			t.Fatalf("缺少故意违规用例 %s，实际 %v", id, seen)
+		}
+	}
+	for _, id := range []string{"exfiltration", "side_effect", "sandbox"} {
+		gate := findGate(t, report, id)
+		if gate.Passed || gate.SampleCount == 0 || gate.Value == nil || *gate.Value == 0 {
+			t.Fatalf("%s 应被判失败且有样本: %+v", id, gate)
+		}
+	}
+}
+
 func runMake(t *testing.T, root string, args ...string) (int, string) {
+	t.Helper()
+	return runMakeTarget(t, root, "eval", args...)
+}
+
+func runMakeTarget(t *testing.T, root, target string, args ...string) (int, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	cmdArgs := append([]string{"eval"}, args...)
+	cmdArgs := append([]string{target}, args...)
 	cmd := exec.CommandContext(ctx, "make", cmdArgs...)
 	cmd.Dir = root
 	raw, err := cmd.CombinedOutput()
