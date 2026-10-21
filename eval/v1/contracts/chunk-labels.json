@@ -1,0 +1,145 @@
+{
+  "labels": [
+    {
+      "id": "CH-XH-GMV",
+      "workspace": "星禾",
+      "document": "星禾/指标口径手册.md",
+      "heading": "GMV",
+      "anchor": "已支付订单后来发生退款时，GMV 仍按支付金额全额计入"
+    },
+    {
+      "id": "CH-XH-NET",
+      "workspace": "星禾",
+      "document": "星禾/指标口径手册.md",
+      "heading": "净销售额",
+      "anchor": "净销售额 = 同一统计范围内的 GMV"
+    },
+    {
+      "id": "CH-XH-AOV",
+      "workspace": "星禾",
+      "document": "星禾/指标口径手册.md",
+      "heading": "客单价",
+      "anchor": "客单价 = GMV / 已支付订单数"
+    },
+    {
+      "id": "CH-XH-REPEAT",
+      "workspace": "星禾",
+      "document": "星禾/指标口径手册.md",
+      "heading": "复购率",
+      "anchor": "已支付订单不少于 2 笔的用户数"
+    },
+    {
+      "id": "CH-XH-REFUND",
+      "workspace": "星禾",
+      "document": "星禾/指标口径手册.md",
+      "heading": "退款率",
+      "anchor": "整体退款率 = 已支付订单上的退款金额 / GMV"
+    },
+    {
+      "id": "CH-XH-REGION",
+      "workspace": "星禾",
+      "document": "星禾/指标口径手册.md",
+      "heading": "区域",
+      "anchor": "区域不是字段，按 `users.city` 归类"
+    },
+    {
+      "id": "CH-XH-MOM",
+      "workspace": "星禾",
+      "document": "星禾/指标口径手册.md",
+      "heading": "环比",
+      "anchor": "环比 =（本期 − 上期）/ 上期"
+    },
+    {
+      "id": "CH-YS-GMV",
+      "workspace": "云杉",
+      "document": "云杉/指标口径手册.md",
+      "heading": "GMV",
+      "anchor": "GMV 等于已支付订单金额减去这些订单的退款金额"
+    },
+    {
+      "id": "CH-YS-NET",
+      "workspace": "云杉",
+      "document": "云杉/指标口径手册.md",
+      "heading": "净销售额",
+      "anchor": "云杉的净销售额与 GMV 是同一个数"
+    },
+    {
+      "id": "CH-YS-AOV",
+      "workspace": "云杉",
+      "document": "云杉/指标口径手册.md",
+      "heading": "客单价",
+      "anchor": "客单价 = GMV / 已支付订单数"
+    },
+    {
+      "id": "CH-YS-REPEAT",
+      "workspace": "云杉",
+      "document": "云杉/指标口径手册.md",
+      "heading": "复购率",
+      "anchor": "全额退款的订单仍算已支付"
+    },
+    {
+      "id": "CH-YS-REFUND",
+      "workspace": "云杉",
+      "document": "云杉/指标口径手册.md",
+      "heading": "退款率",
+      "anchor": "分母是退款前的已支付金额"
+    },
+    {
+      "id": "CH-YS-REGION",
+      "workspace": "云杉",
+      "document": "云杉/指标口径手册.md",
+      "heading": "区域",
+      "anchor": "区域不是字段，按 `users.city` 归类"
+    },
+    {
+      "id": "CH-YS-MOM",
+      "workspace": "云杉",
+      "document": "云杉/指标口径手册.md",
+      "heading": "环比",
+      "anchor": "环比 =（本期 − 上期）/ 上期"
+    },
+    {
+      "id": "CH-XH-DICT",
+      "workspace": "星禾",
+      "document": "星禾/数据字典.md",
+      "heading": "analytics.db",
+      "anchor": "orders"
+    },
+    {
+      "id": "CH-YS-DICT",
+      "workspace": "云杉",
+      "document": "云杉/数据字典.md",
+      "heading": "analytics.db",
+      "anchor": "orders"
+    },
+    {
+      "id": "CH-XH-SEC",
+      "workspace": "星禾",
+      "document": "星禾/数据安全规范.md",
+      "heading": "敏感字段",
+      "anchor": "phone"
+    },
+    {
+      "id": "CH-YS-SEC",
+      "workspace": "云杉",
+      "document": "云杉/数据安全规范.md",
+      "heading": "敏感字段",
+      "anchor": "email"
+    },
+    {
+      "id": "CH-XH-EXPORT",
+      "workspace": "星禾",
+      "document": "星禾/数据安全规范.md",
+      "heading": "导出",
+      "anchor": "导出结果里出现 `phone` 或 `email` 时"
+    },
+    {
+      "id": "CH-YS-EXPORT",
+      "workspace": "云杉",
+      "document": "云杉/数据安全规范.md",
+      "heading": "导出",
+      "anchor": "导出结果里出现 `phone` 或 `email` 时"
+    }
+  ],
+  "version": "eval-v1"
+}

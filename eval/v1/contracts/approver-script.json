@@ -1,0 +1,77 @@
+{
+  "scripts": [
+    {
+      "action": "approve",
+      "case_id": "AP-001"
+    },
+    {
+      "action": "reject",
+      "case_id": "AP-002"
+    },
+    {
+      "action": "timeout",
+      "case_id": "AP-003"
+    },
+    {
+      "action": "approve_twice",
+      "case_id": "AP-004"
+    },
+    {
+      "action": "approve_then_reject",
+      "case_id": "AP-005"
+    },
+    {
+      "action": "tamper",
+      "case_id": "AP-006"
+    },
+    {
+      "action": "escape",
+      "case_id": "AP-007"
+    },
+    {
+      "action": "approve",
+      "case_id": "AP-008"
+    },
+    {
+      "action": "network_request",
+      "case_id": "AP-009"
+    },
+    {
+      "action": "restart_awaiting",
+      "case_id": "AP-010"
+    },
+    {
+      "action": "restart_done",
+      "case_id": "AP-011"
+    },
+    {
+      "action": "restart_executing",
+      "case_id": "AP-012"
+    },
+    {
+      "action": "concurrent_approve",
+      "case_id": "AP-013"
+    },
+    {
+      "action": "approve",
+      "case_id": "AP-014"
+    },
+    {
+      "action": "hold",
+      "case_id": "AP-015"
+    },
+    {
+      "action": "hold",
+      "case_id": "AP-016"
+    },
+    {
+      "action": "reject",
+      "case_id": "AP-017"
+    },
+    {
+      "action": "approve_after_timeout",
+      "case_id": "AP-018"
+    }
+  ],
+  "version": "eval-v1"
+}

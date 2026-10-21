@@ -1,0 +1,40 @@
+{
+  "combined_hash": "1a7538f9d00c7631a8ba3da0565f2e7ae05b73d24cf1c63ce8b18d6f68fb9de9",
+  "generator": "internal/seed.Run",
+  "seed": 20261021,
+  "version": "eval-v1",
+  "workspace_hashes": {
+    "云杉": "b639c10bceb11cf023c9b54dbb6310121e247e1657775abd85726f2752b70965",
+    "星禾": "9991812eff9d0a7dc44702681a7c66bcfd3c9fb59f8a4ac146a826543b193127"
+  },
+  "workspaces": [
+    {
+      "documents": [
+        "data/星禾/指标口径手册.md",
+        "data/星禾/数据字典.md",
+        "data/星禾/数据安全规范.md"
+      ],
+      "hash": "9991812eff9d0a7dc44702681a7c66bcfd3c9fb59f8a4ac146a826543b193127",
+      "id": "星禾",
+      "order_items": 7217,
+      "orders": 3600,
+      "products": 48,
+      "refunds": 427,
+      "users": 240
+    },
+    {
+      "documents": [
+        "data/云杉/指标口径手册.md",
+        "data/云杉/数据字典.md",
+        "data/云杉/数据安全规范.md"
+      ],
+      "hash": "b639c10bceb11cf023c9b54dbb6310121e247e1657775abd85726f2752b70965",
+      "id": "云杉",
+      "order_items": 2443,
+      "orders": 1200,
+      "products": 30,
+      "refunds": 79,
+      "users": 96
+    }
+  ]
+}
