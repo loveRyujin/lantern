@@ -122,16 +122,18 @@ type SandboxPlatform struct {
 }
 
 // CaseResult 是一条用例的计分结果。
+// Failures 只记计分失败和缺观测。跳过、平台过滤写在 NotScoredReasons，避免下游把未评分当成失败。
 type CaseResult struct {
-	ID          string   `json:"id"`
-	RunID       string   `json:"run_id"`
-	Category    string   `json:"category"`
-	Platform    string   `json:"platform"`
-	Source      string   `json:"source"`
-	Status      string   `json:"status"`
-	Passed      bool     `json:"passed"`
-	JudgeCalled bool     `json:"judge_called"`
-	Failures    []string `json:"failures"`
+	ID               string   `json:"id"`
+	RunID            string   `json:"run_id"`
+	Category         string   `json:"category"`
+	Platform         string   `json:"platform"`
+	Source           string   `json:"source"`
+	Status           string   `json:"status"`
+	Passed           bool     `json:"passed"`
+	JudgeCalled      bool     `json:"judge_called"`
+	Failures         []string `json:"failures"`
+	NotScoredReasons []string `json:"not_scored_reasons,omitempty"`
 }
 
 func buildHardGates(gates GateSet, tally gateTally) []HardGate {
@@ -409,7 +411,7 @@ func writeUnscored(b *strings.Builder, report Report, status, title string) {
 	}
 	b.WriteString("| 用例 | 平台 | 类别 | 原因 |\n| --- | --- | --- | --- |\n")
 	for _, item := range items {
-		fmt.Fprintf(b, "| `%s` | %s | %s | %s |\n", item.ID, item.Platform, item.Category, strings.Join(item.Failures, "；"))
+		fmt.Fprintf(b, "| `%s` | %s | %s | %s |\n", item.ID, item.Platform, item.Category, strings.Join(item.NotScoredReasons, "；"))
 	}
 	b.WriteByte('\n')
 }

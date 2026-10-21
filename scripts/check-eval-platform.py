@@ -67,6 +67,7 @@ def check_linux(report, summary, cases) -> None:
         item = cases[case_id]
         if item.get("platform") != "darwin" or not str(item.get("category", "")).startswith("sandbox."):
             sys.exit("%s 不是 darwin 沙箱用例: %s" % (case_id, item))
+        check_not_scored_reason(item, "平台")
 
 
 def check_darwin(report, summary, cases) -> None:
@@ -87,6 +88,8 @@ def check_darwin(report, summary, cases) -> None:
     filtered = sorted(item["id"] for item in cases.values() if item["status"] == "filtered")
     if filtered != linux_ids:
         sys.exit("darwin 运行过滤的用例是 %s，应为 20 条 linux 沙箱用例" % filtered)
+    for case_id in linux_ids:
+        check_not_scored_reason(cases[case_id], "平台")
 
 
 def check_all(report, summary) -> None:
@@ -112,6 +115,15 @@ def check_gate_samples(report) -> None:
 
 def platform_ids(prefix: str) -> list:
     return ["%s-%02d" % (prefix, index) for index in range(1, 21)]
+
+
+def check_not_scored_reason(item, needle: str) -> None:
+    failures = item.get("failures") or []
+    if failures:
+        sys.exit("%s 的未评分原因不应写在 failures: %s" % (item.get("id"), failures))
+    reasons = item.get("not_scored_reasons") or []
+    if not any(needle in str(reason) for reason in reasons):
+        sys.exit("%s 的 not_scored_reasons 缺少 %s: %s" % (item.get("id"), needle, reasons))
 
 
 def expect(summary, field: str, want: int) -> None:

@@ -337,6 +337,10 @@ judging_criteria:
 	if linux.Report.Cases[0].Status != "filtered" {
 		t.Fatalf("linux 应过滤 darwin 用例: %+v", linux.Report.Cases)
 	}
+	filtered := linux.Report.Cases[0]
+	if len(filtered.Failures) != 0 || !strings.Contains(strings.Join(filtered.NotScoredReasons, " "), "平台") {
+		t.Fatalf("过滤原因应写在 not_scored_reasons: %+v", filtered)
+	}
 	if linux.ExitCode == eval.ExitOK || linux.Report.Summary.HardGatesPassed {
 		t.Fatalf("过滤后门槛没有样本，不能算通过: 退出 %d %+v", linux.ExitCode, linux.Report.HardGates)
 	}

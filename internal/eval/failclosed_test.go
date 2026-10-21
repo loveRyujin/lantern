@@ -136,6 +136,9 @@ cases:
 	if byID["SKIP"].Status != "skipped" || byID["SKIP"].JudgeCalled {
 		t.Fatalf("SKIP = %+v", byID["SKIP"])
 	}
+	if len(byID["SKIP"].Failures) != 0 || !strings.Contains(strings.Join(byID["SKIP"].NotScoredReasons, " "), "没有 input.mock") {
+		t.Fatalf("跳过原因应写在 not_scored_reasons: %+v", byID["SKIP"])
+	}
 	if byID["PASS"].Status != "passed" || !byID["PASS"].JudgeCalled {
 		t.Fatalf("PASS = %+v", byID["PASS"])
 	}

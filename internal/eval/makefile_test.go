@@ -104,8 +104,11 @@ func TestMakeEvalOfficialSet(t *testing.T) {
 		if item.Platform != "darwin" || !strings.HasPrefix(item.Category, "sandbox.") {
 			t.Fatalf("过滤用例不是 darwin 沙箱用例: %+v", item)
 		}
-		if len(item.Failures) == 0 || !strings.Contains(strings.Join(item.Failures, " "), "平台") {
-			t.Fatalf("过滤用例没有写明原因: %+v", item)
+		if len(item.Failures) != 0 {
+			t.Fatalf("平台过滤原因不应写在 failures: %+v", item)
+		}
+		if len(item.NotScoredReasons) == 0 || !strings.Contains(strings.Join(item.NotScoredReasons, " "), "平台") {
+			t.Fatalf("过滤用例没有单独的未评分原因: %+v", item)
 		}
 	}
 	sort.Strings(filteredIDs)

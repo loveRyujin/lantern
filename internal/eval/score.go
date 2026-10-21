@@ -160,7 +160,7 @@ func scoreCase(ctx context.Context, item Case, catalog RuleCatalog, opt Options,
 		}
 		res.Status = statusFiltered
 		res.Passed = false
-		res.Failures = []string{filterReason(item, opt.Category, selected)}
+		res.NotScoredReasons = []string{filterReason(item, opt.Category, selected)}
 		return finishScore(res, nil, false)
 	}
 	res.RunID = runID(opt.Mode, item.ID)
@@ -173,7 +173,7 @@ func scoreCase(ctx context.Context, item Case, catalog RuleCatalog, opt Options,
 	if !hasMock {
 		res.Status = statusSkipped
 		res.Passed = false
-		res.Failures = []string{"没有 input.mock，未评分"}
+		res.NotScoredReasons = []string{"没有 input.mock，未评分"}
 		return finishScore(res, nil, false)
 	}
 	if mismatched {
