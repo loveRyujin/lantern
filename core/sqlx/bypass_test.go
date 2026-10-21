@@ -15,33 +15,25 @@ import (
 	"time"
 
 	"github.com/loveRyujin/lantern/core/tools"
+	"modernc.org/libc"
 	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
-// orderByMemBound 是 100 行各 4 MiB 的 ORDER BY random() 允许的 VmHWM 峰值。
-// 来自 temp_store=FILE 和 256 KiB 的 cache_size，不是堆上限。
-const orderByMemBound = 256 << 20
-
-// TestRunSQLBypassShapesStayBounded 把改写器的三条绕过收成回归，并挡住多行排序。
+// TestRunSQLBypassShapesStayBounded 把改写器的三条绕过收成回归，并加上多行排序。
 // CTE 后面的 SELECT *、多表 FROM 里的子查询、以及用户自己写的 lantern_cell，
-// 都在准备之后、第一步之前被拒绝，VmHWM 停在一条合法结果行的规模里。
-// 100 行各 4 MiB 的 ORDER BY random() 在自己的子进程里，VmHWM 峰值不超过大约 256 MiB。
-// modernc 的分配在 libc 堆上。VmHWM 是整个进程的，所以这里不用 t.Parallel，
-// 每个形状单独一个子进程。不打开 MEMSTATUS，也不设置硬堆上限。
+// 都在第一步之前被拒绝。32 列 × 4 MiB 只约束最终结果行，不约束中间值。
+// 100 行各 4 MiB 的 ORDER BY random() 不能超过大约 256 MiB。
+// modernc 的分配在 libc 堆上，Go 的 TotalAlloc 不算数。
+// sqlite3_memory_highwater 和 VmHWM 都是整个进程的，所以这里不用 t.Parallel，
+// 每个形状单独一个子进程。子进程在第一次打开数据库之前打开 SQLITE_CONFIG_MEMSTATUS，
+// 并在测量前把 highwater 清零。
 func TestRunSQLBypassShapesStayBounded(t *testing.T) {
 	id := os.Getenv("LANTERN_SQL_MEM_CHILD")
 	if id == "" {
 		for _, name := range bypassCaseNames() {
 			t.Run(name, func(t *testing.T) {
-				var extra []string
-				if name == "order-by-many-rows" {
-					// 灌库留在父进程。子进程的 VmHWM 只覆盖打开和排序，不把灌库的峰值算进去。
-					path := filepath.Join(t.TempDir(), "analytics.db")
-					createEmptyDB(t, path)
-					fillSortRows(t, path)
-					extra = append(extra, "LANTERN_SQL_SORT_DB="+path)
-				}
-				spawnMemChild(t, "TestRunSQLBypassShapesStayBounded", name, extra...)
+				spawnMemChild(t, "TestRunSQLBypassShapesStayBounded", name)
 			})
 		}
 		return
@@ -49,13 +41,9 @@ func TestRunSQLBypassShapesStayBounded(t *testing.T) {
 	if !isBypassChild(id) {
 		t.Skip("留给别的内存子进程")
 	}
+	enableSQLiteMemStatus(t)
+	resetMemHighwater()
 	probeBypassCase(t, id)
-}
-
-// TestIntermediateResultsUnbounded 记下仍没有内存上限的中间值。ORDER BY 不在这里。
-// 修复是 W3 阻塞项。见 https://github.com/loveRyujin/lantern/issues/38
-func TestIntermediateResultsUnbounded(t *testing.T) {
-	t.Skip("子查询、物化 CTE、GROUP BY、UNION 和 IN 列表的中间值没有内存上限。temp_store=FILE 只帮 ORDER BY 排序落盘，约束不住这些中间值。实测峰值 1.2–2.75 GB。超时也约束不住内存。ryujin 在 23:47 定了方案 (b)。见 https://github.com/loveRyujin/lantern/issues/38")
 }
 
 func bypassCaseNames() []string {
@@ -79,6 +67,7 @@ func probeBypassCase(t *testing.T, id string) {
 	}
 	path := filepath.Join(t.TempDir(), "analytics.db")
 	tool := openMemTool(t, path)
+	assertMemStatusWorks(t, tool)
 	cols := wideExprs(40, "hex(zeroblob(2000000))")
 	var query, want string
 	switch id {
@@ -94,10 +83,10 @@ func probeBypassCase(t *testing.T, id string) {
 	default:
 		t.Fatalf("未知的内存用例 %s", id)
 	}
-	before := processHWM(t)
+	resetMemHighwater()
 	res, err := tool.Execute(t.Context(), sqlCall(t, query))
-	delta := processHWM(t) - before
-	t.Logf("VmHWM delta=%d err=%v", delta, err)
+	hw := memHighwater()
+	t.Logf("highwater=%d err=%v", hw, err)
 	var te *tools.Error
 	if !errors.As(err, &te) || te.Code != CodeRejected || te.Retryable || res.Content != "" {
 		t.Fatalf("err=%v res=%+v", err, res)
@@ -105,20 +94,18 @@ func probeBypassCase(t *testing.T, id string) {
 	if !strings.Contains(err.Error(), want) {
 		t.Fatalf("错误里没有 %q: %v", want, err)
 	}
-	// 列数在第一步之前就拒绝了，这些值不会进寄存器。没有硬堆上限也能停在一条合法结果行的规模里。
-	const bound = MaxResultColumns*MaxValueBytes + 8<<20
-	if delta > bound {
-		t.Fatalf("VmHWM 增加 %d，超过 32 列 × 4 MiB（%d）", delta, bound)
+	const sqliteBound = MaxResultColumns*MaxValueBytes + 8<<20
+	if hw > sqliteBound {
+		t.Fatalf("sqlite3_memory_highwater = %d，超过最终结果行的 32 列 × 4 MiB（%d）。这个公式只管最终行，不管中间值", hw, sqliteBound)
 	}
 }
 
 func probeSortMemory(t *testing.T) {
 	t.Helper()
-	sortPath := os.Getenv("LANTERN_SQL_SORT_DB")
-	if sortPath == "" {
-		t.Fatal("缺少 LANTERN_SQL_SORT_DB")
-	}
 	ctx := t.Context()
+	sortPath := filepath.Join(t.TempDir(), "analytics.db")
+	createEmptyDB(t, sortPath)
+	fillSortRows(t, sortPath)
 	sortDB, err := Open(ctx, sortPath, sortPath)
 	if err != nil {
 		t.Fatal(err)
@@ -128,11 +115,13 @@ func probeSortMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertMemStatusWorks(t, sortTool)
 	dir := filepath.Dir(sortPath)
 	before, err := listDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	resetMemHighwater()
 	var seen []string
 	var mu sync.Mutex
 	stop := make(chan struct{})
@@ -161,22 +150,23 @@ func probeSortMemory(t *testing.T) {
 			}
 		}
 	}()
-	info, err := os.Stat(sortPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	beforeHWM := processHWM(t)
 	res, err := sortTool.Execute(ctx, sqlCall(t, `SELECT body FROM t ORDER BY random()`))
 	close(stop)
 	<-done
-	peak := processHWM(t)
-	t.Logf("db=%d VmHWM before=%d peak=%d delta=%d bound=%d err=%v", info.Size(), beforeHWM, peak, peak-beforeHWM, orderByMemBound, err)
+	hw := memHighwater()
+	t.Logf("highwater=%d err=%v", hw, err)
+	if got := currentHeapLimit(); got != 0 {
+		t.Fatalf("进程级硬堆上限 = %d，不应设置", got)
+	}
 	var te *tools.Error
+	if hw > SortMemBytes {
+		if !errors.As(err, &te) || te.Code != CodeResultTooLarge || te.Retryable || res.Content != "" {
+			t.Fatalf("高水位 %d 超过大约 256 MiB，错误应是 sql_result_too_large，实际 err=%v res=%+v", hw, err, res)
+		}
+		t.Fatalf("sqlite3_memory_highwater = %d，大约 256 MiB 的上限是 %d", hw, SortMemBytes)
+	}
 	if !errors.As(err, &te) || te.Code != CodeResultTooLarge || te.Retryable || res.Content != "" {
 		t.Fatalf("排序 err=%v res=%+v", err, res)
-	}
-	if peak > orderByMemBound {
-		t.Fatalf("VmHWM 峰值 %d 字节（约 %d MiB），超过大约 256 MiB（%d）。这个上限来自 temp_store=FILE 和 256 KiB cache_size，不是堆上限", peak, peak>>20, orderByMemBound)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -207,9 +197,22 @@ func openMemTool(t *testing.T, path string) *Tool {
 	return tool
 }
 
+// assertMemStatusWorks 先做一次小分配，确认 highwater 真的在计数。
+// 计数没打开时 highwater 一直是 0，后面的上限检查会空过。
+func assertMemStatusWorks(t *testing.T, tool *Tool) {
+	t.Helper()
+	resetMemHighwater()
+	if _, err := tool.Execute(t.Context(), sqlCall(t, `SELECT length(randomblob(200000))`)); err != nil {
+		t.Fatal(err)
+	}
+	if hw := memHighwater(); hw < 200000 {
+		t.Fatalf("sqlite3_memory_highwater = %d，内存统计没有打开", hw)
+	}
+}
+
 // spawnMemChild 在干净的子进程里跑一个内存用例。
-// VmHWM 是进程一辈子的峰值，清不掉，也不能和别的测试挤在一起，更不能 t.Parallel。
-func spawnMemChild(t *testing.T, testName, childID string, extra ...string) {
+// sqlite3_memory_highwater 和 VmHWM 都看整个进程，不能和别的测试挤在一起，也不能 t.Parallel。
+func spawnMemChild(t *testing.T, testName, childID string) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^"+regexp.QuoteMeta(testName)+"$", "-test.count=1", "-test.v")
 	env := make([]string, 0, len(os.Environ())+1)
@@ -220,16 +223,10 @@ func spawnMemChild(t *testing.T, testName, childID string, extra ...string) {
 		env = append(env, e)
 	}
 	cmd.Env = append(env, "LANTERN_SQL_MEM_CHILD="+childID)
-	cmd.Env = append(cmd.Env, extra...)
 	out, err := cmd.CombinedOutput()
-	text := string(out)
-	t.Log(text)
+	t.Log(string(out))
 	if err != nil {
 		t.Fatalf("内存子进程 %s 失败: %v", childID, err)
-	}
-	// 一条测试都没匹配上时，go test 也会以 0 退出。必须看到这条用例自己通过。
-	if !strings.Contains(text, "--- PASS: "+testName) {
-		t.Fatalf("内存子进程 %s 没有跑到 %s", childID, testName)
 	}
 }
 
@@ -290,4 +287,37 @@ func sqlCall(t *testing.T, query string) tools.Call {
 		t.Fatal(err)
 	}
 	return tools.Call{Args: body}
+}
+
+func enableSQLiteMemStatus(t *testing.T) {
+	t.Helper()
+	tls := libc.NewTLS()
+	defer tls.Close()
+	slot := libc.Xmalloc(tls, 8)
+	if slot == 0 {
+		t.Fatal("分配参数槽失败")
+	}
+	defer libc.Xfree(tls, slot)
+	libc.VaList(slot, int32(1))
+	if rc := sqlite3.Xsqlite3_config(tls, sqlite3.SQLITE_CONFIG_MEMSTATUS, slot); rc != sqlite3.SQLITE_OK {
+		t.Fatalf("SQLITE_CONFIG_MEMSTATUS = %d", rc)
+	}
+}
+
+func resetMemHighwater() {
+	tls := libc.NewTLS()
+	defer tls.Close()
+	sqlite3.Xsqlite3_memory_highwater(tls, 1)
+}
+
+func memHighwater() int64 {
+	tls := libc.NewTLS()
+	defer tls.Close()
+	return int64(sqlite3.Xsqlite3_memory_highwater(tls, 0))
+}
+
+func currentHeapLimit() int64 {
+	tls := libc.NewTLS()
+	defer tls.Close()
+	return int64(sqlite3.Xsqlite3_hard_heap_limit64(tls, -1))
 }

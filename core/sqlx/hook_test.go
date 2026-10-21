@@ -156,6 +156,8 @@ func TestWideRowMemoryBound(t *testing.T) {
 		spawnMemChild(t, "TestWideRowMemoryBound", id)
 		return
 	}
+	enableSQLiteMemStatus(t)
+	resetMemHighwater()
 	path := filepath.Join(t.TempDir(), "analytics.db")
 	createEmptyDB(t, path)
 	ctx := t.Context()
@@ -173,6 +175,7 @@ func TestWideRowMemoryBound(t *testing.T) {
 	for i := range parts {
 		parts[i] = "randomblob(3145728)"
 	}
+	resetMemHighwater()
 	before := processHWM(t)
 	var live int64
 	onSQLiteRow = func() {
@@ -189,14 +192,14 @@ func TestWideRowMemoryBound(t *testing.T) {
 	if !errors.As(err, &te) || te.Code != CodeResultTooLarge || te.Retryable || res.Content != "" {
 		t.Fatalf("宽行 err=%v res=%+v", err, res)
 	}
-	// 不打开 MEMSTATUS，也不设硬堆上限。modernc 的 malloc 在 libc 堆上，Go 的 TotalAlloc 看不到。
-	// 这一行是最终结果，列数和单值上限都还在，所以 VmHWM 增量盖住这 32 个 3 MiB，
-	// 并且停在 32 列 × 4 MiB 再加余量以内。VmHWM 清不掉，所以这个用例单独一个子进程。
+	// 这个子进程在打开数据库之前打开了 MEMSTATUS，并清过 sqlite3_memory_highwater。
+	// 宽行仍读 VmHWM：modernc 的 malloc 在 libc 堆上，Go 的 TotalAlloc 看不到。
+	// VmHWM 清不掉，所以这个用例不能和别的测试待在同一个进程里。
 	delta := live - before
-	const sqliteBound = MaxResultColumns*MaxValueBytes + 32<<20
+	const sqliteBound = MaxResultColumns * MaxValueBytes
 	t.Logf("VmHWM 增加 %d 字节", delta)
-	if delta < MaxResultColumns*blob-4<<20 || delta > sqliteBound {
-		t.Fatalf("这一行 VmHWM 增加 %d，应盖住 %d 且不超过 %d", delta, MaxResultColumns*blob, sqliteBound)
+	if delta < MaxResultColumns*blob-4<<20 || delta > sqliteBound+32<<20 {
+		t.Fatalf("这一行 VmHWM 增加 %d，应盖住 %d 且不超过最终结果行的 32 列 × 4 MiB（%d）。这个公式不管中间值", delta, MaxResultColumns*blob, sqliteBound)
 	}
 }
 

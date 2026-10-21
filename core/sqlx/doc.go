@@ -28,7 +28,7 @@
 // 临时文件在系统临时目录，不在业务库旁边，也不进文件哈希。
 // 不设置 sqlite3_hard_heap_limit64，也不设别的进程级堆上限，否则工作区、审计和敏感库写入会一起被卡住。
 // 子查询、物化 CTE、GROUP BY、UNION 和 IN 列表的中间值没有内存上限。temp_store=FILE 和小缓存约束不住它们。
-// 实测峰值 1.2–2.75 GB：物化 CTE 1.19 GB，GROUP BY 2.74 GB，IN 列表 1.20 GB，UNION 也在同一范围。超时也约束不住这些内存。
+// 实测峰值 1.2–2.75 GB：物化 CTE 1.19 GB，GROUP BY 2.74 GB，IN 列表 1.20 GB，UNION 也在同一范围。这些中间值几秒内就能把内存占满，超时来不及拦住。
 // ryujin 在 23:47 定了方案 (b)，这个风险留在 W2。修复记在 https://github.com/loveRyujin/lantern/issues/38 ：把 run_sql 放进单独的子进程，用 RLIMIT_AS 或 cgroup 限制内存。
 // SQLite 若仍返回 NOMEM，按 sql_result_too_large 交回。
 // 引号里的 pragma_* 表值函数和 PRAGMA 一样拒绝，按解析后的标识符判断，不在原文里搜子串。

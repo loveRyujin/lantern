@@ -27,12 +27,14 @@ const (
 	// 超过就拒绝，让模型改写。不写进 SQLITE_LIMIT_COLUMN，否则宽表会让整个库打不开。
 	MaxResultColumns = 32
 	// CacheKiB 是只读连接的页缓存，单位 KiB。PRAGMA cache_size 用负数表示 KiB。
-	// 留小，只让 ORDER BY 的排序把多出来的行写进临时文件。这条断言 VmHWM 不超过 256 MiB。
+	// 留小，只让 ORDER BY 的排序把多出来的行写进临时文件。
 	// 子查询、物化 CTE、GROUP BY、UNION 和 IN 列表不受 temp_store=FILE 和小缓存约束。
-	// 不设置 sqlite3_hard_heap_limit64。它是进程级的，审计和其他库的写入也会被卡住，
-	// 而且 MEMSTATUS 默认关着，这个上限根本不会被检查。
-	CacheKiB      = 256
-	TruncateBytes = "bytes"
+	// 不设置 sqlite3_hard_heap_limit64：那个上限是进程级的，工作区、审计和敏感库也会被卡住。
+	CacheKiB = 256
+	// SortMemBytes 是排序这类查询在 SQLite 堆上的大约上限，只给回归测试用。
+	// 生产路径没有进程级硬上限。超过之后若 SQLite 返回 NOMEM，映射成 sql_result_too_large。
+	SortMemBytes  int64 = 256 << 20
+	TruncateBytes       = "bytes"
 )
 
 // Result 是截断之后的查询结果。RowCount 是实际返回的行数，不是库里的总行数。
@@ -52,13 +54,13 @@ type Result struct {
 // 一行超过 MaxResultBytes，或者 SQLite 报 TOOBIG，
 // 返回 [errRowTooLarge]，这次已读出的行也不返回。
 // 多行各自没超限、加在一起超了，才截断并保留已经放下的完整行。
-// 表达式的单个中间值不受这 1 MiB 约束，只受连接上的 MaxValueBytes（4 MiB）约束。
-// Go 这边停在 1 MiB，不再把超出的列拷进来。最终结果最多 32 列，返回的每一行最多 1 MiB。
-// 子查询、物化 CTE、GROUP BY、UNION 和 IN 列表的中间值没有内存上限。
-// temp_store=FILE 和较小的 cache_size 只帮 ORDER BY 的排序把多出来的行写到临时文件，约束不住这些中间值。
-// 实测峰值 1.2–2.75 GB：物化 CTE 1.19 GB，GROUP BY 2.74 GB，IN 列表 1.20 GB，UNION 也在同一范围。超时也约束不住这些内存。
-// ryujin 在 23:47 定了方案 (b)，这个风险留在 W2。修复记在 https://github.com/loveRyujin/lantern/issues/38 ：把 run_sql 放进单独的子进程，用 RLIMIT_AS 或 cgroup 限制内存。
-// ORDER BY 断言 VmHWM 峰值不超过 256 MiB。不设进程级堆上限。
+// 表达式的中间值不受这 1 MiB 约束，只受连接上的 MaxValueBytes 约束。
+// Go 这边停在 1 MiB，不再把超出的列拷进来。
+// 32 列 × 4 MiB 只约束最终结果行，不约束中间值。
+// 子查询、物化 CTE、GROUP BY、UNION 和 IN 列表的中间值没有内存上限。实测峰值 1.2–2.75 GB。
+// 这些中间值几秒内就能把内存占满，超时来不及拦住。
+// temp_store=FILE 和较小的 cache_size 只帮 ORDER BY 把多出来的行写到临时文件，不设进程级堆上限。
+// 修复记在 https://github.com/loveRyujin/lantern/issues/38 ：把 run_sql 放进单独的子进程，用 RLIMIT_AS 或 cgroup 限制内存。
 func Query(ctx context.Context, db Queryer, query string, limit int) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, &codedTimeout{err: err}
