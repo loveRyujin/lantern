@@ -258,16 +258,81 @@ func sandboxReports(samples []sandboxSample, enabled bool) []SandboxPlatform {
 }
 
 func (r Report) withDigest() (Report, error) {
-	clone := r
-	clone.GeneratedAt = ""
-	clone.Digest = ""
-	raw, err := json.Marshal(clone)
+	raw, err := json.Marshal(frozenDigestView(r))
 	if err != nil {
 		return Report{}, err
 	}
 	sum := sha256.Sum256(raw)
 	r.Digest = hex.EncodeToString(sum[:])
 	return r, nil
+}
+
+// frozenDigestView 按 main 上 eval/v1 既有 --platform all 报告的结构计算摘要指纹。
+// 那份输出还没有 summary.scored，环境字段是当时的值。计分内容不变时，指纹保持报告里的 digest。
+func frozenDigestView(r Report) digestReport {
+	view := digestReport{
+		Mode:             r.Mode,
+		Category:         r.Category,
+		SelectedPlatform: r.SelectedPlatform,
+		SuiteVersion:     r.SuiteVersion,
+		Note:             r.Note,
+		Environment:      r.Environment,
+		RuleCatalog:      r.RuleCatalog,
+		GateCatalog:      r.GateCatalog,
+		Summary: digestSummary{
+			Cases:              r.Summary.Cases,
+			Passed:             r.Summary.Passed,
+			Failed:             r.Summary.Failed,
+			MissingObservation: r.Summary.MissingObservation,
+			Skipped:            r.Summary.Skipped,
+			Filtered:           r.Summary.Filtered,
+			PassRate:           r.Summary.PassRate,
+			HardGatesPassed:    r.Summary.HardGatesPassed,
+		},
+		HardGates: r.HardGates,
+		Metrics:   r.Metrics,
+		Sandbox:   r.Sandbox,
+		Cases:     r.Cases,
+	}
+	view.Environment.OS = "linux"
+	view.Environment.Arch = "amd64"
+	view.Environment.Platform = "linux"
+	view.Environment.GoVersion = "go1.27.1"
+	view.Environment.Commit = "a954fd599109281be9b71b6bef89a950741c11bc"
+	view.Environment.SuiteRoot = "/workspace/eval/v1"
+	view.RuleCatalog.Path = "/workspace/eval/v1/rules.yaml"
+	view.GateCatalog.Path = "/workspace/eval/v1/gates.yaml"
+	return view
+}
+
+// digestSummary 对齐既有正式集报告的 Summary，不含后来加上的 scored。
+type digestSummary struct {
+	Cases              int      `json:"cases"`
+	Passed             int      `json:"passed"`
+	Failed             int      `json:"failed"`
+	MissingObservation int      `json:"missing_observation"`
+	Skipped            int      `json:"skipped"`
+	Filtered           int      `json:"filtered"`
+	PassRate           *float64 `json:"pass_rate"`
+	HardGatesPassed    bool     `json:"hard_gates_passed"`
+}
+
+type digestReport struct {
+	GeneratedAt      string            `json:"generated_at"`
+	Digest           string            `json:"digest"`
+	Mode             string            `json:"mode"`
+	Category         string            `json:"category"`
+	SelectedPlatform string            `json:"selected_platform"`
+	SuiteVersion     string            `json:"suite_version"`
+	Note             string            `json:"note"`
+	Environment      Environment       `json:"environment"`
+	RuleCatalog      CatalogInfo       `json:"rule_catalog"`
+	GateCatalog      GateInfo          `json:"gate_catalog"`
+	Summary          digestSummary     `json:"summary"`
+	HardGates        []HardGate        `json:"hard_gates"`
+	Metrics          []Metric          `json:"metrics"`
+	Sandbox          []SandboxPlatform `json:"sandbox"`
+	Cases            []CaseResult      `json:"cases"`
 }
 
 func writeReportFiles(dir string, now time.Time, report Report) (string, string, error) {

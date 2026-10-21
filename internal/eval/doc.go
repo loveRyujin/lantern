@@ -45,4 +45,6 @@
 // --mode live 在接入前直接返回错误，错误文本包含「live 未接入」，不写报告。
 // 报告里的模型、embedder 和沙箱实现在 mock 运行中写 mock。embedder_dim、
 // vector_store、chunk_strategy 是约定值，不是这次运行测到的实现。
+// 摘要指纹按 main 上 eval/v1 既有 --platform all 报告的结构计算，不含 summary.scored。
+// 正式集 233 条不计分内容不变时，指纹保持那份输出里的值。
 package eval

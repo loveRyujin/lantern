@@ -79,9 +79,9 @@ cases:
 
 `go run ./eval/v1/generate.go` 可从当前种子和数据文档重新生成用例 mock 及全部数据契约。
 
-## 变更
+## changelog
 
-`negative-fixtures/cases.yaml.disabled` 的三条反例改为期望写安全值、mock 写违规观测：原先期望本身就是违规值，按观测不等于期望会被判通过，属于假覆盖。`eval-v1` tag 不因此移动。
+- 本次修改了 negative-fixtures 反例和 generate.go，原因是反例改成安全期望加违规观测，让门槛真正变红；eval-v1 tag 不移动，下次升版本打 eval-v1.1。
 
 ## 硬门槛反例
 
