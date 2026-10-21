@@ -109,6 +109,8 @@ func TestDetectBrokenInterpreter(t *testing.T) {
 }
 
 func TestDetectCanceled(t *testing.T) {
+	// 假解释器会 sleep 30。取消后靠进程组杀掉它，3 秒是上限。
+	// 慢 runner 上如果杀进程组失效，会先撞上这 3 秒，而不是等满 30 秒。先记在这里。
 	dir := t.TempDir()
 	installFake(t, dir, "python3", "3.12.1")
 	t.Setenv("PATH", dir)
@@ -134,6 +136,9 @@ func TestEnsureInstallsHashLockedRequirements(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "log")
 	t.Setenv("PATH", dir)
 	t.Setenv("PYRT_FAKE_LOG", logPath)
+	t.Setenv("PIP_TARGET", "/tmp/leak-target")
+	t.Setenv("PIP_PREFIX", "/tmp/leak-prefix")
+	t.Setenv("PIP_USER", "1")
 	root := t.TempDir()
 
 	rt, err := pyrt.Config{Root: root, SearchPaths: []string{}}.Ensure(context.Background())
@@ -160,13 +165,100 @@ func TestEnsureInstallsHashLockedRequirements(t *testing.T) {
 	if strings.Count(log, " -m pip ") != 1 || !strings.Contains(log, "--require-hashes") || !strings.Contains(log, "--only-binary=:all:") {
 		t.Fatalf("pip 调用不符合预期:\n%s", log)
 	}
+	if strings.Count(log, " -m venv --clear ") != 1 {
+		t.Fatalf("第一次安装应该用 --clear:\n%s", log)
+	}
+	if strings.Count(log, "import pandas, matplotlib") != 1 {
+		t.Fatalf("写标记前应该 import 一次:\n%s", log)
+	}
+	if !strings.Contains(log, "pip-env TARGET=[] PREFIX=[] USER=[]") {
+		t.Fatalf("PIP_TARGET/PREFIX/USER 没有清掉:\n%s", log)
+	}
+	marker, err := os.ReadFile(filepath.Join(root, "pyenv", "venv", ".lantern-requirements.sha256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(marker)
+	if !strings.Contains(text, "lock ") || !strings.Contains(text, "base "+rt.Base.Path) || !strings.Contains(text, "version 3.12.1") {
+		t.Fatalf("标记内容不对:\n%s", text)
+	}
 
 	if _, err := (pyrt.Config{Root: root, SearchPaths: []string{}}).Ensure(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	log = readLog(t, logPath)
-	if strings.Count(log, " -m pip ") != 1 {
+	if strings.Count(log, " -m pip ") != 1 || strings.Count(log, "import pandas, matplotlib") != 1 {
 		t.Fatalf("第二次 Ensure 又安装了依赖:\n%s", log)
+	}
+}
+
+func TestEnsureClearsVenvWhenMarkerMissing(t *testing.T) {
+	dir := t.TempDir()
+	installFake(t, dir, "python3", "3.12.1")
+	logPath := filepath.Join(t.TempDir(), "log")
+	t.Setenv("PATH", dir)
+	t.Setenv("PYRT_FAKE_LOG", logPath)
+	root := t.TempDir()
+	cfg := pyrt.Config{Root: root, SearchPaths: []string{}}
+	if _, err := cfg.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	venv := filepath.Join(root, "pyenv", "venv")
+	leftover := filepath.Join(venv, "leftover.txt")
+	if err := os.WriteFile(leftover, []byte("half"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(venv, ".lantern-requirements.sha256")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cfg.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Fatal("标记缺失时应该 --clear 掉旧 venv 里的文件")
+	}
+	log := readLog(t, logPath)
+	if strings.Count(log, " -m venv --clear ") != 2 || strings.Count(log, " -m pip ") != 2 {
+		t.Fatalf("重建次数不对:\n%s", log)
+	}
+}
+
+func TestEnsureRebuildsWhenBaseChanges(t *testing.T) {
+	first := installFake(t, t.TempDir(), "python3", "3.12.1")
+	second := installFake(t, t.TempDir(), "python3", "3.12.2")
+	logPath := filepath.Join(t.TempDir(), "log")
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("PYRT_FAKE_LOG", logPath)
+	root := t.TempDir()
+	if _, err := (pyrt.Config{Root: root, Python: first, SearchPaths: []string{}}).Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := (pyrt.Config{Root: root, Python: second, SearchPaths: []string{}}).Ensure(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.Base.Path != second || rt.Base.Version.String() != "3.12.2" {
+		t.Fatalf("base=%+v", rt.Base)
+	}
+	log := readLog(t, logPath)
+	if strings.Count(log, " -m venv --clear ") != 2 || strings.Count(log, " -m pip ") != 2 {
+		t.Fatalf("换解释器后应该重建:\n%s", log)
+	}
+}
+
+func TestEnsureImportFailureSkipsMarker(t *testing.T) {
+	dir := t.TempDir()
+	installFake(t, dir, "python3", "3.12.1")
+	t.Setenv("PATH", dir)
+	t.Setenv("PYRT_FAKE_IMPORT_FAIL", "1")
+	root := t.TempDir()
+	_, err := pyrt.Config{Root: root, SearchPaths: []string{}}.Ensure(context.Background())
+	assertUnavailable(t, err)
+	if !strings.Contains(err.Error(), "import failed") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "pyenv", "venv", ".lantern-requirements.sha256")); !os.IsNotExist(statErr) {
+		t.Fatal("import 失败时不应该写下成功标记")
 	}
 }
 

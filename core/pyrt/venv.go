@@ -25,8 +25,10 @@ type Runtime struct {
 }
 
 // Ensure 探测解释器，在 <Root>/pyenv/venv 创建 venv，并安装哈希锁定的依赖。
-// 锁文件和 venv 标记一致且解释器仍可用时不会再次联网。
-// 这一步在沙箱外执行。失败且属于运行时问题时，错误码是 runtime_unavailable。
+// 标记里的锁哈希、基础解释器路径和版本都一致，且 venv 解释器仍在锁定范围内时，不再联网。
+// 标记缺失或不一致时用 python -m venv --clear 重建。写标记前会在 venv 里 import pandas 和 matplotlib。
+// 这一步在沙箱外执行。同一个 Root 上不要并发调用；本函数不加文件锁。
+// 失败且属于运行时问题时，错误码是 runtime_unavailable。
 func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 	if err := ctx.Err(); err != nil {
 		return Runtime{}, err
@@ -56,8 +58,8 @@ func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 	venv := filepath.Join(pyenv, "venv")
 	py := venvPython(venv)
 	sum := sha256.Sum256(requirementsLock)
-	want := hex.EncodeToString(sum[:])
-	ready, err := venvReady(ctx, py, filepath.Join(venv, markerName), want)
+	lockHash := hex.EncodeToString(sum[:])
+	ready, err := venvReady(ctx, py, filepath.Join(venv, markerName), lockHash, base, spec)
 	if err != nil {
 		return Runtime{}, err
 	}
@@ -74,7 +76,10 @@ func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 	if err := pipInstall(ctx, py, reqPath); err != nil {
 		return Runtime{}, err
 	}
-	if err := writeFileAtomic(filepath.Join(venv, markerName), []byte(want+"\n"), 0o644); err != nil {
+	if err := verifyImports(ctx, py); err != nil {
+		return Runtime{}, err
+	}
+	if err := writeFileAtomic(filepath.Join(venv, markerName), formatMarker(lockHash, base), 0o644); err != nil {
 		return Runtime{}, unavailable("install", venv, err.Error())
 	}
 	return Runtime{Base: base, Venv: venv, Python: py}, nil
@@ -87,39 +92,52 @@ func venvPython(venv string) string {
 	return filepath.Join(venv, "bin", "python")
 }
 
-func venvReady(ctx context.Context, py, markerPath, want string) (bool, error) {
+func venvReady(ctx context.Context, py, markerPath, lockHash string, base Interpreter, spec lockSpec) (bool, error) {
 	body, err := os.ReadFile(markerPath)
 	if err != nil {
 		return false, nil
 	}
-	if strings.TrimSpace(string(body)) != want {
+	gotLock, gotBase, gotVersion, ok := parseMarker(string(body))
+	if !ok || gotLock != lockHash || gotBase != base.Path || gotVersion != base.Version.String() {
 		return false, nil
 	}
-	if _, err := inspect(ctx, py); err != nil {
+	it, err := inspect(ctx, py)
+	if err != nil {
 		if ctxErr(err) {
 			return false, err
 		}
 		return false, nil
 	}
+	if it.Version != base.Version || !spec.supports(it.Version) {
+		return false, nil
+	}
 	return true, nil
 }
 
+func formatMarker(lockHash string, base Interpreter) []byte {
+	return []byte(fmt.Sprintf("lock %s\nbase %s\nversion %s\n", lockHash, base.Path, base.Version.String()))
+}
+
+func parseMarker(text string) (lockHash, base, version string, ok bool) {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	if len(lines) != 3 {
+		return "", "", "", false
+	}
+	lockHash, ok1 := strings.CutPrefix(strings.TrimSpace(lines[0]), "lock ")
+	base, ok2 := strings.CutPrefix(strings.TrimSpace(lines[1]), "base ")
+	version, ok3 := strings.CutPrefix(strings.TrimSpace(lines[2]), "version ")
+	if !ok1 || !ok2 || !ok3 || lockHash == "" || base == "" || version == "" {
+		return "", "", "", false
+	}
+	return lockHash, base, version, true
+}
+
+// createVenv 总是带 --clear。标记缺失时目录里可能有装了一半的包，留下会污染下一次安装。
+// 目标目录还不存在时，Python 的 --clear 也会直接建一个新环境。
 func createVenv(ctx context.Context, base, venv, py string) error {
-	if st, err := os.Stat(py); err == nil && !st.IsDir() {
-		if _, ierr := inspect(ctx, py); ierr == nil {
-			return nil
-		} else if ctxErr(ierr) {
-			return ierr
-		}
-	}
-	args := []string{"-I", "-m", "venv"}
-	if st, err := os.Stat(venv); err == nil && st.IsDir() {
-		args = append(args, "--clear")
-	}
-	args = append(args, venv)
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	res, err := runCmd(ctx, base, args...)
+	res, err := runCmd(ctx, base, "-I", "-m", "venv", "--clear", venv)
 	if err != nil {
 		if ctxErr(err) {
 			return err
@@ -138,7 +156,9 @@ func createVenv(ctx context.Context, base, venv, py string) error {
 func pipInstall(ctx context.Context, py, requirements string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	res, err := runCmd(ctx, py,
+	// 清掉会把包装出 venv 的变量。index-url 等镜像配置留在环境里，pip 自己读。
+	env := withoutEnvKeys(os.Environ(), "PIP_TARGET", "PIP_PREFIX", "PIP_USER")
+	res, err := runCmdEnv(ctx, env, py,
 		"-I", "-m", "pip", "install",
 		"--disable-pip-version-check",
 		"--no-input",
@@ -153,6 +173,42 @@ func pipInstall(ctx context.Context, py, requirements string) error {
 		return unavailable("install", py, trimDetail(firstOutput(res)))
 	}
 	return nil
+}
+
+const importCheck = "import pandas, matplotlib"
+
+func verifyImports(ctx context.Context, py string) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	env := withoutEnvKeys(os.Environ(), "PIP_TARGET", "PIP_PREFIX", "PIP_USER", "MPLBACKEND")
+	env = append(env, "MPLBACKEND=Agg")
+	res, err := runCmdEnv(ctx, env, py, "-I", "-c", importCheck)
+	if err != nil {
+		if ctxErr(err) {
+			return err
+		}
+		return unavailable("import", py, trimDetail(firstOutput(res)))
+	}
+	return nil
+}
+
+func withoutEnvKeys(env []string, keys ...string) []string {
+	drop := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		drop[key] = struct{}{}
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if _, skip := drop[key]; skip {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {

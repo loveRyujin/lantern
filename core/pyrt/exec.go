@@ -37,10 +37,18 @@ func (l *limitedBuf) Write(p []byte) (int, error) {
 }
 
 func runCmd(ctx context.Context, name string, args ...string) (cmdResult, error) {
+	return runCmdEnv(ctx, nil, name, args...)
+}
+
+// runCmdEnv 的 env 为 nil 时沿用当前进程的环境。
+func runCmdEnv(ctx context.Context, env []string, name string, args ...string) (cmdResult, error) {
 	if err := ctx.Err(); err != nil {
 		return cmdResult{}, err
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	if env != nil {
+		cmd.Env = env
+	}
 	// 上下文取消后，子进程的孙进程可能还握着管道。WaitDelay 防止 Wait 一直等到 EOF。
 	cmd.WaitDelay = 2 * time.Second
 	configureCancel(cmd)

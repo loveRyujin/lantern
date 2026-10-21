@@ -47,13 +47,17 @@ python -I -m pip install --disable-pip-version-check --no-input --require-hashes
 
 锁文件头里的 `lantern-python: >=3.10,<3.14` 是安装范围。numpy 2.2.6 没有 cp314 wheel，所以 **3.14 及以上检测得到解释器，但 Ensure 直接返回 `runtime_unavailable`，不联网安装**。把最低版本抬到 3.11 以便改用 pandas 3，要另开一次决策，这次不改 PRD 里的 ≥ 3.10。
 
-venv 根目录下有 `.lantern-requirements.sha256`。锁文件哈希没变且 venv 解释器仍能跑时，`Ensure` 不再调用 pip。
+venv 根目录下有 `.lantern-requirements.sha256`。标记同时写下锁文件哈希、基础解释器绝对路径和版本。三者一致，且 venv 解释器版本仍在锁定范围内时，`Ensure` 不再调用 pip。标记缺失、哈希变化或基础解释器变了，都用 `python -m venv --clear` 重建，不复用里面已经装过的包。
+
+调用 pip 时去掉 `PIP_TARGET`、`PIP_PREFIX`、`PIP_USER`，避免包装到 venv 外面。`index-url` 等镜像配置保留。pip 退出码为 0 之后，还要在 venv 里执行 `python -I -c "import pandas, matplotlib"`（`MPLBACKEND=Agg`）。import 失败不写标记，错误码仍是 `runtime_unavailable`。
+
+同一个 `<Root>` 上不要并发调用 `Ensure`。这里不加文件锁；两个进程同时 `--clear` 会互相踩目录。调用方（设置页动作）保证一次只有一个。
 
 ### 错误码
 
 失败类型是 `*pyrt.UnavailableError`。`Code()` 返回 `errcode.RuntimeUnavailable`（字符串 `runtime_unavailable`）。`errors.Is(err, pyrt.ErrUnavailable)` 为真。调用方用 `errcode.CodeOf` 或 `errors.Is` 判断，不要解析 `Error()` 的文案。
 
-下面这些情况用这个码：找不到解释器、版本低于 3.10、版本超出锁文件范围、解释器无法运行、`venv` 创建失败、哈希安装失败。
+下面这些情况用这个码：找不到解释器、版本低于 3.10、版本超出锁文件范围、解释器无法运行、`venv` 创建失败、哈希安装失败、装完后 import pandas 或 matplotlib 失败。
 
 下面这些不用这个码：`ctx` 已取消或超时（原样返回上下文错误）、`Root` 为空、嵌入的锁文件本身不合法（`ErrLockfile`，属于构建产物损坏）。
 
@@ -142,5 +146,6 @@ Runner 镜像在作业设置阶段报的是 macOS 26.6.2（25G83），镜像名 
 - SBPL 策略正文、`sandbox-exec -f`、资源限制 shim
 - 设置页、审计记录、在沙箱里执行用户脚本
 - 把最低 Python 版本改成 3.11 并升到 pandas 3
-- 在 macOS 上实际执行一次哈希安装
+- 在 macOS 上实际执行一次哈希安装。Linux 的 `pyrt-install` job 会跑 `PYRT_ENSURE_REAL=1`；macOS wheel 仍只锁了哈希，没有在 Mac 上装过
+- `TestDetectCanceled` 依赖假解释器 `sleep 30` 和 3 秒上限。进程组杀掉之后应当马上返回；慢 runner 上若杀不掉，测试会先撞上这 3 秒
 - Windows 的常见安装路径（PATH 和用户指定路径仍然有效）
