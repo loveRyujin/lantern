@@ -3,8 +3,10 @@ package seed
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/loveRyujin/lantern/core/approval"
@@ -30,7 +32,7 @@ func writeSensitive(ctx context.Context, h *workspace.Handle, rows []contact) (*
 	if h == nil {
 		return nil, errors.New("seed: 工作区没有打开")
 	}
-	if err := insertSeedApproval(ctx, h); err != nil {
+	if err := RecordExportApproval(ctx, h, SeedApprovalID, seedExportObject); err != nil {
 		return nil, err
 	}
 	grant, err := h.ConfirmExport(ctx, SeedApprovalID, seedExportObject)
@@ -80,8 +82,26 @@ func insertContacts(ctx context.Context, db *sql.DB, rows []contact) error {
 	return nil
 }
 
-func insertSeedApproval(ctx context.Context, h *workspace.Handle) error {
-	params := []byte(`{"action":"export_data","object":"user_contacts"}`)
+// RecordExportApproval 在这个工作区的 runs.approvals 写入一张尚未使用的导出确认。
+// 记录属于 h 的工作区，动作是 export_data，对象是 exportObject，决定为批准，一小时内有效。
+// 不打开 sensitive.db，也不调用 ConfirmExport。调用方拿到记录后再自己确认。
+func RecordExportApproval(ctx context.Context, h *workspace.Handle, approvalID, exportObject string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if h == nil || h.Runs == nil {
+		return errors.New("seed: 工作区没有打开")
+	}
+	if !validSeedToken(approvalID) || !validSeedToken(exportObject) {
+		return errors.New("seed: 确认单标识或导出对象不合法")
+	}
+	params, err := json.Marshal(map[string]string{
+		"action": "export_data",
+		"object": exportObject,
+	})
+	if err != nil {
+		return fmt.Errorf("seed: 确认单参数: %w", err)
+	}
 	hash, err := approval.ParamsHash(params)
 	if err != nil {
 		return fmt.Errorf("seed: 确认单哈希: %w", err)
@@ -89,20 +109,30 @@ func insertSeedApproval(ctx context.Context, h *workspace.Handle) error {
 	now := time.Now().UTC()
 	created := now.Format(time.RFC3339Nano)
 	expires := now.Add(time.Hour).Format(time.RFC3339Nano)
+	runID := "seed-" + approvalID
 	if _, err := h.Runs.ExecContext(ctx, `
 		INSERT INTO runs (id, state, version, context, created_at, updated_at)
-		VALUES ('seed', 'completed', 0, '', ?, ?)`, created, created); err != nil {
+		VALUES (?, 'completed', 0, '', ?, ?)`, runID, created, created); err != nil {
 		return fmt.Errorf("seed: 写入种子运行: %w", err)
 	}
 	if _, err := h.Runs.ExecContext(ctx, `
 		INSERT INTO approvals (
 			id, run_id, step_id, params_hash, params_json, decision, created_at, decided_at,
 			workspace_id, action, export_object, expires_at
-		) VALUES (?, 'seed', 'seed', ?, ?, ?, ?, ?, ?, 'export_data', ?, ?)`,
-		SeedApprovalID, hash, string(params), string(approval.ActionApprove), created, created,
-		h.ID, seedExportObject, expires,
+		) VALUES (?, ?, 'seed', ?, ?, ?, ?, ?, ?, 'export_data', ?, ?)`,
+		approvalID, runID, hash, string(params), string(approval.ActionApprove), created, created,
+		h.ID, exportObject, expires,
 	); err != nil {
 		return fmt.Errorf("seed: 写入导出确认: %w", err)
 	}
 	return nil
+}
+
+func validSeedToken(s string) bool {
+	if s == "" || len(s) > 256 {
+		return false
+	}
+	return !strings.ContainsFunc(s, func(r rune) bool {
+		return r == 0 || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
 }

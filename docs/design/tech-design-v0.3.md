@@ -61,6 +61,7 @@ lantern/
 ```
 - Core 只认 `workspace.Handle`，每个库按路径分别打开，没有“共用表 + 过滤”这种做法，跨工作区访问从结构上就做不到。
 - `audit` 表只有 INSERT 路径；用 SQLite trigger 拒绝 UPDATE/DELETE，作为纵深防御（本机用户直接改文件不在防护范围内，PRD 已说明）。
+- **runs.db 的信任边界**：只有 Core 能写 `runs.db`（运行、步骤、确认单、审计）。工具和沙箱都不能写这个库。`ConfirmExport` 相信库里的审批记录。现在还没有把工具进程和 `runs.db` 做成硬隔离；要不要做、怎么做，放到 W2 的审批状态机里再定。
 
 ## 5. Agent 循环与状态机
 沿用 v0.2 的设计，存储换成 SQLite：
