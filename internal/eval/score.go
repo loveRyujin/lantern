@@ -75,8 +75,10 @@ func scoreSuite(ctx context.Context, suite Suite, catalog RuleCatalog, gates Gat
 			break
 		}
 	}
+	denom := passed + failed + missing
 	summary := Summary{
 		Cases:              len(results),
+		Scored:             denom,
 		Passed:             passed,
 		Failed:             failed,
 		MissingObservation: missing,
@@ -84,7 +86,6 @@ func scoreSuite(ctx context.Context, suite Suite, catalog RuleCatalog, gates Gat
 		Filtered:           filtered,
 		HardGatesPassed:    allHard,
 	}
-	denom := passed + failed + missing
 	if denom > 0 {
 		summary.PassRate = floatPtr(float64(passed) / float64(denom))
 	}
@@ -159,6 +160,7 @@ func scoreCase(ctx context.Context, item Case, catalog RuleCatalog, opt Options,
 		}
 		res.Status = statusFiltered
 		res.Passed = false
+		res.Failures = []string{filterReason(item, opt.Category, selected)}
 		return finishScore(res, nil, false)
 	}
 	res.RunID = runID(opt.Mode, item.ID)
@@ -171,6 +173,7 @@ func scoreCase(ctx context.Context, item Case, catalog RuleCatalog, opt Options,
 	if !hasMock {
 		res.Status = statusSkipped
 		res.Passed = false
+		res.Failures = []string{"没有 input.mock，未评分"}
 		return finishScore(res, nil, false)
 	}
 	if mismatched {
@@ -291,6 +294,16 @@ func judgeConfigError(spec JudgeSpec, model string) string {
 		return "LLM 裁判配置错误：required 为 false 时不能设置 model 或 rubric"
 	}
 	return ""
+}
+
+func filterReason(item Case, category, selected string) string {
+	if category != "" && item.Category != category {
+		return fmt.Sprintf("类别 %s 与本次筛选 %s 不符，未评分", item.Category, category)
+	}
+	if item.Platform == "" {
+		return "未评分"
+	}
+	return fmt.Sprintf("平台 %s 与本次 %s 不符，未评分", item.Platform, selected)
 }
 
 func caseSelected(item Case, category, selected string) bool {

@@ -69,9 +69,11 @@ type CatalogInfo struct {
 }
 
 // Summary 是用例计数和硬门槛总结果。
-// 通过率分母是 Passed + Failed + MissingObservation。Skipped 和 Filtered 不计入。
+// Scored 是实际评分数，等于 Passed + Failed + MissingObservation，也是通过率分母。
+// Skipped（没有 input.mock）和 Filtered（平台或类别不符）不计入。
 type Summary struct {
 	Cases              int      `json:"cases"`
+	Scored             int      `json:"scored"`
 	Passed             int      `json:"passed"`
 	Failed             int      `json:"failed"`
 	MissingObservation int      `json:"missing_observation"`
@@ -305,8 +307,11 @@ func renderMarkdown(report Report) string {
 	fmt.Fprintf(&b, "- 生成时间: %s\n", report.GeneratedAt)
 	fmt.Fprintf(&b, "- 模式: %s\n", report.Mode)
 	fmt.Fprintf(&b, "- 硬门槛: %s\n", passText(report.Summary.HardGatesPassed))
-	fmt.Fprintf(&b, "- 用例: 通过 %d，失败 %d，缺观测 %d，跳过 %d，过滤 %d，共 %d\n",
-		report.Summary.Passed, report.Summary.Failed, report.Summary.MissingObservation, report.Summary.Skipped, report.Summary.Filtered, report.Summary.Cases)
+	fmt.Fprintf(&b, "- 用例总数: %d\n", report.Summary.Cases)
+	fmt.Fprintf(&b, "- 实际评分: %d（通过 %d，失败 %d，缺观测 %d）\n",
+		report.Summary.Scored, report.Summary.Passed, report.Summary.Failed, report.Summary.MissingObservation)
+	fmt.Fprintf(&b, "- 跳过: %d（没有 input.mock，不计入通过率）\n", report.Summary.Skipped)
+	fmt.Fprintf(&b, "- 平台过滤: %d（本次平台 %s，不计入通过率）\n", report.Summary.Filtered, report.SelectedPlatform)
 	fmt.Fprintf(&b, "- 通过率: %s\n", rateText(report.Summary))
 	fmt.Fprintf(&b, "- 摘要指纹: %s\n", report.Digest)
 	fmt.Fprintf(&b, "- 说明: %s\n\n", report.Note)
@@ -370,6 +375,10 @@ func renderMarkdown(report Report) string {
 		fmt.Fprintf(&b, "| %s | %d | %s | %s | %s |\n", row.Platform, row.SampleCount, valueText(row.FailureCount), resultText(row.Passed, row.Note), row.Note)
 	}
 
+	b.WriteString("\n## 未评分用例\n\n")
+	writeUnscored(&b, report, statusSkipped, "跳过")
+	writeUnscored(&b, report, statusFiltered, "平台过滤")
+
 	b.WriteString("\n## 失败用例\n\n")
 	anyFailed := false
 	for _, item := range report.Cases {
@@ -384,6 +393,25 @@ func renderMarkdown(report Report) string {
 	}
 	b.WriteByte('\n')
 	return b.String()
+}
+
+func writeUnscored(b *strings.Builder, report Report, status, title string) {
+	var items []CaseResult
+	for _, item := range report.Cases {
+		if item.Status == status {
+			items = append(items, item)
+		}
+	}
+	fmt.Fprintf(b, "### %s\n\n", title)
+	if len(items) == 0 {
+		b.WriteString("无\n\n")
+		return
+	}
+	b.WriteString("| 用例 | 平台 | 类别 | 原因 |\n| --- | --- | --- | --- |\n")
+	for _, item := range items {
+		fmt.Fprintf(b, "| `%s` | %s | %s | %s |\n", item.ID, item.Platform, item.Category, strings.Join(item.Failures, "；"))
+	}
+	b.WriteByte('\n')
 }
 
 func passText(ok bool) string {

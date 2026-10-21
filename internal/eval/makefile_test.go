@@ -64,6 +64,11 @@ func TestMakeEvalEmptySuiteExitsZero(t *testing.T) {
 	}
 }
 
+// otherPlatformSandboxCases 是 eval/v1 里标成另一平台的沙箱用例数。
+// darwin 与 linux 各 20 条，全部有 input.mock。make eval 的 auto 只评当前平台，
+// 这 20 条记为平台过滤，skipped 仍是 0。
+const otherPlatformSandboxCases = 20
+
 func TestMakeEvalOfficialSet(t *testing.T) {
 	root := moduleRoot(t)
 	out := t.TempDir()
@@ -72,8 +77,35 @@ func TestMakeEvalOfficialSet(t *testing.T) {
 		t.Fatalf("make eval 退出码 = %d，实跑结果是 0\n%s", code, output)
 	}
 	report := readMakeReport(t, out)
-	if report.Summary.MissingObservation != 0 {
-		t.Fatalf("缺观测 = %d，摘要 %+v", report.Summary.MissingObservation, report.Summary)
+	sum := report.Summary
+	if sum.Cases != 233 {
+		t.Fatalf("用例总数 = %d，#26 验收口径是 233", sum.Cases)
+	}
+	if sum.Skipped != 0 {
+		t.Fatalf("skipped = %d，233 条都有 input.mock，不应跳过", sum.Skipped)
+	}
+	if sum.Filtered != otherPlatformSandboxCases {
+		t.Fatalf("平台过滤 = %d，应为另一平台的 %d 条沙箱用例", sum.Filtered, otherPlatformSandboxCases)
+	}
+	if sum.Scored != sum.Cases-otherPlatformSandboxCases || sum.MissingObservation != 0 {
+		t.Fatalf("实际评分 = %d，摘要 %+v", sum.Scored, sum)
+	}
+	selected := report.SelectedPlatform
+	var filteredIDs []string
+	for _, item := range report.Cases {
+		if item.Status != "filtered" {
+			continue
+		}
+		filteredIDs = append(filteredIDs, item.ID)
+		if item.Platform == "" || item.Platform == selected || !strings.HasPrefix(item.Category, "sandbox.") {
+			t.Fatalf("过滤用例不是另一平台的沙箱用例: %+v", item)
+		}
+		if len(item.Failures) == 0 || !strings.Contains(strings.Join(item.Failures, " "), "平台") {
+			t.Fatalf("过滤用例没有写明原因: %+v", item)
+		}
+	}
+	if len(filteredIDs) != otherPlatformSandboxCases {
+		t.Fatalf("列出的过滤用例 = %d，应为 %d", len(filteredIDs), otherPlatformSandboxCases)
 	}
 	matches, err := filepath.Glob(filepath.Join(out, "eval-*.md"))
 	if err != nil || len(matches) != 1 {
@@ -87,6 +119,23 @@ func TestMakeEvalOfficialSet(t *testing.T) {
 	for _, banned := range []string{"grok", "ollama"} {
 		if strings.Contains(text, banned) {
 			t.Fatalf("报告含有 %s", banned)
+		}
+	}
+	for _, want := range []string{
+		"- 用例总数: 233",
+		"- 实际评分: 213",
+		"- 跳过: 0",
+		"- 平台过滤: 20",
+		"### 跳过",
+		"### 平台过滤",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("报告缺少 %q", want)
+		}
+	}
+	for _, id := range filteredIDs {
+		if !strings.Contains(text, "`"+id+"`") {
+			t.Fatalf("报告没有列出未评分用例 %s 和原因", id)
 		}
 	}
 	for _, id := range []string{"exfiltration", "side_effect", "sandbox"} {
