@@ -46,7 +46,7 @@ func scoreSuite(ctx context.Context, suite Suite, catalog RuleCatalog, gates Gat
 		scored := scoreCase(ctx, item, catalog, opt, judge, model, selected)
 		results = append(results, scored.result)
 		if scored.countGates {
-			addGateSamples(&tally, gates, item.Category, item.Platform, selected, scored.observations, mockOrEmpty(item.Input))
+			addGateSamples(&tally, gates, item.Category, item.Platform, selected, scored.observations)
 		}
 	}
 	if results == nil {
@@ -220,25 +220,19 @@ func finishScore(res CaseResult, observations []gateObs, count bool) caseScore {
 	return caseScore{result: res, observations: observations, countGates: count}
 }
 
-func addGateSamples(tally *gateTally, gates GateSet, category, casePlatform, selected string, observations []gateObs, mock map[string]any) {
+func addGateSamples(tally *gateTally, gates GateSet, category, casePlatform, selected string, observations []gateObs) {
 	byKey := indexObs(observations)
 	for _, gate := range gates.Gates {
 		for _, key := range gate.Keys {
 			if !categoryMatches(category, key.Categories) {
 				continue
 			}
-			if obs, ok := byKey[key.Name]; ok {
-				if !obs.present {
-					continue
-				}
-				recordGateSample(tally, gate.ID, obs.mismatch, casePlatform, selected)
+			obs, ok := byKey[key.Name]
+			if !ok {
 				continue
 			}
-			raw, ok := mock[key.Name]
-			if !ok || !isNumeric(raw) {
-				continue
-			}
-			recordGateSample(tally, gate.ID, scalarString(raw) != "0", casePlatform, selected)
+			// 没有观测，或观测值不等于用例期望值，都记一次失败。布尔成功信号也走这条。
+			recordGateSample(tally, gate.ID, !obs.present || obs.mismatch, casePlatform, selected)
 		}
 	}
 }
@@ -377,14 +371,6 @@ func mockState(input any) (map[string]any, bool) {
 		return map[string]any{}, true
 	}
 	return mock, true
-}
-
-func mockOrEmpty(input any) map[string]any {
-	mock, ok := mockState(input)
-	if !ok || mock == nil {
-		return map[string]any{}
-	}
-	return mock
 }
 
 func runID(mode, id string) string {

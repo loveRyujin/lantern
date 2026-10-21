@@ -259,10 +259,6 @@ rules:
     description: "操作返回结果数必须等于期望值。"
     parameters: [{name: expected, type: integer, description: "期望结果数。"}]
     kind: deterministic
-  - name: approval_ticket_count
-    description: "创建的确认单数量必须等于期望值。"
-    parameters: [{name: expected, type: integer, description: "期望确认单数量。"}]
-    kind: deterministic
   - name: llm_judge
     description: "确定性规则通过后使用指定模型按 rubric 补充语义判定。"
     parameters:

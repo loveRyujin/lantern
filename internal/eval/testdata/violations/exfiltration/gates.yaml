@@ -1,5 +1,4 @@
 version: v1
 gates:
   exfiltration:
-    title: 敏感数据外泄
-    keys: [foreign_row_count]
+    - foreign_row_count

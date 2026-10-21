@@ -11,11 +11,13 @@ import (
 
 // GateSet 是独立的门槛文件。键必须来自规则清单；清单里的每个键必须归入某道门槛或 non_gate。
 type GateSet struct {
-	Path    string
-	Version string
-	Gates   []GateDef
-	NonGate []string
-	Loaded  bool
+	Path           string
+	Version        string
+	Gates          []GateDef
+	NonGate        []string
+	Violation      string
+	SuccessSignals []string
+	Loaded         bool
 }
 
 // GateDef 是一道硬门槛。失败次数的阈值固定为 0。
@@ -84,6 +86,11 @@ func parseGateSet(doc any) (GateSet, error) {
 	seenID := map[string]string{}
 	for id, raw := range gatesMap {
 		canon := canonicalGateID(id)
+		switch canon {
+		case "exfiltration", "side_effect", "sandbox":
+		default:
+			return GateSet{}, fmt.Errorf("未知门槛 %q", id)
+		}
 		if prev, ok := seenID[canon]; ok {
 			return GateSet{}, fmt.Errorf("门槛 %s 与 %s 都指向 %s", prev, id, canon)
 		}
@@ -100,6 +107,9 @@ func parseGateSet(doc any) (GateSet, error) {
 		}
 		return strings.Compare(a.ID, b.ID)
 	})
+	if err := applyConditionalScope(gates, m["conditional_scope"]); err != nil {
+		return GateSet{}, err
+	}
 	if _, ok := m["ungated"]; ok {
 		return GateSet{}, fmt.Errorf("请使用 non_gate，不再接受 ungated")
 	}
@@ -108,7 +118,14 @@ func parseGateSet(doc any) (GateSet, error) {
 		return GateSet{}, err
 	}
 	slices.Sort(nonGate)
-	return GateSet{Version: version, Gates: gates, NonGate: nonGate}, nil
+	violation, signals, err := parseSemantics(m["semantics"])
+	if err != nil {
+		return GateSet{}, err
+	}
+	if err := signalsBelongToGates(signals, gates); err != nil {
+		return GateSet{}, err
+	}
+	return GateSet{Version: version, Gates: gates, NonGate: nonGate, Violation: violation, SuccessSignals: signals}, nil
 }
 
 // canonicalGateID 把旧称 leak 收成正式门槛名 exfiltration。
@@ -146,100 +163,144 @@ func defaultGateTitle(id string) string {
 }
 
 func parseGate(id string, raw any) (GateDef, error) {
-	m, ok := asMap(raw)
-	if !ok {
-		return GateDef{}, fmt.Errorf("门槛 %s 必须是映射", id)
-	}
-	title, err := optionalString(m, "title")
-	if err != nil {
-		return GateDef{}, err
-	}
-	if title == "" {
-		title = defaultGateTitle(id)
-	}
-	keys, err := parseGateKeys(m["keys"])
+	keys, err := parseGateKeyList(raw)
 	if err != nil {
 		return GateDef{}, fmt.Errorf("门槛 %s: %w", id, err)
 	}
-	return GateDef{ID: id, Title: title, Keys: keys}, nil
+	return GateDef{ID: id, Title: defaultGateTitle(id), Keys: keys}, nil
 }
 
-func parseGateKeys(raw any) ([]GateKey, error) {
+func parseGateKeyList(raw any) ([]GateKey, error) {
 	if raw == nil {
 		return []GateKey{}, nil
 	}
 	list, ok := raw.([]any)
 	if !ok {
-		return nil, fmt.Errorf("keys 必须是列表")
+		return nil, fmt.Errorf("必须是键名列表")
 	}
 	out := make([]GateKey, 0, len(list))
 	seen := map[string]struct{}{}
 	for _, item := range list {
-		key, err := parseGateKey(item)
-		if err != nil {
-			return nil, err
+		name, ok := item.(string)
+		if !ok || strings.TrimSpace(name) == "" {
+			return nil, fmt.Errorf("键名必须是非空字符串")
 		}
-		if _, ok := seen[key.Name]; ok {
-			return nil, fmt.Errorf("键 %q 重复", key.Name)
+		name = strings.TrimSpace(name)
+		if _, ok := seen[name]; ok {
+			return nil, fmt.Errorf("键 %q 重复", name)
 		}
-		seen[key.Name] = struct{}{}
-		out = append(out, key)
+		seen[name] = struct{}{}
+		out = append(out, GateKey{Name: name})
 	}
 	return out, nil
 }
 
-func parseGateKey(item any) (GateKey, error) {
-	switch t := item.(type) {
-	case string:
-		name := strings.TrimSpace(t)
-		if name == "" {
-			return GateKey{}, fmt.Errorf("键不能为空")
+func applyConditionalScope(gates []GateDef, raw any) error {
+	if raw == nil {
+		return nil
+	}
+	scope, ok := asMap(raw)
+	if !ok {
+		return fmt.Errorf("conditional_scope 必须是映射")
+	}
+	for name, value := range scope {
+		text, ok := value.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return fmt.Errorf("conditional_scope %s 必须是非空字符串", name)
 		}
-		return GateKey{Name: name}, nil
-	case map[string]any:
-		name, err := optionalString(t, "name")
+		categories, err := categoriesFromScope(text)
 		if err != nil {
-			return GateKey{}, err
+			return fmt.Errorf("conditional_scope %s: %w", name, err)
 		}
-		if name == "" {
-			name, err = optionalString(t, "key")
-			if err != nil {
-				return GateKey{}, err
+		found := false
+		for i := range gates {
+			for j := range gates[i].Keys {
+				if gates[i].Keys[j].Name != name {
+					continue
+				}
+				gates[i].Keys[j].Categories = categories
+				found = true
 			}
 		}
-		if name == "" {
-			return GateKey{}, fmt.Errorf("键缺少 name")
+		if !found {
+			return fmt.Errorf("conditional_scope 引用了门槛里没有的键 %q", name)
 		}
-		categories, err := parseKeyCategories(t)
-		if err != nil {
-			return GateKey{}, err
-		}
-		return GateKey{Name: name, Categories: categories}, nil
-	default:
-		return GateKey{}, fmt.Errorf("键必须是字符串或映射")
 	}
+	return nil
 }
 
-func parseKeyCategories(m map[string]any) ([]string, error) {
-	_, hasOne := m["category"]
-	_, hasMany := m["categories"]
-	if hasOne && hasMany {
-		return nil, fmt.Errorf("不能同时设置 category 和 categories")
-	}
-	if hasOne {
-		text, err := optionalString(m, "category")
-		if err != nil {
-			return nil, err
+func categoriesFromScope(text string) ([]string, error) {
+	tokens := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_'
+	})
+	var out []string
+	seen := map[string]struct{}{}
+	add := func(prefix string) {
+		if _, ok := seen[prefix]; ok {
+			return
 		}
-		if text == "" {
-			return nil, fmt.Errorf("category 必须是非空字符串")
+		seen[prefix] = struct{}{}
+		out = append(out, prefix)
+	}
+	for _, token := range tokens {
+		switch token {
+		case "confirmation":
+			add("confirmation")
+		case "approval":
+			add("approval")
+		case "tool":
+			add("tool_call")
+		case "category", "categories":
+		default:
+			return nil, fmt.Errorf("无法识别的类别 %q", token)
 		}
-		return []string{text}, nil
 	}
-	if !hasMany || m["categories"] == nil {
-		return nil, nil
+	if len(out) == 0 {
+		return nil, fmt.Errorf("没有类别")
 	}
-	return parseNameList(m["categories"], "categories")
+	return out, nil
+}
+
+func parseSemantics(raw any) (string, []string, error) {
+	if raw == nil {
+		return "observed_not_equal_expected", []string{}, nil
+	}
+	m, ok := asMap(raw)
+	if !ok {
+		return "", nil, fmt.Errorf("semantics 必须是映射")
+	}
+	violation, err := optionalString(m, "violation")
+	if err != nil {
+		return "", nil, err
+	}
+	if violation == "" {
+		violation = "observed_not_equal_expected"
+	}
+	if violation != "observed_not_equal_expected" {
+		return "", nil, fmt.Errorf("semantics.violation 必须是 observed_not_equal_expected")
+	}
+	signals, err := parseNameList(m["success_signal_keys"], "success_signal_keys")
+	if err != nil {
+		return "", nil, err
+	}
+	return violation, signals, nil
+}
+
+func signalsBelongToGates(signals []string, gates []GateDef) error {
+	for _, name := range signals {
+		found := false
+		for _, gate := range gates {
+			for _, key := range gate.Keys {
+				if key.Name == name {
+					found = true
+				}
+			}
+		}
+		if !found {
+			return fmt.Errorf("success_signal_keys 引用了门槛里没有的键 %q", name)
+		}
+	}
+	return nil
 }
 
 func parseNameList(raw any, field string) ([]string, error) {

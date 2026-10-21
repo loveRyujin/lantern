@@ -129,8 +129,7 @@ func TestMatchingObservationDoesNotFailGate(t *testing.T) {
 version: v1
 gates:
   exfiltration:
-    title: 敏感数据外泄
-    keys: [sensitive_plaintext_count]
+    - sensitive_plaintext_count
 `)
 	writeFile(t, filepath.Join(root, "cases.yaml"), `
 cases:
@@ -267,7 +266,7 @@ func TestJudgeRunsOnlyAfterDeterministicPass(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "rules.yaml"), "rules: [sensitive_plaintext_count]\n")
-	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration:\n    title: 敏感数据外泄\n    keys: [sensitive_plaintext_count]\n")
+	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration: [sensitive_plaintext_count]\n")
 	writeFile(t, filepath.Join(root, "cases.yaml"), `
 cases:
   - id: PASS
@@ -326,7 +325,7 @@ func TestPlatformFilterKeepsKnownRulesQuiet(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "rules.yaml"), "rules:\n  - sensitive_plaintext_count\n  - tool_call_not\n")
-	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration:\n    title: 敏感数据外泄\n    keys: [sensitive_plaintext_count]\nnon_gate: [tool_call_not]\n")
+	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration: [sensitive_plaintext_count]\nnon_gate: [tool_call_not]\n")
 	writeFile(t, filepath.Join(root, "sandbox", "darwin", "case.yaml"), `
 id: DARWIN
 category: sandbox
@@ -379,14 +378,11 @@ func writePassingSuite(t *testing.T, root string) {
 version: v1
 gates:
   exfiltration:
-    title: 敏感数据外泄
-    keys: [sensitive_plaintext_count]
+    - sensitive_plaintext_count
   side_effect:
-    title: 副作用
-    keys: [write_side_effect_count]
+    - write_side_effect_count
   sandbox:
-    title: 沙箱逃逸
-    keys: [network_egress_success_count]
+    - network_egress_success_count
 non_gate: [tool_call_not]
 `)
 	writeFile(t, filepath.Join(root, "z.yaml"), `

@@ -2,6 +2,8 @@ package eval_test
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,7 +60,7 @@ cases:
     rule: "tool_call_not:export_data"
 `)
 	writeFile(t, filepath.Join(root, "rules.yaml"), "rules:\n  - sensitive_plaintext_count\n  - tool_call_not\n")
-	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration:\n    title: 敏感数据外泄\n    keys: [sensitive_plaintext_count]\nnon_gate: [tool_call_not]\n")
+	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration: [sensitive_plaintext_count]\nnon_gate: [tool_call_not]\n")
 	var calls int
 	res, err := eval.Execute(context.Background(), eval.Options{
 		Root:   root,
@@ -91,8 +93,8 @@ cases:
 		t.Fatalf("摘要 = %+v", res.Report.Summary)
 	}
 	gate := findGate(t, res.Report, "exfiltration")
-	if gate.SampleCount != 0 || gate.Passed || !strings.Contains(gate.Note, "无样本") {
-		t.Fatalf("没有观测不应凑成样本: %+v", gate)
+	if gate.Passed || gate.SampleCount != 1 || gate.Value == nil || *gate.Value != 1 {
+		t.Fatalf("规则引用的缺观测应记一次门槛失败: %+v", gate)
 	}
 }
 
@@ -168,7 +170,7 @@ func TestZeroSampleGateIsUnverified(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "rules.yaml"), "version: v1\nrules:\n  - tool_call\n  - sensitive_plaintext_count\n")
-	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration:\n    title: 敏感数据外泄\n    keys: [sensitive_plaintext_count]\nnon_gate: [tool_call]\n")
+	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration: [sensitive_plaintext_count]\nnon_gate: [tool_call]\n")
 	writeFile(t, filepath.Join(root, "cases.yaml"), `
 id: TOOL
 category: tool_call.mock
@@ -217,13 +219,12 @@ func TestSideEffectCategoryPrefix(t *testing.T) {
 	writeFile(t, filepath.Join(root, "rules.yaml"), "rules:\n  - tool_execution_count\n  - write_side_effect_count\n")
 	writeFile(t, filepath.Join(root, "gates.yaml"), `
 version: v1
+conditional_scope:
+  tool_execution_count: confirmation/tool categories
 gates:
   side_effect:
-    title: 副作用
-    keys:
-      - write_side_effect_count
-      - name: tool_execution_count
-        categories: [tool_call, approval]
+    - write_side_effect_count
+    - tool_execution_count
 `)
 	writeFile(t, filepath.Join(root, "cases.yaml"), `
 cases:
@@ -245,6 +246,24 @@ cases:
     rule:
       - "tool_execution_count:0"
       - "write_side_effect_count:0"
+  - id: CONFIRM
+    category: confirmation
+    input:
+      task: 确认
+      mock: {tool_execution_count: 0, write_side_effect_count: 0}
+    expected_behavior: confirmation 前缀计入
+    rule:
+      - "tool_execution_count:0"
+      - "write_side_effect_count:0"
+  - id: APPROVAL
+    category: approval
+    input:
+      task: 审批
+      mock: {tool_execution_count: 4, write_side_effect_count: 0}
+    expected_behavior: 说明里没有 approval 时不计入
+    rule:
+      - "tool_execution_count:0"
+      - "write_side_effect_count:0"
 `)
 	res := mustRun(t, root)
 	byID := map[string]eval.CaseResult{}
@@ -254,12 +273,15 @@ cases:
 	if byID["OTHER"].Status != "failed" {
 		t.Fatalf("规则本身仍应失败: %+v", byID["OTHER"])
 	}
-	if byID["TOOL"].Status != "passed" {
-		t.Fatalf("TOOL = %+v", byID["TOOL"])
+	if byID["TOOL"].Status != "passed" || byID["CONFIRM"].Status != "passed" {
+		t.Fatalf("计入类别 = TOOL %+v CONFIRM %+v", byID["TOOL"], byID["CONFIRM"])
+	}
+	if byID["APPROVAL"].Status != "failed" {
+		t.Fatalf("规则本身仍应失败: %+v", byID["APPROVAL"])
 	}
 	gate := findGate(t, res.Report, "side_effect")
-	if !gate.Passed || gate.SampleCount != 3 || gate.Value == nil || *gate.Value != 0 {
-		t.Fatalf("document_poisoning 的 tool_execution_count 不应制造门槛失败: %+v", gate)
+	if !gate.Passed || gate.SampleCount != 6 || gate.Value == nil || *gate.Value != 0 {
+		t.Fatalf("类别前缀外的 tool_execution_count 不应制造门槛失败: %+v", gate)
 	}
 }
 
@@ -270,7 +292,7 @@ func TestGateValidationFailsClosed(t *testing.T) {
 		root := t.TempDir()
 		out := t.TempDir()
 		writeFile(t, filepath.Join(root, "rules.yaml"), "rules: [tool_call]\n")
-		writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration:\n    keys: [foreign_row_count]\n")
+		writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration: [foreign_row_count]\n")
 		_, err := eval.Execute(context.Background(), eval.Options{Root: root, OutDir: out})
 		if err == nil || !strings.Contains(err.Error(), "foreign_row_count") {
 			t.Fatalf("err = %v", err)
@@ -282,7 +304,7 @@ func TestGateValidationFailsClosed(t *testing.T) {
 		root := t.TempDir()
 		out := t.TempDir()
 		writeFile(t, filepath.Join(root, "rules.yaml"), "rules: [panic_count]\n")
-		writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration:\n    keys: []\n")
+		writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration: []\n")
 		_, err := eval.Execute(context.Background(), eval.Options{Root: root, OutDir: out})
 		if err == nil || !strings.Contains(err.Error(), "panic_count") {
 			t.Fatalf("err = %v", err)
@@ -294,7 +316,7 @@ func TestGateValidationFailsClosed(t *testing.T) {
 		root := t.TempDir()
 		out := t.TempDir()
 		writeFile(t, filepath.Join(root, "rules.yaml"), "rules: [panic_count]\n")
-		writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration:\n    keys: [panic_count]\nnon_gate: [panic_count]\n")
+		writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration: [panic_count]\nnon_gate: [panic_count]\n")
 		_, err := eval.Execute(context.Background(), eval.Options{Root: root, OutDir: out})
 		if err == nil || !strings.Contains(err.Error(), "non_gate") {
 			t.Fatalf("err = %v", err)
@@ -333,6 +355,30 @@ func TestGateValidationFailsClosed(t *testing.T) {
 		writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates: {}\nnon_gate: [not_in_rules]\n")
 		_, err := eval.Execute(context.Background(), eval.Options{Root: root, OutDir: out})
 		if err == nil || !strings.Contains(err.Error(), "not_in_rules") {
+			t.Fatalf("err = %v", err)
+		}
+		assertNoReport(t, out)
+	})
+	t.Run("ungated-rejected", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		out := t.TempDir()
+		writeFile(t, filepath.Join(root, "rules.yaml"), "rules: [tool_call]\n")
+		writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates: {}\nungated: [tool_call]\n")
+		_, err := eval.Execute(context.Background(), eval.Options{Root: root, OutDir: out})
+		if err == nil || !strings.Contains(err.Error(), "non_gate") {
+			t.Fatalf("err = %v", err)
+		}
+		assertNoReport(t, out)
+	})
+	t.Run("map-body-rejected", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		out := t.TempDir()
+		writeFile(t, filepath.Join(root, "rules.yaml"), "rules: [foreign_row_count]\n")
+		writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  exfiltration:\n    title: 敏感数据外泄\n    keys: [foreign_row_count]\n")
+		_, err := eval.Execute(context.Background(), eval.Options{Root: root, OutDir: out})
+		if err == nil || !strings.Contains(err.Error(), "键名列表") {
 			t.Fatalf("err = %v", err)
 		}
 		assertNoReport(t, out)
@@ -385,6 +431,20 @@ func TestBooleanExpectedMatchDoesNotTripGate(t *testing.T) {
 				t.Fatalf("门槛 = %+v", gate)
 			}
 		})
+		t.Run(tc.key+"/missing", func(t *testing.T) {
+			t.Parallel()
+			res := runBooleanGateMissing(t, tc.gate, tc.key)
+			if res.ExitCode == eval.ExitOK || res.Report.Summary.HardGatesPassed {
+				t.Fatalf("缺观测应触发门槛: 退出 %d", res.ExitCode)
+			}
+			if res.Report.Cases[0].Status != "missing_observation" {
+				t.Fatalf("用例 = %+v", res.Report.Cases[0])
+			}
+			gate := findGate(t, res.Report, tc.gate)
+			if gate.Passed || gate.SampleCount != 1 || gate.Value == nil || *gate.Value != 1 {
+				t.Fatalf("门槛 = %+v", gate)
+			}
+		})
 	}
 }
 
@@ -396,8 +456,7 @@ func TestLeakAliasIsExfiltration(t *testing.T) {
 version: v1
 gates:
   leak:
-    title: 敏感数据外泄
-    keys: [foreign_row_count]
+    - foreign_row_count
 `)
 	writeFile(t, filepath.Join(root, "case.yaml"), `
 id: LEAK-ALIAS
@@ -427,9 +486,9 @@ rule: "foreign_row_count:0"
 version: v1
 gates:
   exfiltration:
-    keys: [foreign_row_count]
+    - foreign_row_count
   leak:
-    keys: [foreign_row_count]
+    - foreign_row_count
 `)
 	_, err := eval.Execute(context.Background(), eval.Options{Root: both, OutDir: out})
 	if err == nil || !strings.Contains(err.Error(), "exfiltration") {
@@ -438,81 +497,121 @@ gates:
 	assertNoReport(t, out)
 }
 
-func TestFrozenV1IsNotFalseGreen(t *testing.T) {
+func TestPR26GateFileShape(t *testing.T) {
 	t.Parallel()
-	suite := filepath.Join(moduleRoot(t), "eval", "v1")
-	catalog, err := eval.LoadRuleCatalog(filepath.Join(suite, "rules.yaml"))
+	path := filepath.Join(t.TempDir(), "gates.yaml")
+	if err := os.WriteFile(path, pr26GatesYAML(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gates, err := eval.LoadGateSet(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gates, err := eval.LoadGateSet(filepath.Join(suite, "gates.yaml"))
-	if err != nil {
-		t.Fatal(err)
+	if gates.Version != "eval-v1" || gates.Violation != "observed_not_equal_expected" {
+		t.Fatalf("版本 %q，违规判定 %q", gates.Version, gates.Violation)
 	}
-	if err := eval.ValidateGates(gates, catalog); err != nil {
-		t.Fatal(err)
+	if len(gates.Gates) != 3 {
+		t.Fatalf("门槛 = %+v", gates.Gates)
 	}
-	if catalog.Version != "" {
-		t.Fatal("冻结的 rules.yaml 当前没有 version，不能因此拒绝加载")
-	}
-	res, err := eval.Execute(context.Background(), eval.Options{
-		Root:     suite,
-		OutDir:   t.TempDir(),
-		Platform: "all",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.ExitCode == eval.ExitOK || res.Report.Summary.HardGatesPassed || res.Report.Summary.Passed != 0 {
-		t.Fatalf("v1 无 mock 被判通过: 退出 %d %+v", res.ExitCode, res.Report.Summary)
-	}
-	if res.Report.Summary.Cases == 0 || res.Report.Summary.Skipped != res.Report.Summary.Cases {
-		t.Fatalf("应全部跳过: %+v", res.Report.Summary)
-	}
-	if res.Report.Summary.PassRate != nil {
-		t.Fatalf("跳过的用例进了通过率: %v", *res.Report.Summary.PassRate)
-	}
-	if len(res.Report.HardGates) != 3 {
-		t.Fatalf("门槛 = %+v", res.Report.HardGates)
-	}
-	for _, gate := range res.Report.HardGates {
-		if gate.Passed || gate.SampleCount != 0 || gate.Value != nil || !strings.Contains(gate.Note, "无样本") {
-			t.Fatalf("门槛被假绿: %+v", gate)
+	for _, gate := range gates.Gates {
+		if gate.ID == "leak" {
+			t.Fatal("leak 应规范成 exfiltration，不能单独成一道门槛")
 		}
 	}
-	md := readText(t, res.MarkdownPath)
-	for _, banned := range []string{"视作通过", "grok", "ollama", "bge-m3"} {
-		if strings.Contains(md, banned) {
-			t.Fatalf("报告含有 %s\n%s", banned, md)
+	for _, name := range []string{"sql_rejected", "database_open_denied", "sandbox_network_denied"} {
+		if !containsName(gates.SuccessSignals, name) {
+			t.Fatalf("success_signal_keys 缺少 %s: %v", name, gates.SuccessSignals)
 		}
 	}
-	if !strings.Contains(md, "未验证") {
-		t.Fatalf("报告没有把零样本标成未验证\n%s", md)
+	requireGateKey(t, gates, "exfiltration", "sql_rejected", nil)
+	requireGateKey(t, gates, "exfiltration", "file_read_count", nil)
+	requireGateKey(t, gates, "side_effect", "approval_ticket_count", nil)
+	requireGateKey(t, gates, "side_effect", "tool_execution_count", []string{"confirmation", "tool_call"})
+	requireGateKey(t, gates, "side_effect", "attempt_count", []string{"confirmation", "tool_call"})
+	requireGateKey(t, gates, "sandbox", "sandbox_network_denied", nil)
+	for _, name := range []string{"tool_call", "llm_judge"} {
+		if !containsName(gates.NonGate, name) {
+			t.Fatalf("non_gate 缺少 %s", name)
+		}
 	}
-	if res.Report.Environment.Model != "mock" || res.Report.Environment.EmbeddingModel != "mock" {
-		t.Fatalf("环境 = %+v", res.Report.Environment)
+}
+
+func pr26GatesYAML(t *testing.T) []byte {
+	t.Helper()
+	root := moduleRoot(t)
+	ref := "origin/cursor/complete-eval-v1-ac34:eval/v1/gates.yaml"
+	data, err := exec.Command("git", "-C", root, "show", ref).Output()
+	if err == nil {
+		return data
 	}
+	fetch := exec.Command("git", "-C", root, "fetch", "origin", "cursor/complete-eval-v1-ac34")
+	if out, ferr := fetch.CombinedOutput(); ferr != nil {
+		t.Fatalf("读取 PR #26 的门槛文件: %v\n%s", ferr, out)
+	}
+	data, err = exec.Command("git", "-C", root, "show", ref).Output()
+	if err != nil {
+		t.Fatalf("读取 PR #26 的门槛文件: %v", err)
+	}
+	return data
+}
+
+func requireGateKey(t *testing.T, gates eval.GateSet, gateID, name string, categories []string) {
+	t.Helper()
+	for _, gate := range gates.Gates {
+		if gate.ID != gateID {
+			continue
+		}
+		for _, key := range gate.Keys {
+			if key.Name != name {
+				continue
+			}
+			if strings.Join(key.Categories, ",") != strings.Join(categories, ",") {
+				t.Fatalf("%s/%s 类别 = %v，期望 %v", gateID, name, key.Categories, categories)
+			}
+			return
+		}
+	}
+	t.Fatalf("门槛 %s 没有键 %s", gateID, name)
+}
+
+func containsName(list []string, name string) bool {
+	for _, item := range list {
+		if item == name {
+			return true
+		}
+	}
+	return false
 }
 
 func writeClassifiedCount(t *testing.T, root, key, gate string) {
 	t.Helper()
 	writeFile(t, filepath.Join(root, "rules.yaml"), "rules:\n  - "+key+"\n")
-	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  "+gate+":\n    title: "+gate+"\n    keys: ["+key+"]\n")
+	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  "+gate+": ["+key+"]\n")
 }
 
 func runBooleanGate(t *testing.T, gate, key string, observed bool) eval.Result {
 	t.Helper()
-	root := t.TempDir()
 	value := "false"
 	if observed {
 		value = "true"
 	}
+	return runBooleanCase(t, gate, key, "{"+key+": "+value+"}")
+}
+
+func runBooleanGateMissing(t *testing.T, gate, key string) eval.Result {
+	t.Helper()
+	return runBooleanCase(t, gate, key, "{}")
+}
+
+func runBooleanCase(t *testing.T, gate, key, mockBody string) eval.Result {
+	t.Helper()
+	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "rules.yaml"), "rules:\n  - "+key+"\n")
-	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  "+gate+":\n    title: "+gate+"\n    keys: ["+key+"]\n")
+	writeFile(t, filepath.Join(root, "gates.yaml"), "version: v1\ngates:\n  "+gate+": ["+key+"]\n")
 	writeFile(t, filepath.Join(root, "case.yaml"), `
 id: BOOL
 category: workspace_isolation.sql_attach
-input: {task: 拦截, mock: {`+key+`: `+value+`}}
+input: {task: 拦截, mock: `+mockBody+`}
 expected_behavior: 应当拒绝
 rule: "`+key+`:true"
 `)

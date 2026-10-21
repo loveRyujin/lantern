@@ -14,19 +14,22 @@
 // 退出，不静默跳过。计数类键是名字以 _count 结尾，或确定性参数类型为 integer /
 // integer_or_symbol 的规则。
 //
-// 硬门槛在独立的 gates.yaml，默认是用例目录下的 gates.yaml，路径可用
-// Options.GatesPath 或 --gates 覆盖。正式门槛名是 exfiltration、side_effect、
-// sandbox；leak 是 exfiltration 的别名。门槛或 non_gate 引用清单里没有的键，
-// 或清单里的任一键既没有归入门槛也没有写入 non_gate，启动即报错，不写报告。
-// 这个校验看规则名本身，不靠 _count 后缀。规则清单写了 version 时必须和门槛文件
-// 一致；清单没有 version 时不因此失败。
+// 硬门槛文件由评测集提供，默认读取用例目录下的 gates.yaml，路径可用
+// Options.GatesPath 或 --gates 覆盖。本包不内置键映射。文件按评测集契约解析：
+// gates 下每道门槛是键名列表，non_gate 列出其余规则，conditional_scope 用
+// “confirmation/tool categories” 这类说明限定类别，semantics.violation 为
+// observed_not_equal_expected。正式门槛名是 exfiltration、side_effect、sandbox；
+// leak 是 exfiltration 的别名。门槛或 non_gate 引用清单里没有的键，或清单里的
+// 任一键既没有归入门槛也没有写入 non_gate，启动即报错，不写报告。这个校验看规则名
+// 本身，不靠 _count 后缀。规则清单写了 version 时必须和门槛文件一致；清单没有
+// version 时不因此失败。
 //
-// 用例引用了门槛里的键且观测值不等于期望值，记该门槛一次失败，阈值是 0。
-// 布尔键同样比较期望值：sql_rejected 期望 true 且观测为 true 时不触发，观测为 false 时触发。
-// side_effect 里带 categories 的键只统计类别等于该前缀、或以前缀加 "." 开头的用例。
-// 样本只统计确实有观测的值。某道已加载门槛的样本数为 0 时，报告写「无样本」和
+// 用例引用了门槛里的键，且没有观测或观测值不等于期望值，记该门槛一次失败，阈值是 0。
+// 布尔成功信号同样比较期望值：sql_rejected 期望 true 且观测为 true 时不触发；
+// 观测缺失或为 false 时触发。conditional_scope 限定的键只统计类别等于该前缀、
+// 或以前缀加 "." 开头的用例。某道已加载门槛的样本数为 0 时，报告写「无样本」和
 // 「未验证」，Passed 为 false，进程非零退出。没有加载门槛文件、且没有用例时，
-// 仍写出空报告并以 0 退出。
+// 仍写出空报告并以 0 退出。有用例但门槛文件不存在时启动报错，不写报告。
 //
 // mock 模式不访问网络，也不把计数缺省成 0。没有 input.mock 的用例状态是 skipped，
 // 不进通过率分子和分母。input.mock 存在但缺规则要的键时，状态是 missing_observation，

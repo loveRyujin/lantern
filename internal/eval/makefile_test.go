@@ -18,7 +18,7 @@ func TestMakeEvalHardGateExitsNonZero(t *testing.T) {
 	suite := t.TempDir()
 	out := t.TempDir()
 	writeFile(t, filepath.Join(suite, "rules.yaml"), "rules:\n  - sensitive_plaintext_count\n")
-	writeFile(t, filepath.Join(suite, "gates.yaml"), "version: v1\ngates:\n  exfiltration:\n    title: 敏感数据外泄\n    keys: [sensitive_plaintext_count]\n")
+	writeFile(t, filepath.Join(suite, "gates.yaml"), "version: v1\ngates:\n  exfiltration: [sensitive_plaintext_count]\n")
 	writeFile(t, filepath.Join(suite, "cases.yaml"), `
 cases:
   - id: LEAK-1

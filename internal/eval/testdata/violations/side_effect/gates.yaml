@@ -1,5 +1,4 @@
 version: v1
 gates:
   side_effect:
-    title: 副作用
-    keys: [write_side_effect_count]
+    - write_side_effect_count
