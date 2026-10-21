@@ -18,63 +18,81 @@ var errSymlink = errors.New("pyrt: 符号链接")
 // 测试用它把已经检查过的 pyenv 换成指向 Root 外的符号链接。生产代码保持 nil。
 var testAfterPathCheck func()
 
-// guardWorkspace 拒绝 Root、Root/pyenv、已存在的 venv，以及这几条路径上任何一层符号链接。
-// 解析现有前缀之后，路径必须仍在 lexical Root 里面。本函数不创建、不删除。
-func guardWorkspace(root string) error {
-	root, err := filepath.Abs(root)
+// trustedRoot 把调用方给出的 Root 解析成真实目录，作为后面的信任起点。
+// 祖先上的符号链接（macOS 的 /var、/tmp）在这里被展开，不再当成 path_escape。
+func trustedRoot(root string) (string, error) {
+	abs, err := filepath.Abs(root)
 	if err != nil {
-		return fmt.Errorf("pyrt: Root: %w", err)
+		return "", fmt.Errorf("pyrt: Root: %w", err)
 	}
-	root = filepath.Clean(root)
-	pyenv := filepath.Join(root, "pyenv")
+	real, err := resolveExisting(filepath.Clean(abs))
+	if err != nil {
+		return "", fmt.Errorf("pyrt: Root: %w", err)
+	}
+	return real, nil
+}
+
+// guardWorkspace 先解析 Root，再只检查这个真实目录以下的 pyenv 和 venv。
+func guardWorkspace(root string) error {
+	real, err := trustedRoot(root)
+	if err != nil {
+		return err
+	}
+	return guardReal(real)
+}
+
+// guardReal 对真实 Root 以下逐级 Lstat。pyenv、venv 或其中间层是符号链接就拒绝。
+// 解析后的位置也必须仍在这个真实 Root 内。本函数不创建、不删除。
+func guardReal(real string) error {
+	pyenv := filepath.Join(real, "pyenv")
+	if err := guardOne(real, pyenv, true); err != nil {
+		return err
+	}
 	venv := filepath.Join(pyenv, "venv")
-	for _, path := range []string{root, pyenv} {
-		if err := guardOne(root, path, true); err != nil {
-			return err
-		}
-	}
 	if _, err := os.Lstat(venv); err != nil {
 		if os.IsNotExist(err) {
-			return resolvedInside(root, venv)
+			return resolvedInside(real, venv)
 		}
 		return err
 	}
-	return guardOne(root, venv, false)
+	return guardOne(real, venv, false)
 }
 
-func guardOne(root, path string, allowMissing bool) error {
-	err := walkPath(path)
+func guardOne(realRoot, path string, allowMissing bool) error {
+	err := walkBelow(realRoot, path)
 	if errors.Is(err, errMissing) {
 		if !allowMissing {
 			return err
 		}
-		return resolvedInside(root, path)
+		return resolvedInside(realRoot, path)
 	}
 	if err != nil {
 		return err
 	}
-	return resolvedInside(root, path)
+	return resolvedInside(realRoot, path)
 }
 
-// walkPath 从卷根开始逐级 Lstat。任何一层是符号链接都返回 path_escape。
-// 遇到还不存在的一层就停，不往下看，也不把它当成普通目录。
-func walkPath(path string) error {
-	vol, parts, err := splitAbs(path)
-	if err != nil {
-		return err
+// walkBelow 只检查 realRoot 以下的每一层。realRoot 本身和它的祖先不在检查范围内。
+func walkBelow(realRoot, path string) error {
+	rel, err := filepath.Rel(filepath.Clean(realRoot), filepath.Clean(path))
+	if err != nil || escapes(rel) {
+		return pathEscape(path, "解析后位于 Root 之外")
 	}
-	cur := volumePrefix(vol)
-	for _, part := range parts {
+	if rel == "." {
+		return nil
+	}
+	cur := filepath.Clean(realRoot)
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
 		if part == "" || part == "." || part == ".." {
 			return pathEscape(path, "路径包含非法分量")
 		}
 		cur = filepath.Join(cur, part)
-		info, err := os.Lstat(cur)
-		if err != nil {
-			if os.IsNotExist(err) {
+		info, lerr := os.Lstat(cur)
+		if lerr != nil {
+			if os.IsNotExist(lerr) {
 				return errMissing
 			}
-			return err
+			return lerr
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return pathEscape(cur, "路径上有符号链接")
@@ -86,16 +104,16 @@ func walkPath(path string) error {
 	return nil
 }
 
-// ensureRealTree 补齐还不存在的目录。每一层都先 Lstat：已有的符号链接直接拒绝，不用 MkdirAll。
-func ensureRealTree(path string) error {
-	vol, parts, err := splitAbs(path)
-	if err != nil {
-		return err
+// ensureBelow 在真实 Root 下补齐 rel 的每一层。缺的目录用 Mkdir，不用 MkdirAll。
+// 已有的符号链接直接拒绝，避免跟着链接把目录建到 Root 外面。
+func ensureBelow(realRoot string, rel ...string) (string, error) {
+	if err := mkdirMissingTail(realRoot); err != nil {
+		return "", err
 	}
-	cur := volumePrefix(vol)
-	for _, part := range parts {
+	cur := filepath.Clean(realRoot)
+	for _, part := range rel {
 		if part == "" || part == "." || part == ".." {
-			return pathEscape(path, "路径包含非法分量")
+			return "", pathEscape(cur, "路径包含非法分量")
 		}
 		parent := cur
 		cur = filepath.Join(cur, part)
@@ -103,22 +121,77 @@ func ensureRealTree(path string) error {
 		if os.IsNotExist(err) {
 			pinfo, perr := os.Lstat(parent)
 			if perr != nil {
-				return perr
+				return "", perr
 			}
 			if pinfo.Mode()&os.ModeSymlink != 0 {
-				return pathEscape(parent, "路径上有符号链接")
+				return "", pathEscape(parent, "路径上有符号链接")
 			}
 			if !pinfo.IsDir() {
-				return fmt.Errorf("pyrt: %s 不是目录", parent)
+				return "", fmt.Errorf("pyrt: %s 不是目录", parent)
 			}
 			if mkErr := os.Mkdir(cur, 0o755); mkErr != nil && !os.IsExist(mkErr) {
-				return mkErr
+				return "", mkErr
 			}
 			info, err = os.Lstat(cur)
 			if err != nil {
-				return err
+				return "", err
 			}
 		} else if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", pathEscape(cur, "路径上有符号链接")
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("pyrt: %s 不是目录", cur)
+		}
+	}
+	return cur, nil
+}
+
+// mkdirMissingTail 只创建 path 上还不存在的后缀。已存在的那一层如果自己是符号链接就拒绝；
+// 更上面的祖先目录允许是符号链接，调用前应先把路径交给 trustedRoot。
+func mkdirMissingTail(path string) error {
+	path = filepath.Clean(path)
+	var missing []string
+	cur := path
+	for {
+		info, err := os.Lstat(cur)
+		if err == nil {
+			if len(missing) == 0 {
+				if info.Mode()&os.ModeSymlink != 0 {
+					return pathEscape(cur, "路径上有符号链接")
+				}
+				if !info.IsDir() {
+					return fmt.Errorf("pyrt: %s 不是目录", cur)
+				}
+				return nil
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return pathEscape(cur, "路径上有符号链接")
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("pyrt: %s 不是目录", cur)
+			}
+			break
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return err
+		}
+		missing = append(missing, filepath.Base(cur))
+		cur = parent
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		cur = filepath.Join(cur, missing[i])
+		if err := os.Mkdir(cur, 0o755); err != nil && !os.IsExist(err) {
+			return err
+		}
+		info, err := os.Lstat(cur)
+		if err != nil {
 			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -132,14 +205,13 @@ func ensureRealTree(path string) error {
 }
 
 // resolvedInside 把已经存在的最长前缀做 EvalSymlinks，再拼上还不存在的后缀。
-// 结果必须落在 lexical Root 内。Root 外面的符号链接目标在这里被拒绝。
-func resolvedInside(root, path string) error {
-	root = filepath.Clean(root)
+// 结果必须落在解析后的 Root 内。
+func resolvedInside(realRoot, path string) error {
 	resolved, err := resolveExisting(path)
 	if err != nil {
 		return err
 	}
-	rel, err := filepath.Rel(root, resolved)
+	rel, err := filepath.Rel(filepath.Clean(realRoot), resolved)
 	if err != nil || escapes(rel) {
 		return pathEscape(path, "解析后位于 Root 之外")
 	}
@@ -181,39 +253,16 @@ func escapes(rel string) bool {
 	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel)
 }
 
-func splitAbs(path string) (string, []string, error) {
-	path = filepath.Clean(path)
-	if !filepath.IsAbs(path) {
-		return "", nil, fmt.Errorf("pyrt: %s 不是绝对路径", path)
-	}
-	vol := filepath.VolumeName(path)
-	rest := strings.TrimPrefix(path[len(vol):], string(filepath.Separator))
-	if rest == "" {
-		return vol, nil, nil
-	}
-	return vol, strings.Split(rest, string(filepath.Separator)), nil
-}
-
-func volumePrefix(vol string) string {
-	if vol == "" {
-		return string(filepath.Separator)
-	}
-	if strings.HasSuffix(vol, string(filepath.Separator)) {
-		return vol
-	}
-	return vol + string(filepath.Separator)
-}
-
-// removeRealDir 删除一个确认过的普通目录。
-// 删除前再走一遍 Lstat：任一层是符号链接，或解析后不在 Root 内，就返回 path_escape，不调用 RemoveAll。
-func removeRealDir(root, path string) error {
-	if err := walkPath(path); err != nil {
+// removeRealDir 删除真实 Root 内的一个普通目录。
+// 删除前再从 Root 往下 Lstat：任一层是符号链接，或解析后不在 Root 内，就返回 path_escape，不调用 RemoveAll。
+func removeRealDir(realRoot, path string) error {
+	if err := walkBelow(realRoot, path); err != nil {
 		if errors.Is(err, errMissing) {
 			return nil
 		}
 		return err
 	}
-	if err := resolvedInside(root, path); err != nil {
+	if err := resolvedInside(realRoot, path); err != nil {
 		return err
 	}
 	if err := openDirNoFollow(path); err != nil {
@@ -222,13 +271,13 @@ func removeRealDir(root, path string) error {
 		}
 		return err
 	}
-	if err := walkPath(path); err != nil {
+	if err := walkBelow(realRoot, path); err != nil {
 		if errors.Is(err, errMissing) {
 			return nil
 		}
 		return err
 	}
-	if err := resolvedInside(root, path); err != nil {
+	if err := resolvedInside(realRoot, path); err != nil {
 		return err
 	}
 	return os.RemoveAll(path)

@@ -9,7 +9,8 @@
 // 调用 pip 时去掉 PIP_TARGET、PIP_PREFIX、PIP_USER，避免包装到 venv 外面。
 // 写成功标记之前会在 venv 里 import pandas 和 matplotlib。
 // 标记对不上时，在 Root 内的临时目录生成新 venv，再原子 rename 替换旧目录，不对已有目录使用 --clear。
-// Root、Root/pyenv 或其路径上任一层是符号链接，或解析后不在 Root 内时，返回 path_escape。
+// 先用 EvalSymlinks 解析 Root。只拒绝这个真实目录以下（pyenv、venv）的符号链接；
+// 祖先目录可以是符号链接。解析后不在 Root 内时返回 path_escape。
 // 同一个 Root 上不要并发调用 Ensure。
 //
 // 解释器缺失、版本不符、venv 创建失败、锁定依赖装不上或 import 失败时，返回的错误实现 errcode.Coded，
