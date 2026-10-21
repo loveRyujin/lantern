@@ -18,6 +18,34 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// 种子 20261021 的内容哈希。生成逻辑或 Go 的 math/rand/v2 一变，评测里的标准答案就会失效。
+const (
+	goldenHash    = "1a7538f9d00c7631a8ba3da0565f2e7ae05b73d24cf1c63ce8b18d6f68fb9de9"
+	goldenXinghe  = "9991812eff9d0a7dc44702681a7c66bcfd3c9fb59f8a4ac146a826543b193127"
+	goldenYunshan = "b639c10bceb11cf023c9b54dbb6310121e247e1657775abd85726f2752b70965"
+)
+
+func TestGoldenHash(t *testing.T) {
+	if seed.DefaultSeed != 20261021 {
+		t.Fatalf("DefaultSeed = %d，黄金哈希按种子 20261021 冻结。请更新评测标准答案，并同时改这个黄金哈希。", seed.DefaultSeed)
+	}
+	res := mustRun(t, t.TempDir(), 20261021, false)
+	gotXinghe, gotYunshan := "", ""
+	for _, ws := range res.Workspaces {
+		switch ws.ID {
+		case "星禾":
+			gotXinghe = ws.Hash
+		case "云杉":
+			gotYunshan = ws.Hash
+		}
+	}
+	if res.Hash == goldenHash && gotXinghe == goldenXinghe && gotYunshan == goldenYunshan {
+		return
+	}
+	t.Fatalf("种子 20261021 的内容哈希变了。\n内容哈希 got %s\n         want %s\n星禾 got %s\n     want %s\n云杉 got %s\n     want %s\n生成逻辑或 Go 版本（math/rand/v2）变化会使评测标准答案失效。请更新评测标准答案，并同时改这个黄金哈希。",
+		res.Hash, goldenHash, gotXinghe, goldenXinghe, gotYunshan, goldenYunshan)
+}
+
 func TestSameSeedSameHash(t *testing.T) {
 	first := mustRun(t, t.TempDir(), seed.DefaultSeed, false)
 	second := mustRun(t, t.TempDir(), seed.DefaultSeed, false)
@@ -99,11 +127,19 @@ func TestDatasetShape(t *testing.T) {
 		if badAmount != 0 {
 			t.Fatalf("%s orders with amount mismatch: %d", ws.ID, badAmount)
 		}
+		var fkViolations int
+		if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&fkViolations); err != nil {
+			t.Fatal(err)
+		}
+		if fkViolations != 0 {
+			t.Fatalf("%s foreign_key_check violations: %d", ws.ID, fkViolations)
+		}
 		var badRefund int
 		if err := db.QueryRowContext(t.Context(), `
 			SELECT COUNT(*) FROM refunds r
-			JOIN orders o ON o.id = r.order_id
-			WHERE o.status != '已支付'
+			LEFT JOIN orders o ON o.id = r.order_id
+			WHERE o.id IS NULL
+			   OR o.status != '已支付'
 			   OR r.amount_cents <= 0
 			   OR r.amount_cents > o.amount_cents
 			   OR r.created_at < o.created_at
@@ -112,6 +148,18 @@ func TestDatasetShape(t *testing.T) {
 		}
 		if badRefund != 0 {
 			t.Fatalf("%s bad refunds: %d", ws.ID, badRefund)
+		}
+		var orphanItems int
+		if err := db.QueryRowContext(t.Context(), `
+			SELECT COUNT(*) FROM order_items i
+			LEFT JOIN orders o ON o.id = i.order_id
+			LEFT JOIN products p ON p.id = i.product_id
+			WHERE o.id IS NULL OR p.id IS NULL
+		`).Scan(&orphanItems); err != nil {
+			t.Fatal(err)
+		}
+		if orphanItems != 0 {
+			t.Fatalf("%s orphan order items: %d", ws.ID, orphanItems)
 		}
 		var minAt, maxAt string
 		if err := db.QueryRowContext(t.Context(), `SELECT MIN(created_at), MAX(created_at) FROM orders`).Scan(&minAt, &maxAt); err != nil {
@@ -145,6 +193,60 @@ func TestForceRebuildAndRejectExisting(t *testing.T) {
 	if second.Hash != first.Hash {
 		t.Fatalf("force rebuild hash %s vs %s", second.Hash, first.Hash)
 	}
+}
+
+func TestForceRejectsSymlinks(t *testing.T) {
+	t.Run("workspaces", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		secret := filepath.Join(outside, "星禾", "keep.txt")
+		if err := os.MkdirAll(filepath.Dir(secret), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(secret, []byte("keep"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(root, "workspaces")); err != nil {
+			t.Fatal(err)
+		}
+		_, err := seed.Run(t.Context(), seed.Options{Root: root, Seed: seed.DefaultSeed, Force: true})
+		if err == nil || !strings.Contains(err.Error(), "符号链接") {
+			t.Fatalf("Run: %v", err)
+		}
+		if _, err := os.Stat(secret); err != nil {
+			t.Fatalf("symlink target was removed: %v", err)
+		}
+	})
+
+	t.Run("workspace", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		secret := filepath.Join(outside, "keep.txt")
+		if err := os.WriteFile(secret, []byte("keep"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		workspaces := filepath.Join(root, "workspaces")
+		if err := os.Mkdir(workspaces, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(workspaces, "星禾")); err != nil {
+			t.Fatal(err)
+		}
+		_, err := seed.Run(t.Context(), seed.Options{Root: root, Seed: seed.DefaultSeed, Force: true})
+		if err == nil || !strings.Contains(err.Error(), "符号链接") {
+			t.Fatalf("Run: %v", err)
+		}
+		if _, err := os.Stat(secret); err != nil {
+			t.Fatalf("symlink target was removed: %v", err)
+		}
+		info, err := os.Lstat(filepath.Join(workspaces, "星禾"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatal("workspace symlink was replaced")
+		}
+	})
 }
 
 func TestSeedApprovalID(t *testing.T) {

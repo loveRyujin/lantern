@@ -94,7 +94,24 @@ func resolveRoot(root string) (string, error) {
 }
 
 func removeWorkspace(root, id string) error {
-	dir := filepath.Join(root, "workspaces", id)
+	// Lstat 不跟随最后一级。workspaces 若是符号链接，后面对工作区路径的
+	// Lstat 仍会在路径遍历时走进目标目录，所以父目录要单独看。
+	workspaces := filepath.Join(root, "workspaces")
+	parent, err := os.Lstat(workspaces)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("seed: 删除工作区 %s: %w", id, err)
+	}
+	if parent.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("seed: workspaces 是符号链接，拒绝删除")
+	}
+	if !parent.IsDir() {
+		return fmt.Errorf("seed: workspaces 不是目录，拒绝删除")
+	}
+
+	dir := filepath.Join(workspaces, id)
 	info, err := os.Lstat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

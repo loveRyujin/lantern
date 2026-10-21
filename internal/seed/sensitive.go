@@ -9,8 +9,9 @@ import (
 	"github.com/loveRyujin/lantern/core/workspace"
 )
 
-// SeedApprovalID 是种子工具写入敏感库时使用的确认单标识。
-// 业务导出不使用这个标识。同一工作区的 Handle 各自签发一次。
+// SeedApprovalID 是种子工具写入敏感库时准备使用的确认单标识。
+// 目前只是占位，#18 合并后改为走 ConfirmExport。
+// 业务导出不要复用这个标识。
 const SeedApprovalID = "lantern-seed"
 
 // writeSensitive 把手机号和邮箱写入 sensitive.db，并返回这条连接供内容哈希读取。
