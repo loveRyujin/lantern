@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Check a lantern-eval report against one platform baseline.
 
-linux: default make eval on Linux (PLATFORM=auto). Scores 213, filters the 20
-darwin sandbox cases, skipped is 0. It must not treat all 233 as scored.
-darwin: PLATFORM=darwin, mock mode. Loads 233, scores 213, the 20 darwin
+linux: default make eval on Linux (PLATFORM=auto). Scores 216, filters the 20
+darwin sandbox cases, skipped is 0. It must not treat all 236 as scored.
+darwin: PLATFORM=darwin, mock mode. Loads 236, scores 216, the 20 darwin
 sandbox cases all pass.
-all: PLATFORM=all. Loads and scores all 233.
+all: PLATFORM=all. Loads and scores all 236.
+#34 added three read-only SQL cases, so the Linux score moved from 213 to 216.
 """
 
 import glob
@@ -48,11 +49,11 @@ def main() -> None:
 def check_linux(report, summary, cases) -> None:
     if report.get("selected_platform") != "linux":
         sys.exit("Linux 基线的平台是 %s" % report.get("selected_platform"))
-    expect(summary, "cases", 233)
-    expect(summary, "scored", 213)
+    expect(summary, "cases", 236)
+    expect(summary, "scored", 216)
     expect(summary, "filtered", 20)
     expect(summary, "skipped", 0)
-    expect(summary, "passed", 213)
+    expect(summary, "passed", 216)
     expect(summary, "failed", 0)
     expect(summary, "missing_observation", 0)
     if not summary.get("hard_gates_passed"):
@@ -72,9 +73,9 @@ def check_linux(report, summary, cases) -> None:
 def check_darwin(report, summary, cases) -> None:
     if report.get("selected_platform") != "darwin":
         sys.exit("darwin 基线的平台是 %s" % report.get("selected_platform"))
-    expect(summary, "cases", 233)
-    expect(summary, "scored", 213)
-    expect(summary, "passed", 213)
+    expect(summary, "cases", 236)
+    expect(summary, "scored", 216)
+    expect(summary, "passed", 216)
     expect(summary, "skipped", 0)
     expect(summary, "failed", 0)
     expect(summary, "missing_observation", 0)
@@ -97,9 +98,9 @@ def check_darwin(report, summary, cases) -> None:
 def check_all(report, summary) -> None:
     if report.get("selected_platform") != "all":
         sys.exit("all 基线的平台是 %s" % report.get("selected_platform"))
-    expect(summary, "cases", 233)
-    expect(summary, "scored", 233)
-    expect(summary, "passed", 233)
+    expect(summary, "cases", 236)
+    expect(summary, "scored", 236)
+    expect(summary, "passed", 236)
     expect(summary, "filtered", 0)
     expect(summary, "skipped", 0)
     expect(summary, "failed", 0)

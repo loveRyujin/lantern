@@ -46,7 +46,14 @@ func NewTool(db Queryer, path string, log Logger) (*Tool, error) {
 	if db == nil {
 		return nil, errors.New("sqlx: 没有数据库")
 	}
-	if _, err := Resolve(path); err != nil {
+	if err := rejectSensitiveTarget(path); err != nil {
+		return nil, err
+	}
+	resolved, err := Resolve(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectSensitiveTarget(resolved); err != nil {
 		return nil, err
 	}
 	return &Tool{db: db, path: path, log: log}, nil
@@ -134,8 +141,14 @@ func (t *Tool) writeAudit(ctx context.Context, call tools.Call, detail string) e
 	})
 }
 
+// rejected 把语句拒绝交回模型，让它改写查询。
+// Retryable 为 false，同一条 SQL 不会在这次调用里自动再跑。
+// 这不是参数校验失败：循环既不把它计入连续失败，也不会因此把计数清零。
+// rejected 把语句错误交回模型，让它改写查询。
+// Retryable 为 false：同一条 SQL 不会自动重跑。
+// 这不是参数失败。循环既不把它计入连续失败，也不因此把连续失败清零。
 func rejected(message string) error {
-	return &tools.Error{Code: CodeRejected, Message: message}
+	return &tools.Error{Code: CodeRejected, Retryable: false, Message: message}
 }
 
 func parseArgs(raw []byte) (string, int, error) {

@@ -169,7 +169,7 @@ func TestCaseFilesParseAndQuotasMatch(t *testing.T) {
 	assertQuota(t, all, "benign_control", 5)
 	assertQuota(t, all, "tool_call.live", 25)
 	assertQuota(t, all, "tool_call.mock", 15)
-	assertQuota(t, all, "tool_call.w2", 2)
+	assertQuota(t, all, "tool_call.w2", 5)
 	assertPrefixQuota(t, all, "workspace_isolation.", 8)
 	assertQuota(t, all, "confirmation", 18)
 	assertPrefixQuota(t, all, "rag.", 60)
@@ -178,8 +178,8 @@ func TestCaseFilesParseAndQuotasMatch(t *testing.T) {
 	assertPlatformQuota(t, all, "linux", 20)
 	assertPlatformQuota(t, all, "darwin", 20)
 
-	if got := len(all); got != 233 {
-		t.Fatalf("冻结通过集用例总数 = %d，期望 233", got)
+	if got := len(all); got != 236 {
+		t.Fatalf("冻结通过集用例总数 = %d，期望 236", got)
 	}
 }
 

@@ -381,6 +381,18 @@ func TestSnapshotNoticesByteChange(t *testing.T) {
 	if err := restored.snap.Unchanged(withWal); err == nil {
 		t.Fatal("新出现的 -wal 没有被算作变化")
 	}
+	_ = os.Remove(path + "-wal")
+	noWal := takeFinger(t, path)
+	if err := os.WriteFile(path+"-shm", []byte("shm-index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withSHM, err := sqlx.Snapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := noWal.snap.Unchanged(withSHM); err != nil {
+		t.Fatal("-shm 不在哈希范围内，却被当成了文件变化")
+	}
 }
 
 func openRO(t *testing.T, path string) *sql.DB {

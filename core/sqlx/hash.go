@@ -14,6 +14,8 @@ import (
 var ErrFileChanged = errors.New("sqlx: 分析库文件在只读查询后发生了变化")
 
 // Snap 是一次文件指纹。路径都是 EvalSymlinks 之后的结果，-wal 同时看解析后的文件名和调用方给出的路径。
+// -shm 不在指纹里。它是 WAL 的共享内存索引，只读连接为了和写入者协调也会改它，里面没有业务行。
+// 钉住主库字节、钉住执行前已有的 -wal、并且不允许新建 -wal，能读到的内容就不会变。
 type Snap struct {
 	Resolved string
 	MainSum  [32]byte

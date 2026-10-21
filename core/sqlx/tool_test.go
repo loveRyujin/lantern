@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -378,6 +379,121 @@ func TestRunSQLIsolationAndInjection(t *testing.T) {
 			t.Fatalf("出现了写成功审计: %+v", rec)
 		}
 	}
+}
+
+func TestRunSQLOnlyReachesBusinessDB(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	h, err := workspace.Create(ctx, root, "云杉")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	business := filepath.Join(h.Dir, "analytics.db")
+	sens := filepath.Join(h.Dir, "sensitive.db")
+	secret := openWritable(t, sens, "DELETE")
+	if _, err := secret.ExecContext(ctx, `CREATE TABLE user_contacts (phone TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secret.ExecContext(ctx, `INSERT INTO user_contacts (phone) VALUES ('13800138000')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := secret.Close(); err != nil {
+		t.Fatal(err)
+	}
+	removeSidecars(sens)
+	link := filepath.Join(h.Dir, "via-link.db")
+	if err := os.Symlink(sens, link); err != nil {
+		t.Fatal(err)
+	}
+	posed := filepath.Join(t.TempDir(), "analytics.db")
+	if err := os.Symlink(sens, posed); err != nil {
+		t.Fatal(err)
+	}
+	sensBefore := hashFile(t, sens)
+
+	for _, path := range []string{sens, link, posed, "file:" + sens + "?mode=rwc", sens + "?mode=rw&immutable=0"} {
+		if _, err := sqlx.Open(ctx, path); err == nil {
+			t.Fatalf("打开了不该打开的路径 %s", filepath.Base(path))
+		}
+	}
+	if _, err := sqlx.NewTool(noopQuery{}, sens, nil); err == nil {
+		t.Fatal("工具绑到了敏感库路径")
+	}
+	if hashFile(t, sens) != sensBefore {
+		t.Fatal("拒绝打开时改了敏感库")
+	}
+	assertPathNotOpen(t, sens)
+
+	_, db, tool, spy, _ := openTool(t, business, nil)
+	res, err := tool.Execute(ctx, callSQL("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeResult(t, res)
+	names := map[string]bool{}
+	for _, row := range got.Rows {
+		name, _ := row[0].(string)
+		names[name] = true
+		if strings.Contains(strings.ToLower(name), "contact") || strings.Contains(name, "13800138000") {
+			t.Fatalf("业务库的 sqlite_master 带出了敏感表: %s", name)
+		}
+	}
+	if !names["users"] || !names["orders"] {
+		t.Fatalf("sqlite_master 没有业务表: %+v", got.Rows)
+	}
+
+	queries := []string{
+		"ATTACH DATABASE '" + sqlQuote(sens) + "' AS s",
+		"ATTACH DATABASE '" + sqlQuote(link) + "' AS s",
+		"attach database 'file:" + sqlQuote(sens) + "?mode=rwc' AS s",
+		"ATTACH DATABASE 'file:" + sqlQuote(link) + "?mode=memory&cache=shared&nolock=1' AS s",
+		`SELECT * FROM "` + sens + `".user_contacts`,
+		`SELECT phone FROM user_contacts`,
+	}
+	for _, query := range queries {
+		before := spy.n
+		_, err := tool.Execute(ctx, callSQL(query, nil))
+		if code, _ := tools.CodeOf(err); code != sqlx.CodeRejected {
+			t.Fatalf("%s → %v", query, err)
+		}
+		if strings.Contains(err.Error(), "13800138000") || strings.Contains(err.Error(), sens) {
+			t.Fatalf("错误带了敏感库: %v", err)
+		}
+		if strings.Contains(query, "ATTACH") || strings.Contains(query, "attach") {
+			if spy.n != before {
+				t.Fatalf("拒绝前把语句送到了连接: %s", query)
+			}
+		}
+	}
+	// 绕过语句扫描，直接在只读连接上试路径、符号链接和 URI。
+	raw := []string{
+		"ATTACH DATABASE '" + sqlQuote(sens) + "' AS s",
+		"ATTACH DATABASE '" + sqlQuote(link) + "' AS s",
+		"ATTACH DATABASE 'file:" + sqlQuote(sens) + "?mode=rwc' AS s",
+		"ATTACH DATABASE 'file:" + sqlQuote(link) + "?nolock=1&mode=rw' AS s",
+	}
+	for _, query := range raw {
+		if _, err := db.ExecContext(ctx, query); err == nil || !strings.Contains(strings.ToLower(err.Error()), "not authorized") {
+			t.Fatalf("连接层放行了 %s: %v", query, err)
+		}
+	}
+	var leaked string
+	err = db.QueryRowContext(ctx, `SELECT phone FROM user_contacts`).Scan(&leaked)
+	if err == nil {
+		t.Fatal("只读连接读到了敏感表")
+	}
+	if hashFile(t, sens) != sensBefore {
+		t.Fatal("敏感库内容变了")
+	}
+	assertPathNotOpen(t, sens)
+	assertPathNotOpen(t, link)
+}
+
+type noopQuery struct{}
+
+func (noopQuery) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
+	return nil, errors.New("不应查询")
 }
 
 func TestRunSQLAuditLandsInRunsDB(t *testing.T) {

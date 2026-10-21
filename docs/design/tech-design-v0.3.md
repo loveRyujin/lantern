@@ -79,6 +79,9 @@ lantern/
 2. 连接层：用 `file:analytics.db?mode=ro` 打开，并设置 `PRAGMA query_only=ON`；`sensitive.db` 从不 ATTACH 到这个连接上。
 3. authorizer 回调：如果 modernc 暴露了 `sqlite3_set_authorizer`，就只放行 SQLITE_READ 和 SQLITE_SELECT 这类操作；W2 先确认这个 API 能不能用，用不了就只靠前两层，并在报告中注明。
 - 超时：用 context 取消（modernc 支持 interrupt）。返回行数上限 1000 行。
+- 旁边没有 `-wal` 时，只读连接加 `immutable=1`，避免把 `-wal` 建出来。代价是这次打开不加锁：导入、种子或迁移还在写这个库时，查询结果可能是旧的，甚至读到写到一半的页。旁边已经有 `-wal` 时不加 `immutable`，这样才能读到还没 checkpoint 的提交。
+- 执行后核对主库文件哈希，以及执行前已经存在的 `-wal`。执行前没有 `-wal` 就不能新建。`-shm` 不参与哈希：它是 WAL 的共享内存索引，只读连接为了协调也会改它，里面没有业务行。
+- `SELECT sqlite_master` 允许，看到的是业务库自己的表。连接只打开 `analytics.db`。`sensitive.db` 不能靠文件路径、符号链接、`ATTACH` 或 URI 参数进来。
 
 ## 7. 沙箱
 统一接口 `Sandbox.Run(ctx, Spec) (Result, error)`，错误类型分为 `timeout | oom | killed | error | runtime_unavailable`。
