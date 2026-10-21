@@ -164,12 +164,10 @@ func installReadOnly(conn sqlite.ExecQuerierContext) error {
 	if err := RejectAttach(conn); err != nil {
 		return err
 	}
-	if err := installHeapLimit(); err != nil {
-		return err
-	}
 	if err := installTempDir(); err != nil {
 		return err
 	}
+	// 只改这条只读连接。不调用 sqlite3_hard_heap_limit64，那个上限是整个进程共用的。
 	if _, err := conn.ExecContext(context.Background(), "PRAGMA temp_store = FILE", nil); err != nil {
 		return fmt.Errorf("sqlx: 设置 temp_store: %w", err)
 	}
@@ -179,6 +177,12 @@ func installReadOnly(conn sqlite.ExecQuerierContext) error {
 	}
 	if store != 1 {
 		return fmt.Errorf("sqlx: temp_store = %d，想要 FILE(1)", store)
+	}
+	if _, err := conn.ExecContext(context.Background(), fmt.Sprintf("PRAGMA cache_size = -%d", CacheKiB), nil); err != nil {
+		return fmt.Errorf("sqlx: 设置 cache_size: %w", err)
+	}
+	if err := checkCacheSize(conn); err != nil {
+		return err
 	}
 	if _, err := conn.ExecContext(context.Background(), "PRAGMA query_only = ON", nil); err != nil {
 		return fmt.Errorf("sqlx: 设置 query_only: %w", err)
@@ -213,6 +217,33 @@ func installReadOnly(conn sqlite.ExecQuerierContext) error {
 
 func readQueryOnly(conn sqlite.ExecQuerierContext) (int64, error) {
 	return readPragmaInt(conn, "query_only")
+}
+
+// checkCacheSize 确认页缓存没有超过 CacheKiB。
+// 设成负数时，PRAGMA cache_size 读回来仍是负的 KiB。正数则是页数。
+func checkCacheSize(conn sqlite.ExecQuerierContext) error {
+	n, err := readPragmaInt(conn, "cache_size")
+	if err != nil {
+		return err
+	}
+	if n < 0 {
+		if -n > int64(CacheKiB) {
+			return fmt.Errorf("sqlx: cache_size = %d KiB，想要不超过 %d", -n, CacheKiB)
+		}
+		return nil
+	}
+	pageSize, err := readPragmaInt(conn, "page_size")
+	if err != nil {
+		return err
+	}
+	if n < 1 || pageSize < 1 {
+		return fmt.Errorf("sqlx: cache_size = %d 页，page_size = %d", n, pageSize)
+	}
+	limit := int64(CacheKiB) << 10
+	if n*pageSize > limit+pageSize {
+		return fmt.Errorf("sqlx: 页缓存 %d 字节，想要不超过 %d", n*pageSize, limit)
+	}
+	return nil
 }
 
 func readPragmaInt(conn sqlite.ExecQuerierContext, name string) (int64, error) {

@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -20,9 +19,11 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
-// TestRunSQLBypassShapesStayBounded 把改写器的三条绕过收成回归。
+// TestRunSQLBypassShapesStayBounded 把改写器的三条绕过收成回归，并加上多行排序。
 // CTE 后面的 SELECT *、多表 FROM 里的子查询、以及用户自己写的 lantern_cell，
-// 都不能把峰值内存撑过大约 128 MiB（SQLite）加 1 MiB（Go）。
+// sqlite3_memory_highwater 都不能超过大约 128 MiB。
+// 100 行各 4 MiB 的 ORDER BY random() 不能超过大约 256 MiB。
+// modernc 的分配在 libc 堆上，Go 的 TotalAlloc 不算数。
 // modernc 默认关掉内存统计，sqlite3_memory_highwater 会一直是 0。
 // 子进程在第一次打开数据库之前打开 SQLITE_CONFIG_MEMSTATUS，计数才有效。
 func TestRunSQLBypassShapesStayBounded(t *testing.T) {
@@ -87,15 +88,9 @@ func probeBypassMemory(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			resetMemHighwater()
-			runtime.GC()
-			var before runtime.MemStats
-			runtime.ReadMemStats(&before)
 			res, err := tool.Execute(ctx, sqlCall(t, tc.query))
 			hw := memHighwater()
-			var after runtime.MemStats
-			runtime.ReadMemStats(&after)
-			heap := after.TotalAlloc - before.TotalAlloc
-			t.Logf("highwater=%d heap=%d err=%v", hw, heap, err)
+			t.Logf("highwater=%d err=%v", hw, err)
 			var te *tools.Error
 			if !errors.As(err, &te) || te.Code != CodeRejected || te.Retryable || res.Content != "" {
 				t.Fatalf("err=%v res=%+v", err, res)
@@ -106,9 +101,6 @@ func probeBypassMemory(t *testing.T) {
 			const sqliteBound = MaxResultColumns*MaxValueBytes + 8<<20
 			if hw > sqliteBound {
 				t.Fatalf("sqlite3_memory_highwater = %d，大约 128 MiB 的上限是 %d", hw, sqliteBound)
-			}
-			if heap > MaxResultBytes {
-				t.Fatalf("Go 分配了 %d 字节，上限 %d", heap, MaxResultBytes)
 			}
 		})
 	}
@@ -132,9 +124,6 @@ func probeBypassMemory(t *testing.T) {
 			t.Fatal(err)
 		}
 		resetMemHighwater()
-		runtime.GC()
-		var heapBefore runtime.MemStats
-		runtime.ReadMemStats(&heapBefore)
 		var seen []string
 		var mu sync.Mutex
 		stop := make(chan struct{})
@@ -167,21 +156,20 @@ func probeBypassMemory(t *testing.T) {
 		close(stop)
 		<-done
 		hw := memHighwater()
-		var heapAfter runtime.MemStats
-		runtime.ReadMemStats(&heapAfter)
-		heap := heapAfter.TotalAlloc - heapBefore.TotalAlloc
-		t.Logf("highwater=%d heap=%d err=%v", hw, heap, err)
+		t.Logf("highwater=%d err=%v", hw, err)
+		if got := currentHeapLimit(); got != 0 {
+			t.Fatalf("进程级硬堆上限 = %d，不应设置", got)
+		}
 		var te *tools.Error
+		if hw > SortMemBytes {
+			if !errors.As(err, &te) || te.Code != CodeResultTooLarge || te.Retryable || res.Content != "" {
+				t.Fatalf("高水位 %d 超过大约 256 MiB，错误应是 sql_result_too_large，实际 err=%v res=%+v", hw, err, res)
+			}
+			t.Fatalf("sqlite3_memory_highwater = %d，大约 256 MiB 的上限是 %d", hw, SortMemBytes)
+		}
 		if !errors.As(err, &te) || te.Code != CodeResultTooLarge || te.Retryable || res.Content != "" {
 			t.Fatalf("排序 err=%v res=%+v", err, res)
 		}
-		if got := currentHeapLimit(); got != HardHeapBytes {
-			t.Fatalf("堆上限 = %d，想要 %d", got, HardHeapBytes)
-		}
-		if hw > HardHeapBytes+2<<20 {
-			t.Fatalf("sqlite3_memory_highwater = %d，大约 130 MiB 的上限是 %d", hw, HardHeapBytes)
-		}
-		// 查询前后的哈希会把整个库读进 Go。这 100 行本身就有 400 MiB，不拿 TotalAlloc 当 SQLite 堆。
 		mu.Lock()
 		defer mu.Unlock()
 		if len(seen) > 0 {

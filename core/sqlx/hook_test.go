@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -98,50 +97,45 @@ func TestWideRowMemoryBound(t *testing.T) {
 	for i := range parts {
 		parts[i] = "randomblob(3145728)"
 	}
-	before := processRSS(t)
+	before := processHWM(t)
 	var live int64
 	onSQLiteRow = func() {
-		if n := mustRSS(t); n > live {
+		if n := mustStatusKB(t, "VmHWM:"); n > live {
 			live = n
 		}
 	}
 	t.Cleanup(func() { onSQLiteRow = nil })
-	runtime.GC()
-	var heapBefore runtime.MemStats
-	runtime.ReadMemStats(&heapBefore)
 	res, err := tool.Execute(ctx, tools.Call{Args: []byte(`{"sql":"SELECT ` + strings.Join(parts, ", ") + `"}`)})
-	var heapAfter runtime.MemStats
-	runtime.ReadMemStats(&heapAfter)
+	if n := processHWM(t); n > live {
+		live = n
+	}
 	var te *tools.Error
 	if !errors.As(err, &te) || te.Code != CodeResultTooLarge || te.Retryable || res.Content != "" {
 		t.Fatalf("宽行 err=%v res=%+v", err, res)
 	}
 	// modernc 把 SQLITE_DEFAULT_MEMSTATUS 编成 0，sqlite3_memory_highwater 一直是 0。
-	// 驱动的 malloc 走 mmap。这一行还在寄存器里时读进程驻留内存，就是驱动侧的高水位。
+	// 驱动的 malloc 走 libc，不进 Go 的 TotalAlloc。这一行还在寄存器里时读 VmHWM。
 	delta := live - before
 	const sqliteBound = MaxResultColumns * MaxValueBytes
-	t.Logf("驻留内存增加 %d 字节，Go 分配 %d 字节", delta, heapAfter.TotalAlloc-heapBefore.TotalAlloc)
+	t.Logf("VmHWM 增加 %d 字节", delta)
 	if delta < MaxResultColumns*blob-4<<20 || delta > sqliteBound+32<<20 {
-		t.Fatalf("这一行驻留内存增加 %d，应盖住 %d 且不超过大约 128 MiB（%d）", delta, MaxResultColumns*blob, sqliteBound)
-	}
-	if got := heapAfter.TotalAlloc - heapBefore.TotalAlloc; got > MaxResultBytes {
-		t.Fatalf("Go 分配了 %d 字节，上限 %d", got, MaxResultBytes)
+		t.Fatalf("这一行 VmHWM 增加 %d，应盖住 %d 且不超过大约 128 MiB（%d）", delta, MaxResultColumns*blob, sqliteBound)
 	}
 }
 
-func processRSS(t *testing.T) int64 {
+func processHWM(t *testing.T) int64 {
 	t.Helper()
-	return mustRSS(t)
+	return mustStatusKB(t, "VmHWM:")
 }
 
-func mustRSS(t *testing.T) int64 {
+func mustStatusKB(t *testing.T, key string) int64 {
 	t.Helper()
 	body, err := os.ReadFile("/proc/self/status")
 	if err != nil {
-		t.Fatalf("读驻留内存: %v", err)
+		t.Fatalf("读 %s: %v", key, err)
 	}
 	for _, line := range strings.Split(string(body), "\n") {
-		if !strings.HasPrefix(line, "VmRSS:") {
+		if !strings.HasPrefix(line, key) {
 			continue
 		}
 		fields := strings.Fields(line)
@@ -154,7 +148,7 @@ func mustRSS(t *testing.T) int64 {
 		}
 		return kb << 10
 	}
-	t.Fatal("没有 VmRSS")
+	t.Fatalf("没有 %s", key)
 	return 0
 }
 

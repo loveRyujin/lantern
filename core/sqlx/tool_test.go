@@ -598,38 +598,6 @@ func (noopQuery) QueryContext(context.Context, string, ...any) (*sql.Rows, error
 	return nil, errors.New("不应查询")
 }
 
-func TestHeapLimitAllowsWorkspaceWrites(t *testing.T) {
-	ctx := t.Context()
-	h, err := workspace.Create(ctx, t.TempDir(), "堆上限")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = h.Close() })
-	path := filepath.Join(h.Dir, "analytics.db")
-	opened, err := sqlx.Open(ctx, path, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = opened.Close() })
-	if _, err := h.Analytics.ExecContext(ctx, `INSERT INTO users (id, display_name, city) VALUES ('u', '写', '杭州')`); err != nil {
-		t.Fatalf("业务库写入: %v", err)
-	}
-	if err := audit.NewSQLite(h.Runs).Append(ctx, audit.Record{Actor: "run_sql", Action: "note", Detail: "堆上限下的审计"}); err != nil {
-		t.Fatalf("审计写入: %v", err)
-	}
-	sens := filepath.Join(h.Dir, "sensitive.db")
-	secret := openWritable(t, sens, "DELETE")
-	if _, err := secret.ExecContext(ctx, `CREATE TABLE user_contacts (phone TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := secret.ExecContext(ctx, `INSERT INTO user_contacts (phone) VALUES ('13800138000')`); err != nil {
-		t.Fatalf("敏感库写入: %v", err)
-	}
-	if err := secret.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestRunSQLAuditLandsInRunsDB(t *testing.T) {
 	ctx := t.Context()
 	h, err := workspace.Create(ctx, t.TempDir(), "audit-sql")
