@@ -1,0 +1,21 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - depguard
+  settings:
+    depguard:
+      rules:
+        # 前缀匹配，github.com/egoist/mygo 的子包同样禁止。
+        # files 里只有否定规则时，其余 Go 文件都会命中。
+        mygo-only-in-ui:
+          list-mode: lax
+          files:
+            - "!**/internal/ui/**"
+          deny:
+            - pkg: github.com/egoist/mygo
+              desc: "只有 internal/ui 可以 import github.com/egoist/mygo"
