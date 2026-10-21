@@ -36,10 +36,10 @@ func TestConsecutiveSeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = h.Close() })
-	if err := writeSeedApproval(ctx, h); err != nil {
+	if _, err := writeSeedApproval(ctx, h); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeSeedApproval(ctx, h); err != nil {
+	if _, err := writeSeedApproval(ctx, h); err != nil {
 		t.Fatalf("second approval on the same workspace: %v", err)
 	}
 	var fixed, prefixed int

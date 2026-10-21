@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loveRyujin/lantern/core/errcode"
 	"github.com/loveRyujin/lantern/core/workspace"
 	"github.com/loveRyujin/lantern/internal/seed"
 
@@ -313,6 +314,65 @@ func TestRecordExportApprovalRollsBack(t *testing.T) {
 	}
 	if approvals != 1 {
 		t.Fatalf("approvals = %d, want the original row only", approvals)
+	}
+}
+
+func TestNoGrantCannotWriteSensitive(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	h, err := workspace.Create(ctx, root, "星禾")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	assertSensitiveMissing(t, h.Dir)
+
+	_, err = h.ConfirmExport(ctx, "lantern-seed-missing", "user_contacts")
+	if !errors.Is(err, workspace.ErrExportUnconfirmed) {
+		t.Fatalf("ConfirmExport without approval: %v", err)
+	}
+	code, ok := errcode.CodeOf(err)
+	if !ok || code != errcode.ExportUnconfirmed {
+		t.Fatalf("code = %s ok=%v", code, ok)
+	}
+	if _, err := h.OpenSensitive(ctx, workspace.ExportGrant{}); !errors.Is(err, workspace.ErrExportUnconfirmed) {
+		t.Fatalf("OpenSensitive without grant: %v", err)
+	}
+	assertSensitiveMissing(t, h.Dir)
+
+	if err := seed.RecordExportApproval(ctx, h, "lantern-seed-ok", "user_contacts"); err != nil {
+		t.Fatal(err)
+	}
+	grant, err := h.ConfirmExport(ctx, "lantern-seed-ok", "user_contacts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := h.OpenSensitive(ctx, grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO user_contacts (user_id, phone, email) VALUES ('u1', '13800138000', 'a@example.com')
+	`); err != nil {
+		t.Fatal(err)
+	}
+	var phone string
+	if err := db.QueryRowContext(ctx, `SELECT phone FROM user_contacts WHERE user_id = 'u1'`).Scan(&phone); err != nil {
+		t.Fatal(err)
+	}
+	if phone != "13800138000" {
+		t.Fatalf("phone = %s", phone)
+	}
+}
+
+func assertSensitiveMissing(t *testing.T, dir string) {
+	t.Helper()
+	for _, name := range []string{"sensitive.db", "sensitive.db-wal", "sensitive.db-shm"} {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s exists or stat failed: %v", name, err)
+		}
 	}
 }
 
