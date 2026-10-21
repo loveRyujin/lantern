@@ -60,6 +60,8 @@ func TestCheckRejectsWritesAndPragmas(t *testing.T) {
 		{"V-34-11-bracket", "SELECT * FROM [pragma_table_info]('users')", "schema"},
 		{"V-34-11-backtick", "SELECT * FROM `pragma_table_info`('users')", "schema"},
 		{"V-34-11-dquote-case", `SELECT * FROM "Pragma_Table_Info"('users')`, "schema"},
+		{"V-34-11-squote", "SELECT * FROM 'pragma_table_info'('users')", "schema"},
+		{"V-34-11-squote-case", "SELECT * FROM 'Pragma_Table_Info'('users')", "schema"},
 		{"V-34-12-blank", "   ", "空"},
 		{"V-34-12-comment", "-- only", "空"},
 		{"V-34-12-block", "/* c */", "空"},

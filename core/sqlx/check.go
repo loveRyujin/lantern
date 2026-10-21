@@ -179,10 +179,12 @@ func (sc *scanner) nextToken() (token, error) {
 		sc.bump()
 		return token{kind: tokRParen, text: ")"}, nil
 	case '\'':
-		if err := sc.skipQuoted('\'', '\''); err != nil {
+		text, err := sc.readQuoted('\'', '\'')
+		if err != nil {
 			return token{}, err
 		}
-		return token{kind: tokOther, text: "string"}, nil
+		// 单引号里的内容默认只是字符串。后面紧跟括号时，SQLite 会把它当成标识符。
+		return token{kind: tokOther, text: text, quoted: true}, nil
 	case '"':
 		text, err := sc.readQuoted('"', '"')
 		if err != nil {
@@ -220,11 +222,6 @@ func (sc *scanner) readIdent() token {
 		sc.bump()
 	}
 	return token{kind: tokIdent, text: sc.s[start:sc.i]}
-}
-
-func (sc *scanner) skipQuoted(quote, esc rune) error {
-	_, err := sc.readQuoted(quote, esc)
-	return err
 }
 
 func (sc *scanner) readQuoted(quote, esc rune) (string, error) {
@@ -332,11 +329,16 @@ func findForbidden(toks []token) string {
 		}
 	}
 	for i, tok := range toks {
+		// SQLite 允许 FROM 'pragma_table_info'(...)。这不是普通字符串，是表值函数。
+		if tok.kind == tokOther && tok.quoted && isPragmaIdent(strings.ToLower(tok.text)) && nextIsParen(toks, i) {
+			consider(4, msgPragma)
+			continue
+		}
 		if tok.kind != tokIdent {
 			continue
 		}
 		// 用解析后的标识符，不用原文子串。双引号、方括号、反引号先脱掉再看。
-		// 字符串和注释不是标识符，里面出现 pragma_ 不会被当成 PRAGMA。
+		// 单独的字符串和注释里出现 pragma_ 不会被当成 PRAGMA。
 		upper := strings.ToUpper(tok.text)
 		lower := strings.ToLower(tok.text)
 		if isPragmaIdent(lower) {

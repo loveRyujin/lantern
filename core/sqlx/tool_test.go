@@ -47,6 +47,7 @@ func TestRunSQLRejectsBeforeQuery(t *testing.T) {
 		{"V-34-11-dquote", `SELECT * FROM "pragma_table_info"('users')`, "schema"},
 		{"V-34-11-bracket", "SELECT * FROM [pragma_table_info]('users')", "schema"},
 		{"V-34-11-backtick", "SELECT * FROM `pragma_table_info`('users')", "schema"},
+		{"V-34-11-squote", "SELECT * FROM 'pragma_table_info'('users')", "schema"},
 	}
 	for i, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
@@ -926,6 +927,36 @@ func TestRunSQLByteCap(t *testing.T) {
 	}
 }
 
+func TestRunSQLWideRowByteCap(t *testing.T) {
+	_, _, tool, _, _ := newFixture(t)
+	const cols = 400
+	parts := make([]string, cols)
+	for i := range parts {
+		parts[i] = "hex(zeroblob(500000))"
+	}
+	query := "SELECT " + strings.Join(parts, ", ")
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	res, err := tool.Execute(t.Context(), callSQL(query, nil))
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeResult(t, res)
+	if !got.Truncated || got.TruncateReason != sqlx.TruncateBytes || got.RowCount != 0 || len(got.Rows) != 0 {
+		t.Fatalf("宽行 = %+v", got)
+	}
+	if strings.Count(res.Content, "0") > 64 {
+		t.Fatalf("宽行进了结果: %s", res.Content)
+	}
+	const bound = 32 << 20
+	if delta := after.TotalAlloc - before.TotalAlloc; delta > bound {
+		t.Fatalf("这一行分配了 %d 字节，上限 %d", delta, bound)
+	}
+}
+
 func TestRunSQLWALCreatedAfterOpenIsBusy(t *testing.T) {
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "analytics.db")
@@ -984,6 +1015,58 @@ func TestRunSQLWALCreatedAfterOpenIsBusy(t *testing.T) {
 	got := decodeResult(t, res)
 	if got.RowCount != 1 || got.Rows[0][0] != "new" {
 		t.Fatalf("重试读到 %+v，库里已经是 new", got)
+	}
+}
+
+func TestSecondOpenDoesNotHideNewWAL(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "analytics.db")
+	w := openWritable(t, path, "DELETE")
+	if _, err := w.ExecContext(ctx, `CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.ExecContext(ctx, `INSERT INTO t (id, name) VALUES (1, 'old')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	removeSidecars(path)
+
+	db1, err := sqlx.Open(ctx, path, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db1.Close() })
+	db2, err := sqlx.Open(ctx, path, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db2.Close() })
+	tool, err := sqlx.NewTool(db1, path, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db1.SetMaxIdleConns(0)
+	db1.SetMaxIdleConns(2)
+
+	w2 := openWritable(t, path, "WAL")
+	if _, err := w2.ExecContext(ctx, `UPDATE t SET name = 'new' WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	later, err := sqlx.Open(ctx, path, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = later.Close() })
+
+	res, err := tool.Execute(ctx, callSQL(`SELECT name FROM t WHERE id = 1`, nil))
+	var te *tools.Error
+	if !errors.As(err, &te) || te.Code != sqlx.CodeBusy || !te.Retryable {
+		t.Fatalf("第二个 Open 之后 err = %v res = %+v", err, res)
+	}
+	if res.Content != "" || strings.Contains(err.Error(), "old") || strings.Contains(res.Content, "old") {
+		t.Fatalf("返回了过期数据: %+v %v", res, err)
 	}
 }
 

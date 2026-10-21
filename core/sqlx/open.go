@@ -9,9 +9,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"modernc.org/sqlite"
 )
@@ -84,7 +86,7 @@ func Open(ctx context.Context, path, allowed string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	rememberGeneration(resolved, snap)
+	rememberGeneration(db, snap)
 	return db, nil
 }
 
@@ -233,10 +235,33 @@ type generation struct {
 	snap Snap
 }
 
-var openGens sync.Map
+// openGens 按连接池记下打开时的文件状态，不按路径。
+// 同一路径再 Open 一次是另一个池。如果共用一条记录，后一次会盖掉前一次的快照，
+// 前一个池就看不到自己打开之后才出现的 -wal。
+// 键是池的地址，不是 *sql.DB 本身，避免地图把池留住。池被回收时清掉这条记录。
+var openGens sync.Map // key: dbKey
 
-func rememberGeneration(resolved string, snap Snap) {
-	openGens.Store(resolved, &generation{snap: snap})
+func dbKey(db *sql.DB) uintptr {
+	return uintptr(unsafe.Pointer(db))
+}
+
+func rememberGeneration(db *sql.DB, snap Snap) {
+	openGens.Store(dbKey(db), &generation{snap: snap})
+	runtime.SetFinalizer(db, func(db *sql.DB) {
+		openGens.Delete(dbKey(db))
+	})
+}
+
+func generationOf(db Queryer) *generation {
+	sqlDB, ok := db.(*sql.DB)
+	if !ok || sqlDB == nil {
+		return nil
+	}
+	v, ok := openGens.Load(dbKey(sqlDB))
+	if !ok {
+		return nil
+	}
+	return v.(*generation)
 }
 
 func hasWAL(snap Snap) bool {
@@ -250,12 +275,11 @@ func hasWAL(snap Snap) bool {
 
 // claimNewWAL 在打开之后才出现 -wal 时返回 true，并把这一代记成当前文件。
 // 调用方丢掉旧连接，这次查询返回 data_busy，下一次再用新连接读。
-func claimNewWAL(current Snap) bool {
-	v, ok := openGens.Load(current.Resolved)
-	if !ok {
+func claimNewWAL(db Queryer, current Snap) bool {
+	g := generationOf(db)
+	if g == nil {
 		return false
 	}
-	g := v.(*generation)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if hasWAL(g.snap) || !hasWAL(current) {
@@ -266,12 +290,11 @@ func claimNewWAL(current Snap) bool {
 }
 
 // adoptGeneration 在查询过程中新出现 -wal 时更新这一代，让下一次重试打开新连接。
-func adoptGeneration(current Snap) {
-	v, ok := openGens.Load(current.Resolved)
-	if !ok {
+func adoptGeneration(db Queryer, current Snap) {
+	g := generationOf(db)
+	if g == nil {
 		return
 	}
-	g := v.(*generation)
 	g.mu.Lock()
 	g.snap = current
 	g.mu.Unlock()

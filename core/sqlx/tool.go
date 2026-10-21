@@ -80,7 +80,7 @@ func (t *Tool) Execute(ctx context.Context, call tools.Call) (tools.Result, erro
 		return tools.Result{}, ErrFileChanged
 	}
 	// Open 之后才出现 -wal。旧连接可能还停在打开时的快照上，这次不读。
-	if claimNewWAL(before) {
+	if claimNewWAL(t.db, before) {
 		dropIdle(t.db)
 		return tools.Result{}, busyErr()
 	}
@@ -133,7 +133,7 @@ func (t *Tool) sameFile(before Snap) error {
 	after, err := Snapshot(t.path)
 	if err != nil || before.Unchanged(after) != nil {
 		if err == nil && !hasWAL(before) && hasWAL(after) {
-			adoptGeneration(after)
+			adoptGeneration(t.db, after)
 		}
 		dropIdle(t.db)
 		return busyErr()

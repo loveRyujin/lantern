@@ -78,7 +78,7 @@ lantern/
 1. 词法校验：去掉注释后只允许一条语句，首个关键字必须是 `SELECT` 或 `WITH`，拒绝 `ATTACH`、`PRAGMA`、`load_extension` 等关键字和函数。
 2. 连接层：用 `file:analytics.db?mode=ro` 打开，并设置 `PRAGMA query_only=ON`；`sensitive.db` 从不 ATTACH 到这个连接上。
 3. authorizer 回调：如果 modernc 暴露了 `sqlite3_set_authorizer`，就只放行 SQLITE_READ 和 SQLITE_SELECT 这类操作；W2 先确认这个 API 能不能用，用不了就只靠前两层，并在报告中注明。
-- 超时：用 context 取消（modernc 支持 interrupt）。返回行数上限 1000 行。结果还有 1 MiB 的总字节上限，读的过程中累计，超了就停，`truncated` 为 true，并说明是字节上限截断的。单个超大单元格也算进这 1 MiB。
+- 超时：用 context 取消（modernc 支持 interrupt）。返回行数上限 1000 行。结果还有 1 MiB 的总字节上限，读的过程中累计，超了就停，`truncated` 为 true，并说明是字节上限截断的。单个超大单元格也算进这 1 MiB。多列时每个值的 `SQLITE_LIMIT_LENGTH` 是剩余预算除以列数，一行在进入内存之前就会被这个上限拦住。
 - 只读连接不加 `immutable`。导入、种子或迁移写入时拿着锁。`run_sql` 拿不到这把锁，就返回可重试的 `data_busy`，不把行交给模型。库已经是 WAL 模式、旁边却没有 `-wal` 时，只读打开会把 `-wal` 建出来；查询前后的哈希从这次连接建立之后开始算。
 - 每次查询后再核对一次。主库哈希变了、已有 `-wal` 的哈希变了，或者新出现了 `-wal`，这次结果丢掉，同样返回可重试的 `data_busy`。可能过期的行不会交给模型。Open 之后才出现 `-wal` 时也是 `data_busy`，避免连接还停在打开时的快照上。`-shm` 不参与哈希：它是 WAL 的共享内存索引，只读连接为了协调也会改它，里面没有业务行。
 - `PRAGMA` 和 `pragma_*` 表值函数都拒绝。双引号、方括号、反引号里的名字按解析后的标识符判断，不在整段 SQL 里搜子串。

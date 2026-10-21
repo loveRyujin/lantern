@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/base64"
 	"errors"
 	"net/url"
 	"os"
@@ -49,6 +50,20 @@ func TestExecuteDetectsFileChange(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "analytics.db") || strings.Contains(err.Error(), filepath.Dir(path)) {
 		t.Fatalf("哈希错误带了路径: %v", err)
+	}
+}
+
+func TestCellBytesCountsBase64(t *testing.T) {
+	raw := []byte{0xff, 0x00, 0xfe}
+	if got, want := cellBytes(raw), base64.StdEncoding.EncodedLen(len(raw)); got != want {
+		t.Fatalf("[]byte 按原始长度计了 %d，编码后是 %d", got, want)
+	}
+	if cellLimit(1) != MaxResultBytes {
+		t.Fatalf("单列上限 %d", cellLimit(1))
+	}
+	per := cellLimit(400)
+	if per*400 > MaxResultBytes {
+		t.Fatalf("400 列时一行能到 %d", per*400)
 	}
 }
 

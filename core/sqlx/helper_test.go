@@ -155,3 +155,8 @@ func (s *spyDB) QueryContext(ctx context.Context, query string, args ...any) (*s
 	s.n++
 	return s.DB.QueryContext(ctx, query, args...)
 }
+
+func (s *spyDB) Conn(ctx context.Context) (*sql.Conn, error) {
+	s.n++
+	return s.DB.Conn(ctx)
+}

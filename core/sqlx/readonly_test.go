@@ -143,6 +143,8 @@ func TestReadOnlyRejectsQuotedPragmaFunctions(t *testing.T) {
 		"SELECT * FROM [pragma_table_info]('t')",
 		"SELECT * FROM `pragma_table_info`('t')",
 		`SELECT * FROM "Pragma_Table_Info"('t')`,
+		"SELECT * FROM 'pragma_table_info'('t')",
+		"SELECT * FROM 'Pragma_Table_Info'('t')",
 	}
 	for _, query := range forms {
 		t.Run(query, func(t *testing.T) {
