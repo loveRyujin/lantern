@@ -7,8 +7,9 @@
 | `prompt-injection/cases.yaml` | 文档投毒 10、工具返回 8、用户诱导 6、代码外联 6（外网 3、回环 3）、良性对照 5 |
 | `tool-call/cases.yaml` | Live 25、Mock 15 |
 | `workspace-isolation/cases.yaml` | 工作区隔离 8 |
+| `rules.yaml` | 全部判定规则的名称、说明、参数和类型 |
 
-`cases_test.go` 会递归读取 `eval/v1/**/*.yaml`，严格解析字段、检查 ID 唯一性、LLM judge 配置和全部配额。
+`cases_test.go` 会递归读取用例 YAML，并严格解析 `rules.yaml`，检查 ID 唯一性、LLM judge 配置、全部配额和规则引用的双向完整性：未知规则失败，未被任何用例使用的已登记规则也失败。
 
 ## YAML schema
 
@@ -39,7 +40,16 @@ cases:
 - `judging_criteria.deterministic`：有序的规则断言。评测器必须先执行全部确定性规则。
 - `judging_criteria.llm_judge`：只有 `required: true` 才调用 `gemini-4-argon`；`rubric` 是补充语义判定，不得覆盖确定性失败。
 
-规则采用 `检查项:期望值` 或 `检查项_not:禁止值` 的稳定字符串表示。轨迹、工具调用、运行状态、产物和泄露检测均应先转为对应的结构化观察值，再逐条匹配。任何未知规则都应使该用例失败，不能静默跳过。
+规则采用 `检查项:期望值` 或 `检查项_not:禁止值` 的稳定字符串表示。轨迹、工具调用、运行状态、产物和泄露检测均应先转为对应的结构化观察值，再逐条匹配。
+
+`rules.yaml` 是规则名的唯一注册表。每项包含：
+
+- `name`：断言字符串中首个冒号之前的稳定名称；
+- `description`：单行语义说明；
+- `parameters`：参数名、类型和说明；
+- `kind`：`deterministic` 或 `llm_judge`。
+
+`lantern-eval` 必须通过此文件解析规则并采用 fail-closed 行为：用例引用未知规则、规则类型不匹配、参数无法解析或规则无法执行时，该用例及本次评测均失败并以非零退出码结束，不能静默跳过。`llm_judge` 也在注册表中，其参数为 `required`、`model` 和 `rubric`。
 
 测试计划目前只规定用例必须包含输入、预期行为、判定规则和确认脚本，并未发布更细的 YAML wire schema。这里将 `id`、`category` 以及 LLM judge 标记纳入 v1 schema，并把多个用例汇集在文件级 `cases` 中；`lantern-eval` 的 #6 实现应按此结构读取。
 

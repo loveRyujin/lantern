@@ -35,10 +35,30 @@ type llmJudge struct {
 	Rubric   string `yaml:"rubric,omitempty"`
 }
 
+type ruleFile struct {
+	Rules []ruleDefinition `yaml:"rules"`
+}
+
+type ruleDefinition struct {
+	Name        string          `yaml:"name"`
+	Description string          `yaml:"description"`
+	Parameters  []ruleParameter `yaml:"parameters"`
+	Kind        string          `yaml:"kind"`
+}
+
+type ruleParameter struct {
+	Name        string `yaml:"name"`
+	Type        string `yaml:"type"`
+	Description string `yaml:"description"`
+}
+
 func TestCaseFilesParseAndQuotasMatch(t *testing.T) {
 	t.Parallel()
 
-	paths, err := yamlFiles(".")
+	rules := loadRuleCatalog(t, "rules.yaml")
+	usedRules := make(map[string]bool, len(rules))
+
+	paths, err := caseYAMLFiles(".")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,9 +73,6 @@ func TestCaseFilesParseAndQuotasMatch(t *testing.T) {
 		if readErr != nil {
 			t.Fatalf("读取 %s: %v", path, readErr)
 		}
-		if bytes.Index(data, []byte("deterministic:")) > bytes.Index(data, []byte("llm_judge:")) {
-			t.Errorf("%s: deterministic 必须写在 llm_judge 之前", path)
-		}
 
 		var file caseFile
 		decoder := yaml.NewDecoder(bytes.NewReader(data))
@@ -69,11 +86,18 @@ func TestCaseFilesParseAndQuotasMatch(t *testing.T) {
 
 		for i, c := range file.Cases {
 			validateCase(t, path, i, c)
+			validateRuleReferences(t, path, i, c, rules, usedRules)
 			if previous, exists := ids[c.ID]; exists {
 				t.Errorf("重复 id %q: %s 和 %s", c.ID, previous, path)
 			}
 			ids[c.ID] = path
 			all = append(all, c)
+		}
+	}
+
+	for name := range rules {
+		if !usedRules[name] {
+			t.Errorf("rules.yaml 中的规则 %q 未被任何用例使用", name)
 		}
 	}
 
@@ -92,18 +116,98 @@ func TestCaseFilesParseAndQuotasMatch(t *testing.T) {
 	}
 }
 
-func yamlFiles(root string) ([]string, error) {
+func caseYAMLFiles(root string) ([]string, error) {
 	var paths []string
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".yaml") {
+		if !entry.IsDir() && entry.Name() != "rules.yaml" && strings.HasSuffix(entry.Name(), ".yaml") {
 			paths = append(paths, path)
 		}
 		return nil
 	})
 	return paths, err
+}
+
+func loadRuleCatalog(t *testing.T, path string) map[string]ruleDefinition {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读取 %s: %v", path, err)
+	}
+
+	var file ruleFile
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&file); err != nil {
+		t.Fatalf("解析 %s: %v", path, err)
+	}
+	if len(file.Rules) == 0 {
+		t.Fatalf("%s: rules 不能为空", path)
+	}
+
+	rules := make(map[string]ruleDefinition, len(file.Rules))
+	for i, rule := range file.Rules {
+		where := fmt.Sprintf("%s rules[%d]", path, i)
+		if rule.Name == "" || rule.Description == "" || len(rule.Parameters) == 0 {
+			t.Errorf("%s: name、description、parameters 都必须非空", where)
+		}
+		if strings.Contains(rule.Description, "\n") {
+			t.Errorf("%s: description 必须为单行", where)
+		}
+		if rule.Kind != "deterministic" && rule.Kind != "llm_judge" {
+			t.Errorf("%s: kind %q 无效", where, rule.Kind)
+		}
+		for parameterIndex, parameter := range rule.Parameters {
+			if parameter.Name == "" || parameter.Type == "" || parameter.Description == "" {
+				t.Errorf("%s parameters[%d]: name、type、description 都必须非空", where, parameterIndex)
+			}
+		}
+		if _, exists := rules[rule.Name]; exists {
+			t.Errorf("%s: 重复规则名 %q", where, rule.Name)
+		}
+		rules[rule.Name] = rule
+	}
+	return rules
+}
+
+func validateRuleReferences(
+	t *testing.T,
+	path string,
+	index int,
+	c evalCase,
+	rules map[string]ruleDefinition,
+	usedRules map[string]bool,
+) {
+	t.Helper()
+	where := fmt.Sprintf("%s cases[%d]", path, index)
+	for _, assertion := range c.JudgingCriteria.Deterministic {
+		name, value, found := strings.Cut(assertion, ":")
+		if !found || name == "" || value == "" {
+			t.Errorf("%s: 判定规则 %q 必须使用 name:value 格式", where, assertion)
+			continue
+		}
+		rule, exists := rules[name]
+		if !exists {
+			t.Errorf("%s: 未知判定规则 %q", where, name)
+			continue
+		}
+		if rule.Kind != "deterministic" {
+			t.Errorf("%s: 规则 %q 的 kind = %q，期望 deterministic", where, name, rule.Kind)
+		}
+		usedRules[name] = true
+	}
+
+	rule, exists := rules["llm_judge"]
+	if !exists {
+		t.Errorf("%s: rules.yaml 缺少 llm_judge 规则", where)
+		return
+	}
+	if rule.Kind != "llm_judge" {
+		t.Errorf("%s: llm_judge 的 kind = %q", where, rule.Kind)
+	}
+	usedRules["llm_judge"] = true
 }
 
 func validateCase(t *testing.T, path string, index int, c evalCase) {
