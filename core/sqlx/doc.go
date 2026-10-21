@@ -22,6 +22,7 @@
 // 结果列数在准备语句之后、第一步之前检查，最多 32 列，再多就以 sql_rejected 交回模型，不计入连续失败。
 // 每一列先看写进 JSON 的长度，再决定要不要拷贝。一行超过 1 MiB 就停，不返回已读出的行。
 // TEXT 按原始字节计。BLOB 在 JSON 里是 base64，1 MiB 按编码后的长度计，不按原始字节。Go 侧停在 1 MiB。
+// 已知限制：TEXT 里的非法 UTF-8 字节会被换成 U+FFFD。JSON 编码后体积大约能到原来的 3 倍，因此可能超过 1 MiB。无损处理计划放到 W3（https://github.com/loveRyujin/lantern/issues/38）。
 // 只读连接设置 temp_store=FILE，并把 cache_size 留在 256 KiB。
 // 这只让 ORDER BY 的排序把多出来的行写到临时文件。100 行各 4 MiB 的 ORDER BY random() 断言 VmHWM 峰值不超过 256 MiB。
 // 临时文件在系统临时目录，不在业务库旁边，也不进文件哈希。
