@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -68,6 +69,44 @@ func TestLoopSQLRejectedDoesNotRerunOrTouchFailureCount(t *testing.T) {
 		}
 		if !strings.Contains(out.Text, "完成") {
 			t.Fatalf("改写后的查询没有跑完: %q", out.Text)
+		}
+	})
+}
+
+func TestLoopSQLResultTooLargeDoesNotTouchFailureCount(t *testing.T) {
+	t.Run("不计入也不清零", func(t *testing.T) {
+		// 两次参数失败之后，单独一行超过 1 MiB。它既不计入连续失败，也不把计数清零。
+		// 紧接着的参数失败是第三次，运行结束。同一条 SQL 即使把重试次数调到 3 也只执行一次。
+		huge := "SELECT hex(zeroblob(" + strconv.Itoa(sqlx.MaxResultBytes) + "))"
+		h, sqlTool := newSQLHarness(t,
+			badStep("b1"),
+			badStep("b2"),
+			sqlStep("big", huge),
+			badStep("b3"),
+			llm.Say("不该走到这里"),
+		)
+		out, err := h.run()
+		if out.ModelCalls != 4 || h.provider.n() != 4 {
+			t.Fatalf("模型调用 %d/%d，想要 4。计入会停在 3，清零会走到最终回答", out.ModelCalls, h.provider.n())
+		}
+		if sqlTool.n() != 1 {
+			t.Fatalf("run_sql %d 次，同一条 SQL 被自动重跑了", sqlTool.n())
+		}
+		if !strings.Contains(sqlTool.query(0), "zeroblob") {
+			t.Fatalf("执行的 SQL = %s", sqlTool.query(0))
+		}
+		if out.State != StateFailed || !retryable(err) || errorCode(err) != tools.CodeArgumentsInvalid {
+			t.Fatalf("结果 = %+v err=%v", out, err)
+		}
+		if strings.Contains(out.Text, "不该走到这里") {
+			t.Fatal("sql_result_too_large 把连续计数清零了")
+		}
+		feedback := requestText(h.provider.requests()[3])
+		if !strings.Contains(feedback, sqlx.CodeResultTooLarge) {
+			t.Fatalf("超限没有作为工具错误回到模型: %s", feedback)
+		}
+		if !strings.Contains(feedback, "substr") || !strings.Contains(feedback, "少选几列") {
+			t.Fatalf("模型没看到改写建议: %s", feedback)
 		}
 	})
 }

@@ -35,6 +35,11 @@ const CodeRejected = "sql_rejected"
 // 可重试。这次不返回行，避免把可能过期的结果交给模型。
 const CodeBusy = "data_busy"
 
+// CodeResultTooLarge 表示单独一行超过字节上限。
+// 这次不返回任何行，包括这一行之前已经读出的行。不可重试。
+// 这不是参数失败。循环既不把它计入连续失败，也不因此把连续失败清零。
+const CodeResultTooLarge = "sql_result_too_large"
+
 // Tool 是 run_sql。用 [tools.SpecRunSQL] 注册，不另写一套参数说明。
 type Tool struct {
 	db    Queryer
@@ -108,6 +113,9 @@ func (t *Tool) Execute(ctx context.Context, call tools.Call) (tools.Result, erro
 		if isBusy(qerr) {
 			return tools.Result{}, busyErr()
 		}
+		if errors.Is(qerr, errRowTooLarge) {
+			return tools.Result{}, resultTooLarge()
+		}
 		msg := scrub(qerr.Error(), t.path, query)
 		if writeDenied(qerr) {
 			if aerr := t.writeAudit(ctx, call, "只读连接拒绝了写入"); aerr != nil {
@@ -158,6 +166,16 @@ func (t *Tool) writeAudit(ctx context.Context, call tools.Call, detail string) e
 // 这不是参数失败。循环既不把它计入连续失败，也不因此把连续失败清零。
 func rejected(message string) error {
 	return &tools.Error{Code: CodeRejected, Retryable: false, Message: message}
+}
+
+// resultTooLarge 把单行超限交回模型，让它少选几列或用 substr 截短。
+// Retryable 为 false：同一条 SQL 不会自动重跑。结果里没有任何行。
+func resultTooLarge() error {
+	return &tools.Error{
+		Code:      CodeResultTooLarge,
+		Retryable: false,
+		Message:   "单行结果超过 1 MiB，这次没有返回任何行。请少选几列，或用 substr 截短字段。",
+	}
 }
 
 // busyErr 是可重试的 data_busy。结果已经丢掉，消息里不带行，也不带路径。

@@ -41,7 +41,8 @@ type Result struct {
 
 // Query 执行一条已经通过扫描的语句，最多取 limit 行，并且不超过 MaxResultBytes。
 // 不改写 SQL。多读一行只为了判断要不要标 truncated。limit 必须在 1 和 MaxLimit 之间。
-// 字节按读到的单元格累计，这一行放不下就停下，不把超限的那一行放进结果。
+// 字节按读到的单元格累计。单独一行超过 MaxResultBytes 时返回 [errRowTooLarge]，
+// 这次已读出的行也不返回。多行各自没超限、加在一起超了，才截断并保留已经放下的行。
 // 列数多于 1 时，先把 SQLITE_LIMIT_LENGTH 收成剩余预算除以列数，再执行。
 // SQLite 在生成超限的值之前就会返回 TOOBIG，整行不会先进入内存。
 func Query(ctx context.Context, db Queryer, query string, limit int) (Result, error) {
@@ -79,7 +80,7 @@ func queryCapped(ctx context.Context, pool interface {
 			return Result{}, &codedTimeout{err: err}
 		}
 		if isTooBig(err) {
-			return cutByBytes(nil, nil), nil
+			return Result{}, errRowTooLarge
 		}
 		return Result{}, err
 	}
@@ -138,7 +139,7 @@ func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result
 			return Result{}, &codedTimeout{err: err}
 		}
 		if isTooBig(err) {
-			return cutByBytes(nil, nil), nil
+			return Result{}, errRowTooLarge
 		}
 		return Result{}, err
 	}
@@ -169,11 +170,14 @@ func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result
 				return Result{}, &codedTimeout{err: err}
 			}
 			if isTooBig(err) {
-				return cutByBytes(cols, out), nil
+				return Result{}, errRowTooLarge
 			}
 			return Result{}, err
 		}
 		n := rowBytes(row)
+		if n > MaxResultBytes {
+			return Result{}, errRowTooLarge
+		}
 		if used+n > MaxResultBytes {
 			return cutByBytes(cols, out), nil
 		}
@@ -185,7 +189,7 @@ func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result
 			return Result{}, &codedTimeout{err: err}
 		}
 		if isTooBig(err) {
-			return cutByBytes(cols, out), nil
+			return Result{}, errRowTooLarge
 		}
 		return Result{}, err
 	}
@@ -197,6 +201,9 @@ func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result
 	}
 	return Result{Columns: cols, Rows: out, RowCount: len(out), Truncated: truncated, TruncateReason: reason}, nil
 }
+
+// errRowTooLarge 表示单独一行放不进字节上限。调用方丢掉这次已经读出的行。
+var errRowTooLarge = errors.New("sqlx: 单行结果超过字节上限")
 
 func cutByBytes(cols []string, rows [][]any) Result {
 	if cols == nil {

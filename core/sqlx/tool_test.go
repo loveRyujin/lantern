@@ -898,18 +898,13 @@ func TestRunSQLByteCap(t *testing.T) {
 	}
 
 	huge, err := tool.Execute(ctx, callSQL(`SELECT hex(zeroblob(`+itoa(sqlx.MaxResultBytes)+`))`, nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	gotHuge := decodeResult(t, huge)
-	if !gotHuge.Truncated || gotHuge.TruncateReason != sqlx.TruncateBytes || gotHuge.RowCount != 0 {
-		t.Fatalf("超大单元格 = %+v", gotHuge)
-	}
-	if !strings.Contains(huge.Summary, "字节") {
-		t.Fatalf("摘要没有说明字节截断: %s", huge.Summary)
-	}
-	if strings.Count(huge.Content, "0") > 64 {
-		t.Fatalf("超大单元格进了结果: %s", huge.Content)
+	assertResultTooLarge(t, huge, err)
+
+	earlier := `SELECT 'keep-me' UNION ALL SELECT hex(zeroblob(` + itoa(sqlx.MaxResultBytes) + `))`
+	dropped, err := tool.Execute(ctx, callSQL(earlier, nil))
+	assertResultTooLarge(t, dropped, err)
+	if strings.Contains(dropped.Content, "keep-me") || strings.Contains(err.Error(), "keep-me") {
+		t.Fatalf("超限前的行还在: %+v %v", dropped, err)
 	}
 
 	both := `SELECT hex(zeroblob(400000)) UNION ALL SELECT hex(zeroblob(400000))`
@@ -927,6 +922,20 @@ func TestRunSQLByteCap(t *testing.T) {
 	}
 }
 
+func assertResultTooLarge(t *testing.T, res tools.Result, err error) {
+	t.Helper()
+	var te *tools.Error
+	if !errors.As(err, &te) || te.Code != sqlx.CodeResultTooLarge || te.Retryable {
+		t.Fatalf("err = %v，想要不可重试的 sql_result_too_large", err)
+	}
+	if res.Content != "" || res.Summary != "" {
+		t.Fatalf("单行超限仍返回了结果: %+v", res)
+	}
+	if !strings.Contains(err.Error(), "substr") || !strings.Contains(err.Error(), "少选几列") {
+		t.Fatalf("错误没有建议少选列或 substr: %v", err)
+	}
+}
+
 func TestRunSQLWideRowByteCap(t *testing.T) {
 	_, _, tool, _, _ := newFixture(t)
 	const cols = 400
@@ -941,15 +950,9 @@ func TestRunSQLWideRowByteCap(t *testing.T) {
 	res, err := tool.Execute(t.Context(), callSQL(query, nil))
 	var after runtime.MemStats
 	runtime.ReadMemStats(&after)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := decodeResult(t, res)
-	if !got.Truncated || got.TruncateReason != sqlx.TruncateBytes || got.RowCount != 0 || len(got.Rows) != 0 {
-		t.Fatalf("宽行 = %+v", got)
-	}
-	if strings.Count(res.Content, "0") > 64 {
-		t.Fatalf("宽行进了结果: %s", res.Content)
+	assertResultTooLarge(t, res, err)
+	if strings.Count(res.Content, "0") > 64 || strings.Count(err.Error(), "0") > 64 {
+		t.Fatalf("宽行进了结果: %+v %v", res, err)
 	}
 	const bound = 32 << 20
 	if delta := after.TotalAlloc - before.TotalAlloc; delta > bound {
