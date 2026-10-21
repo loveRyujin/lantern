@@ -73,6 +73,40 @@ func TestLoopSQLRejectedDoesNotRerunOrTouchFailureCount(t *testing.T) {
 	})
 }
 
+func TestLoopSQLTooManyColumnsDoesNotTouchFailureCount(t *testing.T) {
+	t.Run("不计入也不清零", func(t *testing.T) {
+		parts := make([]string, sqlx.MaxResultColumns+1)
+		for i := range parts {
+			parts[i] = "1"
+		}
+		wide := "SELECT " + strings.Join(parts, ", ")
+		h, sqlTool := newSQLHarness(t,
+			badStep("b1"),
+			badStep("b2"),
+			sqlStep("wide", wide),
+			badStep("b3"),
+			llm.Say("不该走到这里"),
+		)
+		out, err := h.run()
+		if out.ModelCalls != 4 || h.provider.n() != 4 {
+			t.Fatalf("模型调用 %d/%d，想要 4。计入会停在 3，清零会走到最终回答", out.ModelCalls, h.provider.n())
+		}
+		if sqlTool.n() != 1 {
+			t.Fatalf("run_sql %d 次，同一条 SQL 被自动重跑了", sqlTool.n())
+		}
+		if out.State != StateFailed || !retryable(err) || errorCode(err) != tools.CodeArgumentsInvalid {
+			t.Fatalf("结果 = %+v err=%v", out, err)
+		}
+		if strings.Contains(out.Text, "不该走到这里") {
+			t.Fatal("列数超限把连续计数清零了")
+		}
+		feedback := requestText(h.provider.requests()[3])
+		if !strings.Contains(feedback, sqlx.CodeRejected) || !strings.Contains(feedback, "64") {
+			t.Fatalf("列数超限没有作为 sql_rejected 回到模型: %s", feedback)
+		}
+	})
+}
+
 func TestLoopSQLResultTooLargeDoesNotTouchFailureCount(t *testing.T) {
 	t.Run("不计入也不清零", func(t *testing.T) {
 		// 两次参数失败之后，单独一行超过 1 MiB。它既不计入连续失败，也不把计数清零。

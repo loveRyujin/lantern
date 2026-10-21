@@ -967,6 +967,14 @@ func TestRunSQLIntermediateValue(t *testing.T) {
 	if cellInt(gotSmall.Rows[0][9]) != int64(len(body)) {
 		t.Fatalf("length(body) = %v，想要 %d", gotSmall.Rows[0][9], len(body))
 	}
+	both, err := tool.Execute(ctx, callSQL(`SELECT substr(body, 1, 10), length(body) FROM docs WHERE id = 1`, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotBoth := decodeResult(t, both)
+	if gotBoth.Truncated || gotBoth.RowCount != 1 || gotBoth.Rows[0][0] != strings.Repeat("a", 10) || cellInt(gotBoth.Rows[0][1]) != int64(len(body)) {
+		t.Fatalf("substr 和 length = %+v，想要 %q 和 %d", gotBoth, strings.Repeat("a", 10), len(body))
+	}
 	if strings.Contains(small.Content, strings.Repeat("a", 64)) {
 		t.Fatal("正文进了结果")
 	}
@@ -1047,7 +1055,7 @@ func TestRunSQLManyRowsTruncateByBytes(t *testing.T) {
 
 func TestRunSQLManySmallColumns(t *testing.T) {
 	_, _, tool, _, _ := newFixture(t)
-	const cols = 40
+	const cols = sqlx.MaxResultColumns
 	res, err := tool.Execute(t.Context(), callSQL("SELECT "+strings.Join(literalCols(cols), ", "), nil))
 	if err != nil {
 		t.Fatal(err)
@@ -1066,9 +1074,22 @@ func literalCols(n int) []string {
 	return parts
 }
 
+func TestRunSQLTooManyColumns(t *testing.T) {
+	_, _, tool, _, _ := newFixture(t)
+	query := "SELECT " + strings.Join(literalCols(sqlx.MaxResultColumns+1), ", ")
+	res, err := tool.Execute(t.Context(), callSQL(query, nil))
+	var te *tools.Error
+	if !errors.As(err, &te) || te.Code != sqlx.CodeRejected || te.Retryable {
+		t.Fatalf("65 列 err = %v res = %+v", err, res)
+	}
+	if res.Content != "" || !strings.Contains(err.Error(), "64") || !strings.Contains(err.Error(), "少选几列") {
+		t.Fatalf("列数超限没有让模型改写: %+v %v", res, err)
+	}
+}
+
 func TestRunSQLWideRowByteCap(t *testing.T) {
 	_, _, tool, _, _ := newFixture(t)
-	const cols = 400
+	const cols = sqlx.MaxResultColumns
 	parts := make([]string, cols)
 	for i := range parts {
 		parts[i] = "hex(zeroblob(500000))"
@@ -1084,6 +1105,8 @@ func TestRunSQLWideRowByteCap(t *testing.T) {
 	if strings.Count(res.Content, "0") > 64 || strings.Count(err.Error(), "0") > 64 {
 		t.Fatalf("宽行进了结果: %+v %v", res, err)
 	}
+	// 64 列如果全算出来大约 64 MiB。按列看过再拷贝时，这里只会碰到前两列。
+	// 最坏大约 17 MiB：已收下的列不到 1 MiB，正在看的那一列最多 16 MiB。32 MiB 留一点余量。
 	const bound = 32 << 20
 	if delta := after.TotalAlloc - before.TotalAlloc; delta > bound {
 		t.Fatalf("这一行分配了 %d 字节，上限 %d", delta, bound)

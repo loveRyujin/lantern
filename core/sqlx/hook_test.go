@@ -61,6 +61,9 @@ func TestCellBytesCountsBase64(t *testing.T) {
 	if MaxValueBytes <= MaxResultBytes {
 		t.Fatalf("中间值上限 %d 没有比结果行 %d 松", MaxValueBytes, MaxResultBytes)
 	}
+	if MaxResultColumns < 10 {
+		t.Fatalf("列数上限 %d，10 列的小结果会被拒绝", MaxResultColumns)
+	}
 }
 
 func createEmptyDB(t *testing.T, path string) {

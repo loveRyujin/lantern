@@ -25,9 +25,12 @@ const (
 	// MaxResultBytes 是交回模型的一行最多能有的字节。中间值不算在这里。
 	MaxResultBytes = 1 << 20
 	// MaxValueBytes 是 SQLite 里单个值和表达式中间值的上限。比结果行松，
-	// 这样 length(一个 2 MiB 的值) 仍能返回那个很小的长度。
+	// 这样 length(一个 2 MiB 的值) 仍能返回那个很小的长度。不按列数再除。
 	MaxValueBytes = 16 << 20
-	TruncateBytes = "bytes"
+	// MaxResultColumns 是最终结果最多能有的列数。超过就拒绝，让模型改写查询。
+	// 这不是把 16 MiB 按列切开。列数乘以 16 MiB 不是一行的内存上限。
+	MaxResultColumns = 64
+	TruncateBytes    = "bytes"
 )
 
 // Result 是截断之后的查询结果。RowCount 是实际返回的行数，不是库里的总行数。
@@ -65,6 +68,9 @@ func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result
 		if isTimeout(ctx, err) {
 			return Result{}, &codedTimeout{err: err}
 		}
+		if tooManyColumns(err) {
+			return Result{}, errTooManyColumns
+		}
 		if rowTooLarge(err) {
 			return Result{}, errRowTooLarge
 		}
@@ -96,6 +102,9 @@ func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result
 			if isTimeout(ctx, err) {
 				return Result{}, &codedTimeout{err: err}
 			}
+			if tooManyColumns(err) {
+				return Result{}, errTooManyColumns
+			}
 			if rowTooLarge(err) {
 				return Result{}, errRowTooLarge
 			}
@@ -119,6 +128,9 @@ func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result
 		if isTimeout(ctx, err) {
 			return Result{}, &codedTimeout{err: err}
 		}
+		if tooManyColumns(err) {
+			return Result{}, errTooManyColumns
+		}
 		if rowTooLarge(err) {
 			return Result{}, errRowTooLarge
 		}
@@ -135,6 +147,9 @@ func queryRows(ctx context.Context, db Queryer, query string, limit int) (Result
 
 // errRowTooLarge 表示单独一行放不进字节上限。调用方丢掉这次已经读出的行。
 var errRowTooLarge = errors.New("sqlx: 单行结果超过字节上限")
+
+// errTooManyColumns 表示结果列数超过 MaxResultColumns。调用方把它当成 sql_rejected。
+var errTooManyColumns = errors.New("sqlx: 结果超过 64 列")
 
 func cutByBytes(cols []string, rows [][]any) Result {
 	if cols == nil {
@@ -192,9 +207,19 @@ func isTooBig(err error) bool {
 	return strings.Contains(msg, "sqlite_toobig") || strings.Contains(msg, "too big")
 }
 
+func tooManyColumns(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errTooManyColumns) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "too many columns")
+}
+
 // rowTooLarge 是整次查询该失败的结果过大。
 // TOOBIG 来自超过 MaxValueBytes 的单个值或中间值。结果行超过 MaxResultBytes 时，
-// 列门闩返回 [errRowTooLarge]，后面的列不再计算。
+// 列门闩在拷贝这一列之前返回 [errRowTooLarge]，后面的列不再计算。
 func rowTooLarge(err error) bool {
 	if err == nil {
 		return false

@@ -95,6 +95,13 @@ func limitResultLength(conn sqlite.ExecQuerierContext) error {
 	if got := sqlite3.Xsqlite3_limit(tls, db, sqlite3.SQLITE_LIMIT_LENGTH, -1); got != MaxValueBytes {
 		return fmt.Errorf("sqlx: SQLITE_LIMIT_LENGTH = %d，想要 %d", got, MaxValueBytes)
 	}
+	// 列数上限只拒绝过宽的结果，不拿来把上面的 16 MiB 按列切开。
+	if got := sqlite3.Xsqlite3_limit(tls, db, sqlite3.SQLITE_LIMIT_COLUMN, MaxResultColumns); got < 0 {
+		return fmt.Errorf("sqlx: sqlite3_limit(SQLITE_LIMIT_COLUMN): %d", got)
+	}
+	if got := sqlite3.Xsqlite3_limit(tls, db, sqlite3.SQLITE_LIMIT_COLUMN, -1); got != MaxResultColumns {
+		return fmt.Errorf("sqlx: SQLITE_LIMIT_COLUMN = %d，想要 %d", got, MaxResultColumns)
+	}
 	return nil
 }
 

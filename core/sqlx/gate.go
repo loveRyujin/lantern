@@ -10,8 +10,8 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
-// resultCellName 包在最终结果的每一列外面。它只数这一列交回模型的字节，
-// 一行超过 MaxResultBytes 就让语句失败，后面的列不再计算。
+// resultCellName 包在最终结果的每一列外面。
+// 每一列先看字节数，再决定要不要拷进结果。一行超过 MaxResultBytes 就失败，这一列不拷，后面的列也不再计算。
 const resultCellName = "lantern_cell"
 
 type cellBudget struct {

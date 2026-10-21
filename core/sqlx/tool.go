@@ -116,6 +116,9 @@ func (t *Tool) Execute(ctx context.Context, call tools.Call) (tools.Result, erro
 		if errors.Is(qerr, errRowTooLarge) {
 			return tools.Result{}, resultTooLarge()
 		}
+		if errors.Is(qerr, errTooManyColumns) {
+			return tools.Result{}, rejected("结果超过 64 列，请少选几列。")
+		}
 		msg := scrub(qerr.Error(), t.path, query)
 		if writeDenied(qerr) {
 			if aerr := t.writeAudit(ctx, call, "只读连接拒绝了写入"); aerr != nil {
