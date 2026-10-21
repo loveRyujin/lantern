@@ -80,8 +80,18 @@ func TestEnsureLockFileSymlinkIsNotFollowed(t *testing.T) {
 	_, err := Config{Root: root, SearchPaths: []string{}}.Ensure(context.Background())
 	assertPathEscape(t, err)
 	var pe *PathError
-	if !errors.As(err, &pe) || filepath.Clean(pe.Path) != filepath.Clean(lockPath) {
-		t.Fatalf("err=%v，想要拒绝 %s", err, lockPath)
+	if !errors.As(err, &pe) || pe == nil {
+		t.Fatalf("err=%v，想要 *PathError", err)
+	}
+	// macOS 上 /var 是指向 /private/var 的符号链接。Ensure 先 EvalSymlinks，
+	// 报出来的是解析后的目录，不能和 t.TempDir() 的字面路径逐字比较。
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(resolvedRoot, ensureLockName)
+	if filepath.Clean(pe.Path) != filepath.Clean(want) || filepath.Base(pe.Path) != ensureLockName {
+		t.Fatalf("拒绝的路径 = %s，想要 %s", pe.Path, want)
 	}
 	body, err := os.ReadFile(stale)
 	if err != nil || string(body) != "stale" {
