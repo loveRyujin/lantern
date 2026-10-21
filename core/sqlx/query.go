@@ -28,12 +28,10 @@ const (
 	MaxResultColumns = 32
 	// CacheKiB 是只读连接的页缓存，单位 KiB。PRAGMA cache_size 用负数表示 KiB。
 	// 留小，排序、DISTINCT、GROUP BY 和物化 CTE 才会把多出来的行写进临时文件。
-	// 不设置 sqlite3_hard_heap_limit64：那个上限是进程级的，工作区、审计和敏感库也会被卡住。
-	CacheKiB = 256
-	// SortMemBytes 是排序这类查询在 SQLite 堆上的大约上限，只给回归测试用。
-	// 生产路径没有进程级硬上限。超过之后若 SQLite 返回 NOMEM，映射成 sql_result_too_large。
-	SortMemBytes  int64 = 256 << 20
-	TruncateBytes       = "bytes"
+	// 不设置 sqlite3_hard_heap_limit64。它是进程级的，审计和其他库的写入也会被卡住，
+	// 而且 MEMSTATUS 默认关着，这个上限根本不会被检查。
+	CacheKiB      = 256
+	TruncateBytes = "bytes"
 )
 
 // Result 是截断之后的查询结果。RowCount 是实际返回的行数，不是库里的总行数。
@@ -55,8 +53,8 @@ type Result struct {
 // 多行各自没超限、加在一起超了，才截断并保留已经放下的完整行。
 // 表达式的中间值不受这 1 MiB 约束，只受连接上的 MaxValueBytes 约束。
 // Go 这边停在 1 MiB，不再把超出的列拷进来。
-// 子查询、物化 CTE、GROUP BY、UNION 和 IN 列表仍可能同时握住很多中间值，内存没有硬上限。
-// 只读连接用 temp_store=FILE 和较小的 cache_size 把排序多出来的行写到临时文件，不设进程级堆上限。
+// 子查询、物化 CTE、GROUP BY、UNION、IN 列表和 ORDER BY 仍可能同时握住很多中间值，内存没有硬上限。
+// 超时是现在的兜底。不设进程级堆上限。只读连接用 temp_store=FILE 和较小的 cache_size 把排序多出来的行写到临时文件。
 func Query(ctx context.Context, db Queryer, query string, limit int) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, &codedTimeout{err: err}
