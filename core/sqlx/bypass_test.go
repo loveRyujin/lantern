@@ -1,16 +1,22 @@
 package sqlx
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/loveRyujin/lantern/core/tools"
 	"modernc.org/libc"
+	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
@@ -106,6 +112,131 @@ func probeBypassMemory(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("order-by-many-rows", func(t *testing.T) {
+		sortPath := filepath.Join(t.TempDir(), "analytics.db")
+		createEmptyDB(t, sortPath)
+		fillSortRows(t, sortPath)
+		sortDB, err := Open(ctx, sortPath, sortPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sortDB.Close()
+		sortTool, err := NewTool(sortDB, sortPath, sortPath, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := filepath.Dir(sortPath)
+		before, err := listDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resetMemHighwater()
+		runtime.GC()
+		var heapBefore runtime.MemStats
+		runtime.ReadMemStats(&heapBefore)
+		var seen []string
+		var mu sync.Mutex
+		stop := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			ticker := time.NewTicker(5 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-ticker.C:
+					names, err := listDir(dir)
+					if err != nil {
+						continue
+					}
+					for name := range names {
+						if _, ok := before[name]; ok {
+							continue
+						}
+						mu.Lock()
+						seen = append(seen, name)
+						mu.Unlock()
+					}
+				}
+			}
+		}()
+		res, err := sortTool.Execute(ctx, sqlCall(t, `SELECT body FROM t ORDER BY random()`))
+		close(stop)
+		<-done
+		hw := memHighwater()
+		var heapAfter runtime.MemStats
+		runtime.ReadMemStats(&heapAfter)
+		heap := heapAfter.TotalAlloc - heapBefore.TotalAlloc
+		t.Logf("highwater=%d heap=%d err=%v", hw, heap, err)
+		var te *tools.Error
+		if !errors.As(err, &te) || te.Code != CodeResultTooLarge || te.Retryable || res.Content != "" {
+			t.Fatalf("排序 err=%v res=%+v", err, res)
+		}
+		if got := currentHeapLimit(); got != HardHeapBytes {
+			t.Fatalf("堆上限 = %d，想要 %d", got, HardHeapBytes)
+		}
+		if hw > HardHeapBytes+2<<20 {
+			t.Fatalf("sqlite3_memory_highwater = %d，大约 130 MiB 的上限是 %d", hw, HardHeapBytes)
+		}
+		// 查询前后的哈希会把整个库读进 Go。这 100 行本身就有 400 MiB，不拿 TotalAlloc 当 SQLite 堆。
+		mu.Lock()
+		defer mu.Unlock()
+		if len(seen) > 0 {
+			t.Fatalf("业务库旁边多了临时文件: %v", seen)
+		}
+		after, err := listDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(after) != len(before) {
+			t.Fatalf("查询后目录变了: before=%v after=%v", before, after)
+		}
+	})
+}
+
+func fillSortRows(t *testing.T, path string) {
+	t.Helper()
+	u := url.URL{
+		Scheme:   "file",
+		Path:     filepath.ToSlash(path),
+		RawQuery: url.Values{"_journal_mode": {"DELETE"}}.Encode(),
+	}
+	db := sql.OpenDB(hookConnector{dsn: u.String(), drv: &sqlite.Driver{}})
+	defer db.Close()
+	if _, err := db.Exec(`DROP TABLE t`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE t (body BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 100 {
+		if _, err := tx.Exec(`INSERT INTO t (body) VALUES (zeroblob(4194304))`); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func listDir(dir string) (map[string]struct{}, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		names[entry.Name()] = struct{}{}
+	}
+	return names, nil
 }
 
 func wideExprs(n int, expr string) string {
@@ -150,4 +281,10 @@ func memHighwater() int64 {
 	tls := libc.NewTLS()
 	defer tls.Close()
 	return int64(sqlite3.Xsqlite3_memory_highwater(tls, 0))
+}
+
+func currentHeapLimit() int64 {
+	tls := libc.NewTLS()
+	defer tls.Close()
+	return int64(sqlite3.Xsqlite3_hard_heap_limit64(tls, -1))
 }

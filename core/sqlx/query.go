@@ -29,7 +29,11 @@ const (
 	// MaxResultColumns 是最终结果最多能有的列数。准备语句之后、第一步之前检查。
 	// 超过就拒绝，让模型改写。不写进 SQLITE_LIMIT_COLUMN，否则宽表会让整个库打不开。
 	MaxResultColumns = 32
-	TruncateBytes    = "bytes"
+	// HardHeapBytes 是进程里 SQLite 堆的硬上限。32 列 × 4 MiB 是 128 MiB，
+	// 这里再留一点。排序、DISTINCT、GROUP BY 和物化 CTE 会在内存里攒很多行，
+	// 单行的 1 MiB 盖不住。这是 sqlite3_hard_heap_limit64，整个进程共用。
+	HardHeapBytes int64 = 130 << 20
+	TruncateBytes       = "bytes"
 )
 
 // Result 是截断之后的查询结果。RowCount 是实际返回的行数，不是库里的总行数。
@@ -159,10 +163,22 @@ func rowTooLarge(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, errRowTooLarge) || isTooBig(err) {
+	if errors.Is(err, errRowTooLarge) || isTooBig(err) || isNoMem(err) {
 		return true
 	}
 	return strings.Contains(err.Error(), errRowTooLarge.Error())
+}
+
+func isNoMem(err error) bool {
+	var se *sqlite.Error
+	if errors.As(err, &se) && se != nil {
+		code := se.Code()
+		if code&0xff == sqlite3.SQLITE_NOMEM || code == sqlite3.SQLITE_IOERR_NOMEM {
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "out of memory") || strings.Contains(msg, "sqlite_nomem")
 }
 
 func isBusy(err error) bool {

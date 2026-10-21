@@ -164,6 +164,22 @@ func installReadOnly(conn sqlite.ExecQuerierContext) error {
 	if err := RejectAttach(conn); err != nil {
 		return err
 	}
+	if err := installHeapLimit(); err != nil {
+		return err
+	}
+	if err := installTempDir(); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(context.Background(), "PRAGMA temp_store = FILE", nil); err != nil {
+		return fmt.Errorf("sqlx: 设置 temp_store: %w", err)
+	}
+	store, err := readPragmaInt(conn, "temp_store")
+	if err != nil {
+		return err
+	}
+	if store != 1 {
+		return fmt.Errorf("sqlx: temp_store = %d，想要 FILE(1)", store)
+	}
 	if _, err := conn.ExecContext(context.Background(), "PRAGMA query_only = ON", nil); err != nil {
 		return fmt.Errorf("sqlx: 设置 query_only: %w", err)
 	}
@@ -196,14 +212,18 @@ func installReadOnly(conn sqlite.ExecQuerierContext) error {
 }
 
 func readQueryOnly(conn sqlite.ExecQuerierContext) (int64, error) {
-	rows, err := conn.QueryContext(context.Background(), "PRAGMA query_only", nil)
+	return readPragmaInt(conn, "query_only")
+}
+
+func readPragmaInt(conn sqlite.ExecQuerierContext, name string) (int64, error) {
+	rows, err := conn.QueryContext(context.Background(), "PRAGMA "+name, nil)
 	if err != nil {
-		return 0, fmt.Errorf("sqlx: 读取 query_only: %w", err)
+		return 0, fmt.Errorf("sqlx: 读取 %s: %w", name, err)
 	}
 	defer rows.Close()
 	dest := make([]driver.Value, len(rows.Columns()))
 	if err := rows.Next(dest); err != nil {
-		return 0, fmt.Errorf("sqlx: 读取 query_only: %w", err)
+		return 0, fmt.Errorf("sqlx: 读取 %s: %w", name, err)
 	}
 	n, err := valueInt(dest[0])
 	if err != nil {
@@ -225,7 +245,7 @@ func valueInt(v driver.Value) (int64, error) {
 	case []byte:
 		return strconv.ParseInt(string(n), 10, 64)
 	default:
-		return 0, fmt.Errorf("sqlx: query_only 的类型是 %T", v)
+		return 0, fmt.Errorf("sqlx: PRAGMA 的类型是 %T", v)
 	}
 }
 

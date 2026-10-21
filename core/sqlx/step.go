@@ -219,7 +219,7 @@ func loadUintptr(p uintptr) uintptr {
 }
 
 func stepErr(tls *libc.TLS, db uintptr, rc int32) error {
-	if rc == sqlite3.SQLITE_TOOBIG {
+	if rc == sqlite3.SQLITE_TOOBIG || rc == sqlite3.SQLITE_NOMEM || rc == sqlite3.SQLITE_IOERR_NOMEM {
 		return errRowTooLarge
 	}
 	msg := cString(sqlite3.Xsqlite3_errmsg(tls, db))

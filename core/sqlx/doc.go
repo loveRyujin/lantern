@@ -22,6 +22,8 @@
 // 结果列数在准备语句之后、第一步之前检查，最多 32 列，再多就以 sql_rejected 交回模型，不计入连续失败。
 // 每一列先按 sqlite3_column_bytes 看长度，再决定要不要拷贝。一行超过 1 MiB 就停，不返回已读出的行。
 // SQLite 在返回一行之前会把每一列都算进寄存器，所以一次调用在 SQLite 侧最坏大约 128 MiB（32 × 4 MiB），Go 侧停在 1 MiB。
+// 排序、DISTINCT、GROUP BY 和物化 CTE 会再攒很多行。sqlite3_hard_heap_limit64 把整个进程的 SQLite 堆卡在大约 130 MiB，
+// 超出后的 NOMEM 也按 sql_result_too_large 交回。临时表用 temp_store=FILE，文件在系统临时目录，不在业务库旁边，也不进文件哈希。
 // 引号里的 pragma_* 表值函数和 PRAGMA 一样拒绝，按解析后的标识符判断，不在原文里搜子串。
 //
 // 连接只打开工作区登记的那一个业务库。要打开的路径和登记路径都先做绝对化和 EvalSymlinks，

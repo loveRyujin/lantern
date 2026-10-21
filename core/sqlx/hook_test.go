@@ -55,6 +55,15 @@ func TestExecuteDetectsFileChange(t *testing.T) {
 	}
 }
 
+func TestNoMemMapsToRowTooLarge(t *testing.T) {
+	if !rowTooLarge(errors.New("out of memory")) {
+		t.Fatal("out of memory 没有当成结果过大")
+	}
+	if !rowTooLarge(errors.New("SQLITE_NOMEM")) {
+		t.Fatal("SQLITE_NOMEM 没有当成结果过大")
+	}
+}
+
 func TestCellBytesCountsBase64(t *testing.T) {
 	raw := []byte{0xff, 0x00, 0xfe}
 	if got, want := cellBytes(raw), base64.StdEncoding.EncodedLen(len(raw)); got != want {
