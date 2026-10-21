@@ -1053,43 +1053,56 @@ func TestRunSQLManyRowsTruncateByBytes(t *testing.T) {
 	}
 }
 
-func TestRunSQLManySmallColumns(t *testing.T) {
-	_, _, tool, _, _ := newFixture(t)
-	const cols = sqlx.MaxResultColumns
-	res, err := tool.Execute(t.Context(), callSQL("SELECT "+strings.Join(literalCols(cols), ", "), nil))
+func TestRunSQLWideTableOpens(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "analytics.db")
+	w := openWritable(t, path, "DELETE")
+	const wideCols = 40
+	defs := make([]string, wideCols)
+	vals := make([]string, wideCols)
+	for i := range defs {
+		defs[i] = "c" + itoa(i) + " INTEGER"
+		vals[i] = itoa(i)
+	}
+	if _, err := w.ExecContext(ctx, "CREATE TABLE wide ("+strings.Join(defs, ", ")+")"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.ExecContext(ctx, "INSERT INTO wide VALUES ("+strings.Join(vals, ", ")+")"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.ExecContext(ctx, `CREATE TABLE narrow (id INTEGER PRIMARY KEY, name TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.ExecContext(ctx, `INSERT INTO narrow (id, name) VALUES (1, 'ok')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	removeSidecars(path)
+
+	_, _, tool, _, _ := openTool(t, path, nil)
+	narrow, err := tool.Execute(ctx, callSQL(`SELECT id, name FROM narrow`, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := decodeResult(t, res)
-	if got.Truncated || got.RowCount != 1 || len(got.Columns) != cols {
-		t.Fatalf("多列小结果 = %+v", got)
+	gotN := decodeResult(t, narrow)
+	if gotN.Truncated || gotN.RowCount != 1 || len(gotN.Columns) != 2 || gotN.Rows[0][1] != "ok" {
+		t.Fatalf("窄表 = %+v", gotN)
 	}
-}
-
-func literalCols(n int) []string {
-	parts := make([]string, n)
-	for i := range parts {
-		parts[i] = itoa(i + 1)
+	wide, err := tool.Execute(ctx, callSQL(`SELECT * FROM wide`, nil))
+	if err != nil {
+		t.Fatal(err)
 	}
-	return parts
-}
-
-func TestRunSQLTooManyColumns(t *testing.T) {
-	_, _, tool, _, _ := newFixture(t)
-	query := "SELECT " + strings.Join(literalCols(sqlx.MaxResultColumns+1), ", ")
-	res, err := tool.Execute(t.Context(), callSQL(query, nil))
-	var te *tools.Error
-	if !errors.As(err, &te) || te.Code != sqlx.CodeRejected || te.Retryable {
-		t.Fatalf("65 列 err = %v res = %+v", err, res)
-	}
-	if res.Content != "" || !strings.Contains(err.Error(), "64") || !strings.Contains(err.Error(), "少选几列") {
-		t.Fatalf("列数超限没有让模型改写: %+v %v", res, err)
+	gotW := decodeResult(t, wide)
+	if gotW.Truncated || gotW.RowCount != 1 || len(gotW.Columns) != wideCols || cellInt(gotW.Rows[0][wideCols-1]) != wideCols-1 {
+		t.Fatalf("宽表 = %+v", gotW)
 	}
 }
 
 func TestRunSQLWideRowByteCap(t *testing.T) {
 	_, _, tool, _, _ := newFixture(t)
-	const cols = sqlx.MaxResultColumns
+	const cols = 400
 	parts := make([]string, cols)
 	for i := range parts {
 		parts[i] = "hex(zeroblob(500000))"
@@ -1105,9 +1118,8 @@ func TestRunSQLWideRowByteCap(t *testing.T) {
 	if strings.Count(res.Content, "0") > 64 || strings.Count(err.Error(), "0") > 64 {
 		t.Fatalf("宽行进了结果: %+v %v", res, err)
 	}
-	// 64 列如果全算出来大约 64 MiB。按列看过再拷贝时，这里只会碰到前两列。
-	// 最坏大约 17 MiB：已收下的列不到 1 MiB，正在看的那一列最多 16 MiB。32 MiB 留一点余量。
-	const bound = 32 << 20
+	// 一次调用最坏是一个 16 MiB 的值，加上已经收下、不到 1 MiB 的列。400 列如果全算出来会远超这个数。
+	const bound = sqlx.MaxValueBytes + sqlx.MaxResultBytes
 	if delta := after.TotalAlloc - before.TotalAlloc; delta > bound {
 		t.Fatalf("这一行分配了 %d 字节，上限 %d", delta, bound)
 	}

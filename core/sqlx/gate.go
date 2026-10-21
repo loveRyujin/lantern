@@ -29,7 +29,7 @@ func resultCell(ctx *sqlite.FunctionContext, args []driver.Value) (driver.Value,
 	if !ok {
 		return nil, errRowTooLarge
 	}
-	if err := resultBudget.add(resultCellDB(ctx), col, cellBytes(args[1])); err != nil {
+	if err := resultBudget.add(resultCellDB(ctx), col, columnBytesBeforeCopy(args[1])); err != nil {
 		return nil, err
 	}
 	return args[1], nil
