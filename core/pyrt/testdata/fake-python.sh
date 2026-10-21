@@ -82,8 +82,22 @@ if [ "$mode" = "pip" ]; then
 		echo "requirements not hash-locked" >&2
 		exit 2
 	fi
+	if [ -n "${PYRT_FAKE_LOG:-}" ]; then
+		printf 'pip-env TARGET=[%s] PREFIX=[%s] USER=[%s]\n' \
+			"${PIP_TARGET-}" "${PIP_PREFIX-}" "${PIP_USER-}" >> "${PYRT_FAKE_LOG}"
+	fi
 	exit 0
 fi
+
+case " $* " in
+*"import pandas"*)
+	if [ "${PYRT_FAKE_IMPORT_FAIL:-}" = "1" ]; then
+		echo "import failed" >&2
+		exit 1
+	fi
+	exit 0
+	;;
+esac
 
 if [ "${PYRT_FAKE_EXIT:-}" = "1" ]; then
 	echo "boom" >&2

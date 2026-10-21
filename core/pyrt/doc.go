@@ -6,8 +6,14 @@
 //
 // venv 位于 <Root>/pyenv/venv。创建 venv 和 pip install 都在沙箱外执行，需要联网。
 // 安装使用 pip 的 --require-hashes 和 --only-binary=:all:，版本和 sha256 写在锁文件里。
+// 调用 pip 时去掉 PIP_TARGET、PIP_PREFIX、PIP_USER，避免包装到 venv 外面。
+// 写成功标记之前会在 venv 里 import pandas 和 matplotlib。
+// 标记对不上时，在 Root 内的临时目录生成新 venv，再原子 rename 替换旧目录，不对已有目录使用 --clear。
+// 先用 EvalSymlinks 解析 Root。只拒绝这个真实目录以下（pyenv、venv）的符号链接；
+// 祖先目录可以是符号链接。解析后不在 Root 内时返回 path_escape。
+// 同一个 Root 上不要并发调用 Ensure。
 //
-// 解释器缺失、版本不符、venv 创建失败或锁定依赖装不上时，返回的错误实现 errcode.Coded，
+// 解释器缺失、版本不符、venv 创建失败、锁定依赖装不上或 import 失败时，返回的错误实现 errcode.Coded，
 // Code() 为 runtime_unavailable。调用方不得因此改为不经沙箱直接执行。
-// 上下文取消和 Root 为空不是 runtime_unavailable。
+// 路径逃逸的码是 path_escape。上下文取消和 Root 为空不带错误码。
 package pyrt

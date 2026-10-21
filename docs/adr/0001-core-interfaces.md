@@ -101,6 +101,8 @@ type Publisher interface {
 | `sandbox_unavailable` | `errcode.SandboxUnavailable` | 隔离机制不可用，不得换一套更弱的隔离 |
 | `embedding_mismatch` | `errcode.EmbeddingMismatch` | 索引与当前 Embedder 的 ID 或维度不同 |
 | `stream_truncated` | `errcode.StreamTruncated` | 模型流在 `[DONE]` 和 `finish_reason` 都没到时断开，可重试；截断的正文和 tool_call 参数不能当成成功结果 |
+| `path_escape` | `errcode.PathEscape` | 解析 Root 之后，其下的路径上有符号链接，或解析后不在该根目录内；不得顺着链接删改外面的文件。Root 的祖先目录可以是符号链接 |
+| `export_unconfirmed` | `errcode.ExportUnconfirmed` | 没有可用的已批准导出确认，不能打开敏感库；不得改走别的连接去读敏感原文 |
 
 `error` 来自技术设计第 7 节，和上面几个码一起返回给 Agent。平台暂时分不清 OOM 时，可以先返回 `killed` 或 `error`，但码值本身不能省掉；具体映射等 W3 / W4 实测后再写进评测规则。
 
