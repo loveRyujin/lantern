@@ -17,9 +17,10 @@ func TestCodeValues(t *testing.T) {
 		errcode.RuntimeUnavailable: "runtime_unavailable",
 		errcode.SandboxUnavailable: "sandbox_unavailable",
 		errcode.EmbeddingMismatch:  "embedding_mismatch",
+		errcode.StreamTruncated:    "stream_truncated",
 	}
-	if len(want) != 7 {
-		t.Fatalf("稳定错误码数量 = %d，想要 7", len(want))
+	if len(want) != 8 {
+		t.Fatalf("稳定错误码数量 = %d，想要 8", len(want))
 	}
 	for code, text := range want {
 		if code.String() != text {

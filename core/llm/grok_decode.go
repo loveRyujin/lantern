@@ -19,6 +19,9 @@ func (g *Grok) decode(resp *http.Response, stream bool, on func(Delta) error) (R
 		if err != nil {
 			return Response{}, err
 		}
+		if err := rejectIncompleteTools(out); err != nil {
+			return Response{}, err
+		}
 		return g.finish(out), nil
 	}
 	limited := &byteLimit{r: resp.Body, lim: maxStreamBody}
@@ -27,6 +30,9 @@ func (g *Grok) decode(resp *http.Response, stream bool, on func(Delta) error) (R
 	if !looksLikeSSE(resp.Header.Get("Content-Type"), peek) {
 		out, err := decodeJSON(br)
 		if err != nil {
+			return Response{}, err
+		}
+		if err := rejectIncompleteTools(out); err != nil {
 			return Response{}, err
 		}
 		out = g.finish(out)
@@ -86,7 +92,7 @@ func readStatusError(resp *http.Response) *Error {
 	if err != nil {
 		return httpStatusError(resp.StatusCode, "")
 	}
-	return httpStatusError(resp.StatusCode, parseAPIErrorMessage(body))
+	return httpStatusError(resp.StatusCode, clip(parseAPIErrorMessage(body)))
 }
 
 func parseAPIErrorMessage(body []byte) string {
@@ -189,6 +195,7 @@ func decodeJSON(r io.Reader) (Response, error) {
 
 func decodeSSE(r io.Reader, on func(Delta) error) (Response, error) {
 	var acc accumulator
+	sawDone := false
 	err := readSSE(r, func(payload string) error {
 		var chunk wireChunk
 		if jerr := json.Unmarshal([]byte(payload), &chunk); jerr != nil {
@@ -216,6 +223,7 @@ func decodeSSE(r io.Reader, on func(Delta) error) (Response, error) {
 		return nil
 	})
 	if errors.Is(err, errStreamEnd) {
+		sawDone = true
 		err = nil
 	}
 	if errors.Is(err, errLineTooLong) {
@@ -231,10 +239,27 @@ func decodeSSE(r io.Reader, on func(Delta) error) (Response, error) {
 		}
 		return Response{}, classifyTransport(err)
 	}
+	// 连接在结束标记之前断开。已经回调过的增量不算成功结果。
+	if !sawDone && acc.finish == "" {
+		return Response{}, streamTruncated("")
+	}
 	if !acc.usable() {
 		return Response{}, &Error{Code: CodeEmptyResponse, Message: "响应没有内容"}
 	}
-	return acc.response(), nil
+	out := acc.response()
+	if err := rejectIncompleteTools(out); err != nil {
+		return Response{}, err
+	}
+	return out, nil
+}
+
+func rejectIncompleteTools(resp Response) error {
+	for _, tc := range resp.Message.ToolCalls {
+		if strings.TrimSpace(tc.ID) == "" || strings.TrimSpace(tc.Name) == "" {
+			return &Error{Code: CodeInvalidResponse, Message: "tool_call 缺少 id 或 name"}
+		}
+	}
+	return nil
 }
 
 func emitFinal(resp Response, on func(Delta) error) error {
@@ -298,7 +323,7 @@ func (a *accumulator) apply(ch wireChoice) Delta {
 			if tc.ID != "" {
 				buf.id = tc.ID
 			}
-			buf.name.WriteString(tc.Function.Name)
+			buf.addName(tc.Function.Name)
 			buf.args.WriteString(tc.Function.Arguments)
 		}
 	}

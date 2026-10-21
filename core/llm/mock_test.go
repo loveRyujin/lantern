@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loveRyujin/lantern/core/errcode"
 )
 
 const sampleScript = `{
@@ -229,6 +231,62 @@ func TestMockGatewayTimeoutMatchesLiveClassification(t *testing.T) {
 	var ee *Error
 	if !errors.As(err, &ee) || ee.Status != 504 {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestMockFaultAfterPartialDeltas(t *testing.T) {
+	script := MustNewScript(Step{
+		Deltas: []Delta{{Content: "半"}, {Content: "截"}},
+		Fault:  &Fault{Kind: FaultStreamTruncated},
+	})
+	var saw []string
+	resp, err := NewMock(script).Chat(context.Background(), Request{
+		Stream:   true,
+		Messages: []Message{{Role: RoleUser, Content: "q"}},
+		OnDelta: func(d Delta) error {
+			saw = append(saw, d.Content)
+			return nil
+		},
+	})
+	if !errors.Is(err, ErrStreamTruncated) || !Retryable(err) {
+		t.Fatal(err)
+	}
+	code, ok := errcode.CodeOf(err)
+	if !ok || code != errcode.StreamTruncated {
+		t.Fatalf("code %q %v", code, ok)
+	}
+	if !responseIsZero(resp) {
+		t.Fatalf("resp %#v", resp)
+	}
+	if strings.Join(saw, "") != "半截" {
+		t.Fatalf("deltas %v", saw)
+	}
+	if _, err := ParseScript([]byte(`{"steps":[{"deltas":[{"content":"半"}],"fault":{"kind":"stream_truncated"}}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	quiet, err := NewMock(script.Clone()).Chat(context.Background(), Request{
+		Messages: []Message{{Role: RoleUser, Content: "q"}},
+	})
+	if !errors.Is(err, ErrStreamTruncated) || !responseIsZero(quiet) {
+		t.Fatalf("non-stream resp %#v err %v", quiet, err)
+	}
+}
+
+func TestMockToolNameTakesFirstFragment(t *testing.T) {
+	mock := NewMock(MustNewScript(Step{Deltas: []Delta{
+		{ToolCalls: []ToolCallFragment{{Index: 0, ID: "call_1", Name: "run_sql", Arguments: `{"q":`}}},
+		{ToolCalls: []ToolCallFragment{{Index: 0, Name: "run_sql", Arguments: "1}"}}},
+	}}))
+	resp, err := mock.Chat(context.Background(), hi())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("%#v", resp.Message.ToolCalls)
+	}
+	got := resp.Message.ToolCalls[0]
+	if got.Name != "run_sql" || got.Arguments != `{"q":1}` || got.ID != "call_1" {
+		t.Fatalf("%#v", got)
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/loveRyujin/lantern/core/errcode"
 )
 
 // 错误码是 Agent 重试和评测断言的稳定契约。
@@ -26,6 +28,8 @@ const (
 	CodeCanceled          = "canceled"
 	CodeEmptyResponse     = "empty_response"
 	CodeInvalidResponse   = "invalid_response"
+	// CodeStreamTruncated 与 errcode.StreamTruncated 相同，避免两处码值漂移。
+	CodeStreamTruncated = string(errcode.StreamTruncated)
 )
 
 // 哨兵错误只带错误码。[Error.Is] 按错误码比较，调用方用 errors.Is 判断即可。
@@ -42,6 +46,7 @@ var (
 	ErrInvalidRequest    = &Error{Code: CodeInvalidRequest}
 	ErrCanceled          = &Error{Code: CodeCanceled}
 	ErrEmptyResponse     = &Error{Code: CodeEmptyResponse}
+	ErrStreamTruncated   = &Error{Code: CodeStreamTruncated, Retryable: true}
 )
 
 // Error 是 Provider 返回的结构化错误。Message 可以记日志，不应包含 API Key。
@@ -129,6 +134,7 @@ func scrubError(err error, secret string) error {
 	if err == nil || len(secret) < 8 {
 		return err
 	}
+	code, coded := errcode.CodeOf(err)
 	var e *Error
 	if !errors.As(err, &e) || e == nil {
 		return scrubBare(err, secret)
@@ -136,7 +142,55 @@ func scrubError(err error, secret string) error {
 	cp := *e
 	cp.Message = clip(redact(e.Message, secret))
 	cp.Err = scrubBare(e.Err, secret)
+	if coded {
+		return &codedError{inner: &cp, stable: code}
+	}
 	return &cp
+}
+
+// codedError 把 errcode.Coded 挂在 *Error 上。
+// *Error 的字段已经叫 Code，不能再声明同名方法。
+type codedError struct {
+	inner  *Error
+	stable errcode.Code
+}
+
+func (e *codedError) Error() string {
+	if e == nil || e.inner == nil {
+		return "llm: <nil>"
+	}
+	return e.inner.Error()
+}
+
+func (e *codedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.inner
+}
+
+func (e *codedError) Is(target error) bool {
+	if e == nil || e.inner == nil {
+		return false
+	}
+	return e.inner.Is(target)
+}
+
+func (e *codedError) Code() errcode.Code {
+	if e == nil {
+		return ""
+	}
+	return e.stable
+}
+
+func streamTruncated(message string) error {
+	if message == "" {
+		message = "SSE 流在收到 [DONE] 或 finish_reason 之前断开"
+	}
+	return &codedError{
+		inner:  &Error{Code: CodeStreamTruncated, Retryable: true, Message: message},
+		stable: errcode.StreamTruncated,
+	}
 }
 
 func scrubBare(err error, secret string) error {

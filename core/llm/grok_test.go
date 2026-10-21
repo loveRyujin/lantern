@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/loveRyujin/lantern/core/errcode"
 )
 
 func TestChatCompletionsURL(t *testing.T) {
@@ -25,9 +27,13 @@ func TestChatCompletionsURL(t *testing.T) {
 		{in: "https://api.x.ai/v1/", want: "https://api.x.ai/v1/chat/completions"},
 		{in: "https://api.x.ai/v1?q=1#f", want: "https://api.x.ai/v1/chat/completions"},
 		{in: "http://127.0.0.1:9", want: "http://127.0.0.1:9/chat/completions"},
+		{in: "http://localhost:9/v1", want: "http://localhost:9/v1/chat/completions"},
+		{in: "http://[::1]:9", want: "http://[::1]:9/chat/completions"},
 		{in: "", want: "https://api.x.ai/v1/chat/completions"},
 		{in: "ftp://api.x.ai/v1", wantErr: true},
 		{in: "https://user:pass@api.x.ai/v1", wantErr: true},
+		{in: "http://example.com/v1", wantErr: true},
+		{in: "http://192.168.1.1:9", wantErr: true},
 		{in: "not a url", wantErr: true},
 	}
 	for _, tc := range cases {
@@ -250,7 +256,7 @@ func TestGrokSSEToolCalls(t *testing.T) {
 		map[string]any{"id": "c1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "答"}}}},
 		map[string]any{"id": "c1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "案"}}}},
 		map[string]any{"id": "c1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": "call_1", "type": "function", "function": map[string]any{"name": "run_sql", "arguments": ""}}}}}}},
-		map[string]any{"id": "c1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "function": map[string]any{"arguments": `{"q":`}}}}}}},
+		map[string]any{"id": "c1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "function": map[string]any{"name": "run_sql", "arguments": `{"q":`}}}}}}},
 		map[string]any{"id": "c1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "function": map[string]any{"arguments": "1}"}}}}}}},
 		map[string]any{"id": "c1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{map[string]any{"index": 1, "id": "call_2", "type": "function", "function": map[string]any{"name": "ping", "arguments": "{}"}}}}}}},
 		map[string]any{"id": "c1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}}, "usage": map[string]any{"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 10, "completion_tokens_details": map[string]any{"reasoning_tokens": 3}}},
@@ -395,6 +401,19 @@ func TestGrokHTTPFailures(t *testing.T) {
 			t.Fatalf("saw %q err %v", saw, err)
 		}
 	})
+	t.Run("short key still clips body", func(t *testing.T) {
+		huge := strings.Repeat("x", 4000)
+		g, _ := newFixtureGrok(t, http.StatusServiceUnavailable, "text/plain", huge, nil)
+		g.apiKey = "short"
+		_, err := g.Chat(context.Background(), hi())
+		var ee *Error
+		if !errors.As(err, &ee) || ee.Code != CodeLLM5xx {
+			t.Fatal(err)
+		}
+		if n := len([]rune(ee.Message)); n > 513 {
+			t.Fatalf("body was not clipped: %d runes", n)
+		}
+	})
 	t.Run("sse done only", func(t *testing.T) {
 		g, _ := newFixtureGrok(t, http.StatusOK, "text/event-stream", "data: [DONE]\n", nil)
 		_, err := g.Chat(context.Background(), Request{Stream: true, Messages: []Message{{Role: RoleUser, Content: "q"}}})
@@ -417,6 +436,164 @@ func TestGrokHTTPFailures(t *testing.T) {
 			t.Fatalf("resp %#v got %q err %v", resp, got, err)
 		}
 	})
+}
+
+func TestGrokSSEContentCutOff(t *testing.T) {
+	body := sseEvents(t,
+		map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "你好"}}}},
+		map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "世界"}}}},
+	)
+	g, _ := newFixtureGrok(t, http.StatusOK, "text/event-stream", body, nil)
+	var saw string
+	resp, err := g.Chat(context.Background(), Request{
+		Stream:   true,
+		Messages: []Message{{Role: RoleUser, Content: "q"}},
+		OnDelta: func(d Delta) error {
+			saw += d.Content
+			return nil
+		},
+	})
+	assertStreamTruncated(t, resp, err)
+	if saw != "你好世界" {
+		t.Fatalf("deltas %q", saw)
+	}
+	if strings.Contains(resp.Message.Content, "你好") {
+		t.Fatalf("truncated content returned %#v", resp)
+	}
+}
+
+func TestGrokSSEToolArgumentsCutOff(t *testing.T) {
+	body := sseEvents(t, map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{map[string]any{
+		"index":    0,
+		"id":       "call_1",
+		"type":     "function",
+		"function": map[string]any{"name": "run_sql", "arguments": `{"q":`},
+	}}}}}})
+	g, _ := newFixtureGrok(t, http.StatusOK, "text/event-stream", body, nil)
+	var sawArgs string
+	resp, err := g.Chat(context.Background(), Request{
+		Stream:   true,
+		Messages: []Message{{Role: RoleUser, Content: "q"}},
+		OnDelta: func(d Delta) error {
+			for _, frag := range d.ToolCalls {
+				sawArgs += frag.Arguments
+			}
+			return nil
+		},
+	})
+	assertStreamTruncated(t, resp, err)
+	if sawArgs != `{"q":` {
+		t.Fatalf("deltas %q", sawArgs)
+	}
+	if len(resp.Message.ToolCalls) != 0 {
+		t.Fatalf("partial tool call returned %#v", resp.Message.ToolCalls)
+	}
+}
+
+func TestGrokSSEToolCallMissingIDOrName(t *testing.T) {
+	cases := []struct {
+		name string
+		id   string
+		tool string
+	}{
+		{name: "missing id", id: "", tool: "run_sql"},
+		{name: "missing name", id: "call_1", tool: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := sseBody(t, []any{
+				map[string]any{"choices": []any{map[string]any{
+					"index": 0,
+					"delta": map[string]any{"tool_calls": []any{map[string]any{
+						"index":    0,
+						"id":       tc.id,
+						"type":     "function",
+						"function": map[string]any{"name": tc.tool, "arguments": "{}"},
+					}}},
+					"finish_reason": "tool_calls",
+				}}},
+			})
+			g, _ := newFixtureGrok(t, http.StatusOK, "text/event-stream", body, nil)
+			resp, err := g.Chat(context.Background(), Request{
+				Stream:   true,
+				Messages: []Message{{Role: RoleUser, Content: "q"}},
+			})
+			assertInvalidToolCall(t, resp, err)
+		})
+	}
+	t.Run("json fallback while streaming", func(t *testing.T) {
+		raw := `{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"","type":"function","function":{"name":"run_sql","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`
+		g, _ := newFixtureGrok(t, http.StatusOK, "application/json", raw, nil)
+		called := false
+		resp, err := g.Chat(context.Background(), Request{
+			Stream:   true,
+			Messages: []Message{{Role: RoleUser, Content: "q"}},
+			OnDelta: func(Delta) error {
+				called = true
+				return nil
+			},
+		})
+		assertInvalidToolCall(t, resp, err)
+		if called {
+			t.Fatal("invalid tool call was emitted as a delta")
+		}
+	})
+	t.Run("non-stream json", func(t *testing.T) {
+		raw := `{"choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`
+		g, _ := newFixtureGrok(t, http.StatusOK, "application/json", raw, nil)
+		resp, err := g.Chat(context.Background(), hi())
+		assertInvalidToolCall(t, resp, err)
+	})
+}
+
+func TestGrokSSEFinishWithoutDone(t *testing.T) {
+	body := sseEvents(t, map[string]any{"choices": []any{map[string]any{
+		"index":         0,
+		"delta":         map[string]any{"content": "完整"},
+		"finish_reason": "stop",
+	}}})
+	g, _ := newFixtureGrok(t, http.StatusOK, "text/event-stream", body, nil)
+	resp, err := g.Chat(context.Background(), Request{
+		Stream:   true,
+		Messages: []Message{{Role: RoleUser, Content: "q"}},
+	})
+	if err != nil || resp.Message.Content != "完整" || resp.FinishReason != FinishStop {
+		t.Fatalf("resp %#v err %v", resp, err)
+	}
+}
+
+func assertStreamTruncated(t *testing.T, resp Response, err error) {
+	t.Helper()
+	if !errors.Is(err, ErrStreamTruncated) || !Retryable(err) {
+		t.Fatalf("err %v", err)
+	}
+	code, ok := errcode.CodeOf(err)
+	if !ok || code != errcode.StreamTruncated {
+		t.Fatalf("code %q ok %v err %v", code, ok, err)
+	}
+	if !responseIsZero(resp) {
+		t.Fatalf("response %#v", resp)
+	}
+}
+
+func assertInvalidToolCall(t *testing.T, resp Response, err error) {
+	t.Helper()
+	var ee *Error
+	if !errors.As(err, &ee) || ee.Code != CodeInvalidResponse || ee.Retryable {
+		t.Fatalf("err %v", err)
+	}
+	if errors.Is(err, ErrStreamTruncated) {
+		t.Fatal("missing id or name was treated as truncation")
+	}
+	if !responseIsZero(resp) {
+		t.Fatalf("response %#v", resp)
+	}
+}
+
+func responseIsZero(resp Response) bool {
+	return resp.ID == "" && resp.Model == "" && resp.FinishReason == "" && resp.Usage == (Usage{}) &&
+		resp.Message.Role == "" && resp.Message.Content == "" && resp.Message.ReasoningContent == "" &&
+		resp.Message.Name == "" && resp.Message.ToolCallID == "" && len(resp.Message.ToolCalls) == 0
 }
 
 func TestGrokContext(t *testing.T) {
@@ -557,6 +734,21 @@ func newFixtureGrok(t *testing.T, status int, contentType, body string, inspect 
 		WithEnvLookup(func(string) (string, bool) { return "", false }),
 	)
 	return g, srv
+}
+
+func sseEvents(t *testing.T, chunks ...any) string {
+	t.Helper()
+	var b strings.Builder
+	for _, chunk := range chunks {
+		raw, err := json.Marshal(chunk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.WriteString("data: ")
+		b.Write(raw)
+		b.WriteString("\n\n")
+	}
+	return b.String()
 }
 
 func sseBody(t *testing.T, chunks []any) string {

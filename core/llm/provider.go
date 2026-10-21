@@ -41,6 +41,7 @@ type Provider interface {
 	// ID 标识实现，例如 "grok:grok-4.6" 或 "mock"。
 	ID() string
 	// Chat 完成一轮补全。请求流式输出时，增量经 Request.OnDelta 送出，返回值仍是拼好的完整结果。
+	// 调用方必须给 ctx 设置截止时间。默认 HTTP 客户端没有超时，避免把推理模型的长耗时误判成失败。
 	Chat(ctx context.Context, req Request) (Response, error)
 }
 

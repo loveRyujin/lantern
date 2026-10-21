@@ -91,6 +91,7 @@ func (g *Grok) ID() string {
 }
 
 // Chat 发送一轮 Chat Completions。wantsStream 为真时使用 SSE，并把增量交给 OnDelta。
+// 默认客户端不设超时，调用方必须用 ctx 设置截止时间。推理模型可能要数分钟，这里不会偷偷加一个短超时。
 func (g *Grok) Chat(ctx context.Context, req Request) (resp Response, err error) {
 	if err := ctx.Err(); err != nil {
 		return Response{}, classifyContext(err)
@@ -211,6 +212,7 @@ func normalizeKey(key string) (string, error) {
 	return key, nil
 }
 
+// defaultClient 不设置 Timeout。推理模型可能要数分钟，超时只由调用方的 ctx 决定。
 func defaultClient() *http.Client {
 	return &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -231,6 +233,9 @@ func chatCompletionsURL(base string) (string, error) {
 	if u.User != nil {
 		return "", invalidRequest("grok base URL 不能包含用户信息")
 	}
+	if u.Scheme == "http" && !loopbackHost(u.Hostname()) {
+		return "", invalidRequest("grok base URL 使用 http 时必须是本机回环地址")
+	}
 	p := strings.TrimRight(u.Path, "/")
 	if p == "" {
 		u.Path = "/chat/completions"
@@ -241,6 +246,14 @@ func chatCompletionsURL(base string) (string, error) {
 	u.RawQuery = ""
 	u.Fragment = ""
 	return u.String(), nil
+}
+
+func loopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func classifyTransport(err error) error {

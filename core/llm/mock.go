@@ -21,6 +21,7 @@ func NewMock(script *Script) *Mock {
 func (m *Mock) ID() string { return "mock" }
 
 // Chat 消费脚本的下一步。流式请求会回调 OnDelta；没有 Deltas 时按最终消息合成增量。
+// 带故障的步骤可以先发出 Deltas，再返回该故障；返回值不会把这些增量当成成功结果。
 func (m *Mock) Chat(ctx context.Context, req Request) (Response, error) {
 	if m == nil || m.script == nil {
 		return Response{}, invalidScript("mock 没有脚本")
@@ -39,6 +40,19 @@ func (m *Mock) Chat(ctx context.Context, req Request) (Response, error) {
 	if step.Fault != nil {
 		if err := waitDelay(ctx, step.Fault.Delay); err != nil {
 			return Response{}, err
+		}
+		if req.wantsStream() {
+			for _, delta := range step.Deltas {
+				if err := ctx.Err(); err != nil {
+					return Response{}, classifyContext(err)
+				}
+				if req.OnDelta == nil || delta.empty() {
+					continue
+				}
+				if err := req.OnDelta(delta); err != nil {
+					return Response{}, err
+				}
+			}
 		}
 		if err := ctx.Err(); err != nil {
 			return Response{}, classifyContext(err)
@@ -153,7 +167,7 @@ func accumulateDeltaTools(deltas []Delta) []ToolCall {
 			if frag.ID != "" {
 				buf.id = frag.ID
 			}
-			buf.name.WriteString(frag.Name)
+			buf.addName(frag.Name)
 			buf.args.WriteString(frag.Arguments)
 		}
 	}
@@ -164,6 +178,12 @@ type toolBuf struct {
 	id   string
 	name strings.Builder
 	args strings.Builder
+}
+
+func (b *toolBuf) addName(name string) {
+	if name != "" && b.name.Len() == 0 {
+		b.name.WriteString(name)
+	}
 }
 
 func toolBufFor(bufs map[int]*toolBuf, index int) *toolBuf {

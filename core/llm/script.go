@@ -17,6 +17,7 @@ const (
 	FaultHTTP5xx           = "http_5xx"
 	FaultInvalidJSON       = "invalid_json"
 	FaultOllamaUnreachable = "ollama_unreachable"
+	FaultStreamTruncated   = "stream_truncated"
 )
 
 const maxScriptBytes = 8 << 20
@@ -30,6 +31,7 @@ type When struct {
 }
 
 // Fault 是一步注入的故障。Delay 只在返回故障前等待，ctx 先结束则返回 ctx 的错误。
+// 故障可以和 Deltas 一起写：流式请求先把这些增量回调出去，再返回故障。
 type Fault struct {
 	Kind    string
 	Status  int
@@ -37,7 +39,7 @@ type Fault struct {
 	Delay   time.Duration
 }
 
-// Step 是脚本中的一步。Fault 与正常回复互斥。
+// Step 是脚本中的一步。Fault 不能和最终回复字段一起写，但可以附带 Deltas。
 // Content 非空时作为最终正文；否则把 Deltas 的正文拼起来。
 // 两者都有时，最终正文用 Content，流式回调仍逐个发送 Deltas。
 type Step struct {
@@ -253,7 +255,7 @@ func mismatchMessage(n int, when *When) string {
 	return fmt.Sprintf("脚本第 %d 步不匹配：需要%s", n, strings.Join(parts, "，"))
 }
 
-func (f *Fault) asError() *Error {
+func (f *Fault) asError() error {
 	if f == nil {
 		return invalidScript("故障为空")
 	}
@@ -282,6 +284,8 @@ func (f *Fault) asError() *Error {
 			msg = ollamaUnreachableMessage
 		}
 		return &Error{Code: CodeOllamaUnreachable, Message: msg}
+	case FaultStreamTruncated:
+		return streamTruncated(f.Message)
 	default:
 		return invalidScript("未知故障类型 %s", f.Kind)
 	}
@@ -293,10 +297,20 @@ func validateStep(i int, step Step) error {
 		return invalidScript("第 %d 步的 when.role 无效", n)
 	}
 	if step.Fault != nil {
-		if step.Content != "" || step.ReasoningContent != "" || len(step.ToolCalls) > 0 || len(step.Deltas) > 0 || step.FinishReason != "" || step.Usage != (Usage{}) {
+		if step.Content != "" || step.ReasoningContent != "" || len(step.ToolCalls) > 0 || step.FinishReason != "" || step.Usage != (Usage{}) {
 			return invalidScript("第 %d 步同时写了故障和正常回复", n)
 		}
-		return validateFault(n, step.Fault)
+		if err := validateFault(n, step.Fault); err != nil {
+			return err
+		}
+		for _, d := range step.Deltas {
+			for _, frag := range d.ToolCalls {
+				if frag.Index < 0 {
+					return invalidScript("第 %d 步的 tool_call 下标不能为负", n)
+				}
+			}
+		}
+		return nil
 	}
 	if step.Content == "" && step.ReasoningContent == "" && len(step.ToolCalls) == 0 && len(step.Deltas) == 0 && step.FinishReason == "" {
 		return invalidScript("第 %d 步没有回复", n)
@@ -321,7 +335,7 @@ func validateFault(n int, f *Fault) error {
 		return invalidScript("第 %d 步的 delay 不能为负", n)
 	}
 	switch f.Kind {
-	case FaultTimeout, FaultInvalidJSON, FaultOllamaUnreachable:
+	case FaultTimeout, FaultInvalidJSON, FaultOllamaUnreachable, FaultStreamTruncated:
 		return nil
 	case FaultHTTP5xx:
 		if f.Status != 0 && (f.Status < 500 || f.Status > 599) {

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/loveRyujin/lantern/core/errcode"
 )
 
 func TestErrorClassification(t *testing.T) {
@@ -46,6 +48,17 @@ func TestRedactKeepsShortSecretsAndScrubsLongOnes(t *testing.T) {
 	}
 	if strings.Contains(errors.Unwrap(err).Error(), secret) {
 		t.Fatalf("unwrap leaked secret: %v", errors.Unwrap(err))
+	}
+	truncated := scrubError(streamTruncated("cut "+secret), secret)
+	if !errors.Is(truncated, ErrStreamTruncated) || !Retryable(truncated) {
+		t.Fatal(truncated)
+	}
+	code, ok := errcode.CodeOf(truncated)
+	if !ok || code != errcode.StreamTruncated {
+		t.Fatalf("code %q %v", code, ok)
+	}
+	if strings.Contains(truncated.Error(), secret) {
+		t.Fatalf("stable error leaked secret: %v", truncated)
 	}
 }
 
