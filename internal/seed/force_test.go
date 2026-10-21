@@ -11,6 +11,52 @@ import (
 	"github.com/loveRyujin/lantern/core/workspace"
 )
 
+func TestConsecutiveSeed(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	first, err := Run(ctx, Options{Root: root, Seed: DefaultSeed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Run(ctx, Options{Root: root, Seed: DefaultSeed, Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Hash == "" || first.Hash != second.Hash {
+		t.Fatalf("consecutive seed hash %s vs %s", first.Hash, second.Hash)
+	}
+	for i := range first.Workspaces {
+		if first.Workspaces[i].Hash != second.Workspaces[i].Hash {
+			t.Fatalf("%s hash changed", first.Workspaces[i].ID)
+		}
+	}
+
+	h, err := workspace.Open(ctx, root, "星禾")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	if err := writeSeedApproval(ctx, h); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSeedApproval(ctx, h); err != nil {
+		t.Fatalf("second approval on the same workspace: %v", err)
+	}
+	var fixed, prefixed int
+	if err := h.Runs.QueryRowContext(ctx, `SELECT COUNT(*) FROM approvals WHERE id = 'lantern-seed'`).Scan(&fixed); err != nil {
+		t.Fatal(err)
+	}
+	if fixed != 0 {
+		t.Fatalf("fixed approval id rows = %d", fixed)
+	}
+	if err := h.Runs.QueryRowContext(ctx, `SELECT COUNT(*) FROM approvals WHERE id LIKE 'lantern-seed-%'`).Scan(&prefixed); err != nil {
+		t.Fatal(err)
+	}
+	if prefixed != 3 {
+		t.Fatalf("seed approvals = %d, want 3", prefixed)
+	}
+}
+
 func TestForceKeepsExistingWhenLaterWorkspaceFails(t *testing.T) {
 	root := t.TempDir()
 	writeSeedMarker(t, filepath.Join(root, "workspaces", "星禾", "marker.txt"), "old-xh")

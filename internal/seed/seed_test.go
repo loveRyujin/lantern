@@ -316,17 +316,6 @@ func TestRecordExportApprovalRollsBack(t *testing.T) {
 	}
 }
 
-func TestSeedApprovalID(t *testing.T) {
-	if seed.SeedApprovalID != "lantern-seed" {
-		t.Fatalf("approval id %q", seed.SeedApprovalID)
-	}
-	if strings.ContainsFunc(seed.SeedApprovalID, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == '\n'
-	}) {
-		t.Fatalf("approval id %q has whitespace", seed.SeedApprovalID)
-	}
-}
-
 func TestDataDocuments(t *testing.T) {
 	root := filepath.Join("..", "..", "data")
 	xingheGMV := "已支付订单后来发生退款时，GMV 仍按支付金额全额计入"
