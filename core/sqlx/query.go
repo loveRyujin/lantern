@@ -53,8 +53,8 @@ type Result struct {
 // 多行各自没超限、加在一起超了，才截断并保留已经放下的完整行。
 // 表达式的中间值不受这 1 MiB 约束，只受连接上的 MaxValueBytes 约束。
 // Go 这边停在 1 MiB，不再把超出的列拷进来。
-// 子查询、物化 CTE、GROUP BY、UNION、IN 列表和 ORDER BY 仍可能同时握住很多中间值，内存没有硬上限。
-// 超时是现在的兜底。不设进程级堆上限。只读连接用 temp_store=FILE 和较小的 cache_size 把排序多出来的行写到临时文件。
+// 物化 CTE、GROUP BY、UNION 和 IN 列表仍可能同时握住很多中间值，内存没有硬上限。
+// 超时是现在的兜底。不设进程级堆上限。ORDER BY 靠 temp_store=FILE 和较小的 cache_size 把多出来的行写到临时文件。
 func Query(ctx context.Context, db Queryer, query string, limit int) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, &codedTimeout{err: err}
