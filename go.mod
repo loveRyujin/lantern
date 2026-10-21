@@ -5,6 +5,8 @@ go 1.27.1
 require (
 	// v0.6.0 = commit 081639f2a55d62a09aca742684827937dac6cb39。8 周内不主动升级。
 	github.com/egoist/mygo v0.6.0
+	// 工具参数的 JSON Schema 校验。
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	go.yaml.in/yaml/v3 v3.0.5
 	// 只给 internal/seed 的调用方扫描测试用。
 	golang.org/x/tools v0.52.0
