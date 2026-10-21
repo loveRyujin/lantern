@@ -30,8 +30,9 @@ type Runtime struct {
 // 每次启动先清掉 pyenv 下残留的 .venv-new-* / .venv-old-* 真实目录，不跟随符号链接。
 // 先 EvalSymlinks 解析 Root，只拒绝这个真实目录以下的符号链接。祖先目录上的链接不算 path_escape。
 // 写标记前会在 venv 里 import pandas 和 matplotlib。
-// 这一步在沙箱外执行。同一个 Root 上不要并发调用；本函数不加文件锁。
-// 失败且属于运行时问题时，错误码是 runtime_unavailable。路径逃逸不是这个码。
+// 这一步在沙箱外执行。Unix 上用 Root 里的 .pyrt.lock 互斥；拿不到锁就返回错误，不清理、不替换。
+// 非 Unix 没有 flock，Ensure 直接失败。文件锁不替代符号链接检查。
+// 失败且属于运行时问题时，错误码是 runtime_unavailable。路径逃逸和锁冲突不是这个码。
 func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 	if err := ctx.Err(); err != nil {
 		return Runtime{}, err
@@ -47,6 +48,11 @@ func (c Config) Ensure(ctx context.Context) (Runtime, error) {
 	if err != nil {
 		return Runtime{}, err
 	}
+	unlock, err := lockEnsure(real)
+	if err != nil {
+		return Runtime{}, err
+	}
+	defer unlock()
 	if err := sweepScratch(real); err != nil {
 		return Runtime{}, preferCoded("venv", real, err)
 	}
