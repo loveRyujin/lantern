@@ -60,6 +60,23 @@ func TestConsecutiveSeed(t *testing.T) {
 	}
 }
 
+func TestForceBusyDoesNotCleanScratch(t *testing.T) {
+	root := t.TempDir()
+	stale := filepath.Join(root, ".lantern-seed-stale", "runs.db")
+	writeSeedMarker(t, stale, "keep")
+	unlock, err := lockForce(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(unlock)
+
+	_, err = Run(t.Context(), Options{Root: root, Seed: DefaultSeed, Force: true})
+	if !errors.Is(err, errForceBusy) {
+		t.Fatalf("Run: %v", err)
+	}
+	assertSeedMarker(t, stale, "keep")
+}
+
 func TestForceKeepsExistingWhenLaterWorkspaceFails(t *testing.T) {
 	root := t.TempDir()
 	writeSeedMarker(t, filepath.Join(root, "workspaces", "星禾", "marker.txt"), "old-xh")

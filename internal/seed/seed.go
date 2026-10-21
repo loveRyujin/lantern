@@ -12,9 +12,17 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/loveRyujin/lantern/core/workspace"
 )
+
+// errForceBusy 表示同一数据目录已经有一次 -force 拿着文件锁。
+var errForceBusy = errors.New("seed: 已有一次 -force 在进行")
+
+// forceLockName 是数据目录下的 -force 文件锁。
+// CleanScratch 只删 `.lantern-seed-` 前缀，不会把这个锁文件清掉。
+const forceLockName = ".lantern-seed.lock"
 
 // DefaultSeed 是命令行和 make seed 使用的随机种子。
 const DefaultSeed uint64 = 20261021
@@ -69,6 +77,11 @@ func runInPlace(ctx context.Context, root string, seedN uint64) (Result, error) 
 }
 
 func runStaged(ctx context.Context, root string, seedN uint64) (Result, error) {
+	unlock, err := lockForce(root)
+	if err != nil {
+		return Result{}, err
+	}
+	defer unlock()
 	if err := workspace.CleanScratch(root); err != nil {
 		return Result{}, err
 	}
@@ -102,6 +115,29 @@ func runStaged(ctx context.Context, root string, seedN uint64) (Result, error) {
 		out.Workspaces[i].Dir = dirs[i]
 	}
 	return out, nil
+}
+
+// lockForce 独占 root 下的 `.lantern-seed.lock`。拿不到就返回 errForceBusy，不清理临时目录。
+// 进程退出时锁会放开，包括中途崩溃。
+func lockForce(root string) (func(), error) {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, fmt.Errorf("seed: 数据目录: %w", err)
+	}
+	f, err := os.OpenFile(filepath.Join(root, forceLockName), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("seed: 文件锁: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, errForceBusy
+		}
+		return nil, fmt.Errorf("seed: 文件锁: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 func runProfiles(ctx context.Context, resultRoot string, seedN uint64, writeRoot string) (Result, error) {
