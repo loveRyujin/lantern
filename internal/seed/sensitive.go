@@ -113,12 +113,17 @@ func RecordExportApproval(ctx context.Context, h *workspace.Handle, approvalID, 
 	created := now.Format(time.RFC3339Nano)
 	expires := now.Add(time.Hour).Format(time.RFC3339Nano)
 	runID := "seed-" + approvalID
-	if _, err := h.Runs.ExecContext(ctx, `
+	tx, err := h.Runs.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("seed: 确认单事务: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO runs (id, state, version, context, created_at, updated_at)
 		VALUES (?, 'completed', 0, '', ?, ?)`, runID, created, created); err != nil {
 		return fmt.Errorf("seed: 写入种子运行: %w", err)
 	}
-	if _, err := h.Runs.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO approvals (
 			id, run_id, step_id, params_hash, params_json, decision, created_at, decided_at,
 			workspace_id, action, export_object, expires_at
@@ -127,6 +132,9 @@ func RecordExportApproval(ctx context.Context, h *workspace.Handle, approvalID, 
 		h.ID, exportObject, expires,
 	); err != nil {
 		return fmt.Errorf("seed: 写入导出确认: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("seed: 提交确认单: %w", err)
 	}
 	return nil
 }

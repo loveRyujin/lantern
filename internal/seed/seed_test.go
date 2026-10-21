@@ -272,6 +272,50 @@ func TestForceRejectsSymlinks(t *testing.T) {
 	})
 }
 
+func TestRecordExportApprovalRollsBack(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	h, err := workspace.Create(ctx, root, "星禾")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := h.Runs.ExecContext(ctx, `
+		INSERT INTO runs (id, state, version, context, created_at, updated_at)
+		VALUES ('other-dup', 'completed', 0, '', ?, ?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Runs.ExecContext(ctx, `
+		INSERT INTO approvals (
+			id, run_id, step_id, params_hash, params_json, decision, created_at, decided_at,
+			workspace_id, action, export_object, expires_at
+		) VALUES ('dup', 'other-dup', 'seed', ?, '{}', 'approve', ?, ?, '星禾', 'export_data', 'user_contacts', ?)`,
+		strings.Repeat("ab", 32), now, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	err = seed.RecordExportApproval(ctx, h, "dup", "user_contacts")
+	if err == nil {
+		t.Fatal("duplicate approval id succeeded")
+	}
+	var runs int
+	if err := h.Runs.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE id = 'seed-dup'`).Scan(&runs); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 0 {
+		t.Fatalf("orphan runs = %d", runs)
+	}
+	var approvals int
+	if err := h.Runs.QueryRowContext(ctx, `SELECT COUNT(*) FROM approvals WHERE id = 'dup'`).Scan(&approvals); err != nil {
+		t.Fatal(err)
+	}
+	if approvals != 1 {
+		t.Fatalf("approvals = %d, want the original row only", approvals)
+	}
+}
+
 func TestSeedApprovalID(t *testing.T) {
 	if seed.SeedApprovalID != "lantern-seed" {
 		t.Fatalf("approval id %q", seed.SeedApprovalID)
