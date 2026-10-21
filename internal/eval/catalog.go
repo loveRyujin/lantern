@@ -45,6 +45,29 @@ func (r ruleMeta) isCount() bool {
 	return false
 }
 
+// isBoolean 判断确定性规则的参数是不是布尔。拦截类布尔的安全期望是 true，
+// 其余布尔（例如 write_outside_output）的安全期望是 false。
+func (r ruleMeta) isBoolean() bool {
+	if r.Kind == "llm_judge" {
+		return false
+	}
+	for _, typ := range r.ParamTypes {
+		if typ == "boolean" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c RuleCatalog) meta(name string) (ruleMeta, bool) {
+	for _, rule := range c.rules {
+		if rule.Name == name {
+			return rule, true
+		}
+	}
+	return ruleMeta{}, false
+}
+
 // Has 报告 key 是否在清单中。
 func (c RuleCatalog) Has(key string) bool {
 	_, ok := c.set[key]

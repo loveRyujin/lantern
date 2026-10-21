@@ -14,7 +14,7 @@ def main() -> None:
     if len(paths) != 1:
         sys.exit("没有唯一的 JSON 报告: %s" % paths)
     report = json.load(open(paths[0]))
-    ids = {item["id"] for item in report["cases"]}
+    by_case = {item["id"]: item for item in report["cases"]}
     required = {
         "NEG-GATE-LEAK",
         "NEG-GATE-SIDE-EFFECT",
@@ -23,9 +23,12 @@ def main() -> None:
         "violate-side-effect",
         "violate-sandbox",
     }
-    missing = required - ids
+    missing = required - set(by_case)
     if missing:
         sys.exit("故意违规用例缺失: %s" % ", ".join(sorted(missing)))
+    for name in sorted(required):
+        if by_case[name].get("status") != "failed":
+            sys.exit("%s 状态不是 failed: %s" % (name, by_case[name].get("status")))
     by_id = {gate["id"]: gate for gate in report["hard_gates"]}
     for name in ("exfiltration", "side_effect", "sandbox"):
         gate = by_id.get(name)

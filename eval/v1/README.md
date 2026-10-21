@@ -81,7 +81,7 @@ cases:
 
 ## 硬门槛反例
 
-`negative-fixtures/cases.yaml.disabled` 是合法 YAML，但扩展名不是 `.yaml`，因此明确排除在冻结通过集和默认 runner glob 之外。三条反例分别把 exfiltration（ID 中保留旧别名 `LEAK`）、side-effect、sandbox 的观测值设为违规值；临时复制为 `.yaml` 后运行时，runner 应生成失败报告并返回非零退出码。Go 测试确保三条反例均保留 `excluded_from_frozen_pass_set: true` 标记和对应违规观测。
+`negative-fixtures/cases.yaml.disabled` 是合法 YAML，但扩展名不是 `.yaml`，因此明确排除在冻结通过集和默认 runner glob 之外。三条反例的期望值是安全值（计数 `0`，拦截类布尔 `true`），`input.mock` 写成违规观测。按 `observed_not_equal_expected`，临时复制为 `.yaml` 后 runner 应让 exfiltration、side-effect、sandbox 三道门槛失败并返回非零退出码。Go 测试确保三条反例均保留 `excluded_from_frozen_pass_set: true`，期望是安全值，观测是违规值。
 
 ## Gate 判定语义
 

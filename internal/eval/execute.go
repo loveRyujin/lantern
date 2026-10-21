@@ -136,6 +136,9 @@ func Execute(ctx context.Context, opt Options) (Result, error) {
 		if err := ValidateGates(gates, catalog); err != nil {
 			return Result{}, err
 		}
+		if err := ValidateSafeExpectations(suite, gates, catalog); err != nil {
+			return Result{}, err
+		}
 	} else if len(suite.Cases) > 0 {
 		return Result{}, fmt.Errorf("eval: 用例目录有用例，但门槛文件不存在: %s", gatesPath)
 	}

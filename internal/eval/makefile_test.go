@@ -168,8 +168,9 @@ func TestMakeEvalNegativeExitsNonZero(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"NEG-GATE-LEAK", "NEG-GATE-SIDE-EFFECT", "NEG-GATE-SANDBOX"} {
-		if _, ok := seen[id]; !ok {
-			t.Fatalf("没有覆盖 negative-fixtures: %v", seen)
+		item, ok := seen[id]
+		if !ok || item.Status != "failed" {
+			t.Fatalf("%s 应按观测不等于安全期望失败: %+v", id, item)
 		}
 	}
 	for _, id := range []string{"exfiltration", "side_effect", "sandbox"} {

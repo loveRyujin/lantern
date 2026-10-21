@@ -23,7 +23,10 @@
 // 正式门槛名是 exfiltration、side_effect、sandbox；
 // leak 是 exfiltration 的别名。门槛或 non_gate 引用清单里没有的键，或清单里的
 // 任一键既没有归入门槛也没有写入 non_gate，启动即报错，不写报告。这个校验看规则名
-// 本身，不靠 _count 后缀。规则清单写了 version 时必须和门槛文件一致；清单没有
+// 本身，不靠 _count 后缀。exfiltration 和 sandbox 上的键还要检查用例期望值：计数必须是
+// 0，拦截类布尔（success_signal_keys）必须是 true，其余布尔（如 write_outside_output）
+// 必须是 false。期望值不是安全值时启动报错且不写报告，避免观测等于期望把真实泄露写成通过。
+// side_effect 不参与这道期望值校验。规则清单写了 version 时必须和门槛文件一致；清单没有
 // version 时不因此失败。
 //
 // 用例引用了门槛里的键，且没有观测或观测值不等于期望值，记该门槛一次失败，阈值是 0。
