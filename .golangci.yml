@@ -2,6 +2,8 @@ version: "2"
 
 run:
   timeout: 5m
+  # ${base-path} 取 go.mod 所在目录，和仓库根一致。
+  relative-path-mode: gomod
 
 linters:
   default: none
@@ -12,10 +14,14 @@ linters:
       rules:
         # 前缀匹配，github.com/egoist/mygo 的子包同样禁止。
         # files 里只有否定规则时，其余 Go 文件都会命中。
+        # 例外按绝对路径锚在模块根的 internal/ui，对应模块路径
+        # github.com/loveRyujin/lantern/internal/ui 及其子包。
+        # 不能写成 **/internal/ui/**：那会把 core/internal/ui 也放行。
         mygo-only-in-ui:
           list-mode: lax
           files:
-            - "!**/internal/ui/**"
+            - "!${base-path}/internal/ui/*.go"
+            - "!${base-path}/internal/ui/**/*.go"
           deny:
             - pkg: github.com/egoist/mygo
-              desc: "只有 internal/ui 可以 import github.com/egoist/mygo"
+              desc: "只有 github.com/loveRyujin/lantern/internal/ui 及其子包可以 import github.com/egoist/mygo"
