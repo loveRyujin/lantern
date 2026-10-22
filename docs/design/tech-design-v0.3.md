@@ -109,6 +109,8 @@ lantern/
 - B. Landlock + seccomp：shim 内用 `landlock-lsm/go-landlock` 限制文件系统、用纯 Go 的 seccomp BPF 库禁掉 socket/connect 等系统调用，然后 exec。优点是零外部依赖，缺点是必须探测实际 ABI/权限；当前全部 socket family 的禁止策略由 seccomp 承担，不能仅凭内核版本判断支持。
 - #40 以 **B：Landlock + seccomp 为主方案**进行真实探针验收，ABI >= 3 并实际安装策略后才可启用；A 为实验对照，不提供自动降级。开发机与 GitHub runner 的最终证据、限制见 ADR 0005。spike 不实现 `Sandbox.Run`，完整资源/生命周期与工具链仍由 #41–#44 验收。
 
+**真实 Linux Runner（#41，见 [ADR 0006](../adr/0006-linux-sandbox-run.md)）**：当前非 root、无 effective/permitted capabilities 的 Linux amd64 采用严格单任务 profile，NProc 仅 0/1，内核拒绝创建进程/线程、脱离进程组和跨进程控制；不把 PRD 的 64 进程建议值称为已达。可信 guardian 在应用退出后的 EOF 负责 kill、Wait 与目录清理；Python 父死信号单独处理 guardian 退出。RSS 每 10ms 目标采样终止并报告实际间隔，不是瞬时内核 RSS quota；CPU 为累计时间而非 1 核速率。runtime 使用标准库/venv 与 ELF 依赖闭包只读权限，不放行整个 /usr。产物复制为有界字节后才删除临时目录。#42–#44 继续负责输入业务、工具接入及完整评测。
+
 **数据与产物**：SQL 结果写成 `tmp/<exec>/in/*.csv`（只读），产物从 `out/` 收集，只收 png/csv/json，单文件不超过 5MB，并按文件头校验真实类型；执行完删除临时目录。
 
 ## 8. Python 运行时（已决：检测本机 Python + 专用 venv）

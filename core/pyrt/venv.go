@@ -17,7 +17,7 @@ const markerName = ".lantern-requirements.sha256"
 
 // Runtime 是已经准备好的专用 venv。
 // Python 是 venv 里的解释器。Base 是创建它的本机解释器。
-// 交给沙箱时：Python → sandbox.Runtime.Python，Base.Prefix → PyRoot，Venv → Venv。
+// 交给沙箱时：Python → sandbox.Runtime.Python，Base.Stdlib → PyRoot，Venv → Venv。
 type Runtime struct {
 	Base   Interpreter
 	Venv   string

@@ -101,6 +101,7 @@ func cloneSpec(spec Spec) Spec {
 }
 
 func cloneResult(res Result) Result {
+	res.RuntimeWarnings = append([]string(nil), res.RuntimeWarnings...)
 	if res.Artifacts == nil {
 		return res
 	}
