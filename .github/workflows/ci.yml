@@ -115,3 +115,29 @@ jobs:
 
       - name: Hash-locked install
         run: PYRT_ENSURE_REAL=1 go test ./core/pyrt/ -run TestEnsureReal -count=1 -timeout 15m
+
+  # #40: real fixed-payload spike; not the production Sandbox.Run evaluator.
+  linux-sandbox-spike:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Setup Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+      - name: Install probe dependencies
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap python3
+      - name: Probe actual Linux isolation
+        env:
+          LANTERN_REQUIRE_LANDLOCK: "1"
+        run: bash scripts/probe-linux-sandbox.sh "${RUNNER_TEMP}/linux-sandbox-report.json"
+      - name: Preserve environment and isolation evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: linux-sandbox-spike-${{ github.run_id }}
+          path: ${{ runner.temp }}/linux-sandbox-report.json
+          if-no-files-found: error
