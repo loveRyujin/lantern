@@ -104,10 +104,10 @@ lantern/
 - SBPL：`(deny default)`，放行 process-exec 和 fork；对 PYROOT、VENV、INPUT、系统库只读，对 OUTPUT 和 TMP 可读写，`(deny network*)`。
 - 进程数用 RLIMIT_NPROC 限制，但它按用户计数，在 macOS 上需要实测；不可靠的话改为 shim 轮询子进程数。
 
-**Linux（W3 实测后二选一）**：
+**Linux（#40 spike，参见 [ADR 0005](../adr/0005-linux-sandbox.md)）**：
 - A. bubblewrap：`bwrap --unshare-all --die-with-parent --new-session --ro-bind PYROOT --ro-bind VENV --ro-bind INPUT /in --bind OUTPUT /out --tmpfs /tmp --proc /proc --dev /dev`，再经 shim 设 rlimit。优点是网络命名空间隔离最彻底，缺点是要用户另装 bwrap，而且部分发行版限制非特权 user namespace（比如 Ubuntu 24.04 的 AppArmor 限制）。
-- B. Landlock + seccomp：shim 内用 `landlock-lsm/go-landlock` 限制文件系统、用纯 Go 的 seccomp BPF 库禁掉 socket/connect 等系统调用，然后 exec。优点是零外部依赖，缺点是要求内核 ≥5.13，而且网络只能靠 seccomp 来拦。
-- 我倾向 **B 为主、A 为可选后端**：零依赖更符合桌面分发。最终在 W3 用逃逸用例集实测后定，结论写进设计决策记录。
+- B. Landlock + seccomp：shim 内用 `landlock-lsm/go-landlock` 限制文件系统、用纯 Go 的 seccomp BPF 库禁掉 socket/connect 等系统调用，然后 exec。优点是零外部依赖，缺点是必须探测实际 ABI/权限；当前全部 socket family 的禁止策略由 seccomp 承担，不能仅凭内核版本判断支持。
+- #40 以 **B：Landlock + seccomp 为主方案**进行真实探针验收，ABI >= 3 并实际安装策略后才可启用；A 为实验对照，不提供自动降级。开发机与 GitHub runner 的最终证据、限制见 ADR 0005。spike 不实现 `Sandbox.Run`，完整资源/生命周期与工具链仍由 #41–#44 验收。
 
 **数据与产物**：SQL 结果写成 `tmp/<exec>/in/*.csv`（只读），产物从 `out/` 收集，只收 png/csv/json，单文件不超过 5MB，并按文件头校验真实类型；执行完删除临时目录。
 
@@ -134,7 +134,7 @@ lantern/
 
 ## 12. 待确认
 1. SQLite 驱动用 modernc（我的建议，需要产品和 ryujin 认可）。
-2. Linux 沙箱我倾向 Landlock + seccomp，W3 实测后定。
+2. Linux 沙箱主方案与支持条件由 #40 / ADR 0005 记录；实际 Sandbox.Run 由 #41 验收。
 3. authorizer 能否在 modernc 中使用，W2 确认。
 
 ## 13. W1 顺序
@@ -147,7 +147,7 @@ lantern/
 7. Python 检测与 venv 的 spike
 
 ## 14. v0.3.1 补丁（采纳测试搭子的意见）
-- **Linux 网络**：Landlock 只管文件系统；网络一律用 seccomp 拒绝 `socket()`（AF_INET、AF_INET6、AF_UNIX、AF_NETLINK、RAW 全部拦截）。内核不支持 Landlock 时直接返回 `sandbox_unavailable`，不静默降级。
+- **Linux 网络**：Landlock 新 ABI 含部分网络权限；本项目仍一律用 seccomp 拒绝 `socket()`（AF_INET、AF_INET6、AF_UNIX、AF_NETLINK、RAW 全部拦截）。内核不支持 Landlock 时直接返回 `sandbox_unavailable`，不静默降级。
 - **macOS 内存**：不依赖 RLIMIT_AS，改由父进程按 100ms 间隔轮询整个进程组的 RSS，超限就 kill 并返回 `oom`，报告里注明这是平台差异。
 - **ATTACH**：除了词法校验，还对 analytics 连接设置 `SQLITE_LIMIT_ATTACHED=0`（如果 modernc 暴露了 limit 接口），并启用 authorizer 拒绝 SQLITE_ATTACH。另外的兜底：`run_sql` 放进 shim 子进程执行，套用和沙箱同样的文件系统策略（只能读 analytics.db），所以即使 ATTACH 成功也打不开 sensitive.db。W2 确认哪几层能用。
 
