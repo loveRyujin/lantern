@@ -66,8 +66,8 @@ func TestNoMemMapsToRowTooLarge(t *testing.T) {
 }
 
 func TestRunSQLBlobCountsBase64(t *testing.T) {
-	fit := (MaxResultBytes / 4) * 3
-	if base64.StdEncoding.EncodedLen(fit) != MaxResultBytes || base64.StdEncoding.EncodedLen(fit+1) <= MaxResultBytes {
+	fit := ((MaxResultBytes - 1024) / 4) * 3
+	if base64.StdEncoding.EncodedLen(fit) > MaxResultBytes {
 		t.Fatalf("base64 边界不对: fit=%d", fit)
 	}
 	if fit+1 > MaxResultBytes {
@@ -94,8 +94,8 @@ func TestRunSQLBlobCountsBase64(t *testing.T) {
 			t.Fatal(err)
 		}
 		enc := strings.Trim(firstCellRaw(t, res.Content), `"`)
-		if len(enc) != MaxResultBytes {
-			t.Fatalf("base64 长度 = %d，想要 %d", len(enc), MaxResultBytes)
+		if len(enc) != base64.StdEncoding.EncodedLen(fit) || len(res.Content) > MaxResultBytes {
+			t.Fatalf("base64 长度 = %d，完整结果字节数 = %d", len(enc), len(res.Content))
 		}
 		body, err := base64.StdEncoding.DecodeString(enc)
 		if err != nil {
@@ -106,7 +106,7 @@ func TestRunSQLBlobCountsBase64(t *testing.T) {
 		}
 	})
 	t.Run("base64-over-cap", func(t *testing.T) {
-		res, err := tool.Execute(ctx, tools.Call{Args: []byte(fmt.Sprintf(`{"sql":"SELECT zeroblob(%d)"}`, fit+1))})
+		res, err := tool.Execute(ctx, tools.Call{Args: []byte(fmt.Sprintf(`{"sql":"SELECT zeroblob(%d)"}`, (MaxResultBytes/4)*3+1))})
 		var te *tools.Error
 		if !errors.As(err, &te) || te.Code != CodeResultTooLarge || te.Retryable || res.Content != "" {
 			t.Fatalf("err=%v res=%+v", err, res)
@@ -171,6 +171,9 @@ func TestWideRowMemoryBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	const blob = 3 << 20
+	// 低层读取器的分配回归，刻意不经过产品的 worker；worker 上限另有真实进程测试。
+	tool.query = Query
+	tool.local = true
 	parts := make([]string, MaxResultColumns)
 	for i := range parts {
 		parts[i] = "randomblob(3145728)"

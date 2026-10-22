@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -35,7 +36,7 @@ const CodeRejected = "sql_rejected"
 // 可重试。这次不返回行，避免把可能过期的结果交给模型。
 const CodeBusy = "data_busy"
 
-// CodeResultTooLarge 表示单独一行超过字节上限。
+// CodeResultTooLarge 表示查询进程超出内存预算，或结果超过字节上限。
 // 这次不返回任何行，包括这一行之前已经读出的行。不可重试。
 // 这不是参数失败。循环既不把它计入连续失败，也不因此把连续失败清零。
 const CodeResultTooLarge = "sql_result_too_large"
@@ -46,20 +47,41 @@ type Tool struct {
 	path  string
 	log   Logger
 	after func()
+	query func(context.Context, Queryer, string, int) (Result, error)
+	local bool // 仅供包内低层读取器测试；产品构造器不启用。
 }
 
 // NewTool 绑定已经用 [Open] 打开的只读库。
 // path 必须是打开时用的那个路径，而且和 allowed 是同一个文件。allowed 是工作区登记的业务库。
-// 哈希按 path 来核对。log 可以为 nil，此时拒绝语句不会写审计。
+// Linux 查询在独立 worker 里执行，父进程不使用 db 执行模型 SQL。
+// 构造时固定解析后的路径与文件身份；文件替换后返回 data_busy，调用方需重新打开并构造工具。
+// worker 保留只读连接与查询两侧的文件哈希核对。其他平台在隔离实现前返回 sql_worker_unavailable。
+// log 可以为 nil，此时拒绝语句不会写审计。
 // 调用方把 [Event] 转成自己的审计记录即可，字段已经带好 actor、action 和 RunID。
 func NewTool(db Queryer, path, allowed string, log Logger) (*Tool, error) {
 	if db == nil {
 		return nil, errors.New("sqlx: 没有数据库")
 	}
-	if _, err := allowBusiness(path, allowed); err != nil {
+	registered, err := allowBusiness(path, allowed)
+	if err != nil {
 		return nil, err
 	}
-	return &Tool{db: db, path: path, log: log}, nil
+	identity, err := os.Stat(registered)
+	if err != nil {
+		return nil, err
+	}
+	device, inode := fileIdentity(identity)
+	t := &Tool{db: db, path: registered, log: log}
+	t.query = func(ctx context.Context, _ Queryer, query string, limit int) (Result, error) {
+		current, statErr := os.Stat(registered)
+		resolved, resolveErr := Resolve(registered)
+		if statErr != nil || resolveErr != nil || resolved != registered || !os.SameFile(identity, current) {
+			return Result{}, busyErr()
+		}
+		result, _, err := runSQLProcess(ctx, processRequest{Path: registered, Allowed: registered, SQL: query, Limit: limit, Device: device, Inode: inode})
+		return result, err
+	}
+	return t, nil
 }
 
 // Spec 实现 tools.Tool。
@@ -80,9 +102,15 @@ func (t *Tool) Execute(ctx context.Context, call tools.Call) (tools.Result, erro
 	if err != nil {
 		return tools.Result{}, err
 	}
-	before, err := Snapshot(t.path)
-	if err != nil {
-		return tools.Result{}, ErrFileChanged
+	// 产品查询的哈希在 worker 内计算。父进程打开后再关闭同一个 inode 的
+	// 任意 fd，会释放该进程在该文件上的 POSIX 锁，可能破坏正在写入的工作区连接。
+	// 父进程只看 -wal 是否出现，不打开业务库文件。
+	before := presenceSnapshot(t.path)
+	if t.local || t.after != nil {
+		before, err = Snapshot(t.path)
+		if err != nil {
+			return tools.Result{}, ErrFileChanged
+		}
 	}
 	// Open 之后才出现 -wal。旧连接可能还停在打开时的快照上，这次不读。
 	if claimNewWAL(t.db, before) {
@@ -93,19 +121,23 @@ func (t *Tool) Execute(ctx context.Context, call tools.Call) (tools.Result, erro
 		if aerr := t.writeAudit(ctx, call, err.Error()); aerr != nil {
 			return tools.Result{}, aerr
 		}
-		if herr := t.sameFile(before); herr != nil {
+		if herr := t.checkLocalFile(before); herr != nil {
 			return tools.Result{}, herr
 		}
 		return tools.Result{}, rejected(err.Error())
 	}
-	result, qerr := Query(ctx, t.db, query, limit)
+	result, qerr := t.query(ctx, t.db, query, limit)
 	if t.after != nil {
 		t.after()
 	}
-	if herr := t.sameFile(before); herr != nil {
+	if herr := t.checkLocalFile(before); herr != nil {
 		return tools.Result{}, herr
 	}
 	if qerr != nil {
+		var toolErr *tools.Error
+		if errors.As(qerr, &toolErr) {
+			return tools.Result{}, qerr
+		}
 		var timeout *codedTimeout
 		if errors.As(qerr, &timeout) {
 			return tools.Result{}, qerr
@@ -127,9 +159,12 @@ func (t *Tool) Execute(ctx context.Context, call tools.Call) (tools.Result, erro
 		}
 		return tools.Result{}, rejected("查询无法执行：" + clipRunes(msg, 180))
 	}
-	body, err := json.Marshal(result)
+	body, err := encodeJSON(result)
 	if err != nil {
 		return tools.Result{}, err
+	}
+	if len(body) > MaxResultBytes {
+		return tools.Result{}, resultTooLarge()
 	}
 	summary := fmt.Sprintf("返回 %d 行", result.RowCount)
 	if result.TruncateReason == TruncateBytes {
@@ -138,6 +173,18 @@ func (t *Tool) Execute(ctx context.Context, call tools.Call) (tools.Result, erro
 		summary += "，结果已截断"
 	}
 	return tools.Result{Content: string(body), Summary: summary}, nil
+}
+
+func (t *Tool) checkLocalFile(before Snap) error {
+	if t.local || t.after != nil {
+		return t.sameFile(before)
+	}
+	return nil
+}
+
+func presenceSnapshot(path string) Snap {
+	_, err := os.Stat(path + "-wal")
+	return Snap{Sides: []Side{{Path: path + "-wal", Exists: err == nil}}}
 }
 
 func (t *Tool) sameFile(before Snap) error {
@@ -177,7 +224,7 @@ func resultTooLarge() error {
 	return &tools.Error{
 		Code:      CodeResultTooLarge,
 		Retryable: false,
-		Message:   "单行结果超过 1 MiB，这次没有返回任何行。请少选几列，或用 substr 截短字段。",
+		Message:   "查询或结果超过资源上限，这次没有返回任何行。请减少中间结果、少选几列，或用 substr 截短字段。",
 	}
 }
 

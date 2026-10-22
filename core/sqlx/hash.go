@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -103,20 +104,27 @@ func (before Snap) Unchanged(after Snap) error {
 }
 
 func hashFile(path string) ([32]byte, error) {
-	body, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("sqlx: 读取分析库: %w", err)
 	}
-	return sha256.Sum256(body), nil
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return [32]byte{}, fmt.Errorf("sqlx: 读取分析库: %w", err)
+	}
+	var sum [32]byte
+	copy(sum[:], h.Sum(nil))
+	return sum, nil
 }
 
 func hashSide(path string) (Side, error) {
-	body, err := os.ReadFile(path)
+	sum, err := hashFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return Side{Path: path}, nil
 		}
 		return Side{}, fmt.Errorf("sqlx: 读取分析库: %w", err)
 	}
-	return Side{Path: path, Exists: true, Sum: sha256.Sum256(body)}, nil
+	return Side{Path: path, Exists: true, Sum: sum}, nil
 }
