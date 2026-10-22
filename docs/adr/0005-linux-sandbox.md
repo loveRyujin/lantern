@@ -2,13 +2,13 @@
 
 ## 状态与范围
 
-方案验收中（2026-10-22），对应 #40。本记录与真实探针、开发机报告和 GitHub Linux runner 报告一同审查；完成后以本轮 PR 的最终提交/CI 为准。仅确定 Linux 隔离方案，不实现 `Sandbox.Run`、`run_python` 或完整 Agent 工具链；#41–#44 仍分别验收。
+已采纳（2026-10-22），对应 #40 / PR #46。开发机与 GitHub runner 的主候选均已真实通过；下方初次 CI 证据绑定 `768f8a4`，最终交付仍要求 PR 最终提交的 CI 与独立复核全部通过。仅确定 Linux 隔离方案，不实现 `Sandbox.Run`、`run_python` 或完整 Agent 工具链；#41–#44 仍分别验收。
 
 ## 问题与决策依据
 
 PRD 原文偏向 bubblewrap，技术设计曾倾向 Landlock + seccomp；两者均是候选，不能将偏好当作已验证结论。SQL worker 的 `RLIMIT_AS` 仅限制虚拟地址空间，不提供 Python 文件系统/网络隔离，也不等于 `Limits.Memory` 的 RSS 契约。
 
-候选主方案为 **Landlock + seccomp**，可执行能力探测与真实正反例是启用前提。理由：不依赖额外安装 bubblewrap 或启用 user namespace，可在 `CGO_ENABLED=0` 自身 shim 中安装规则，然后 exec 本机 Python。bubblewrap 保留为对照，不提供静默 fallback：两个后端的可见目录与网络行为不同，不能在策略失败时偷偷切换。
+主方案为 **Landlock + seccomp**，可执行能力探测与真实正反例是启用前提。理由：不依赖额外安装 bubblewrap 或启用 user namespace，可在 `CGO_ENABLED=0` 自身 shim 中安装规则，然后 exec 本机 Python。bubblewrap 保留为对照，不提供静默 fallback：两个后端的可见目录与网络行为不同，不能在策略失败时偷偷切换。
 
 选择不是“零依赖就安全”。Landlock 限制文件访问，seccomp 补足全部 socket family 的禁网目标；进程/资源/信号边界还需 #41。Landlock 按 ABI 探测，不仅判断 uname：本轮要求 ABI >= 3，包含跨目录 REFER 与 TRUNCATE 权限，缺失能力必须失败关闭。未来新增 ABI 权限需明确评估，而不是宣称处理未知权限。
 
@@ -28,7 +28,21 @@ Linux `7.2.8-9-omarchy`、x86_64、UID 1000、CapEff=0；user namespace 上限 6
 
 ### GitHub runner
 
-以本轮 PR 的 `linux-sandbox-spike` 实际 JSON artifact 为证据，报告中保留具体 runner 内核、ABI、依赖与每项检查。开发机结果不能充当 CI 结果；runner 的 bubblewrap 若受 userns/AppArmor 限制，应报告不支持原因，不修改宿主安全配置使测试假绿。
+[初次 PR CI](https://github.com/loveRyujin/lantern/actions/runs/39804910985) 的 `linux-sandbox-spike` JSON artifact（`linux-sandbox-spike-39804910985`，head `768f8a4`）实测：Linux `6.17.0-1022-azure`、x86_64、UID 1001、CapEff=0，Landlock ABI 7；parent NoNewPrivs=0 / Seccomp=0，worker NoNewPrivs=1 / Seccomp=2，主候选 21 项策略检查及 13 项宿主对照通过。
+
+同一 runner 上 bubblewrap 0.9.0 已安装、非 setuid，但初始化网络命名空间时返回 `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`，报告为 **unsupported**，没有运行 Python payload，不能算隔离通过。不修改宿主安全配置绕过这一限制。这是实测失败原因，不臆测归因于某个 AppArmor 配置。主方案不依赖 user namespace；因此这项结果支持选择 Landlock + seccomp。
+
+最终 head 的四个 CI job 仍必须通过，报告随每次 CI 保存；初次 runner 证据不能替代最终检查。生产资源/逃逸用例尚未接入，不能将固定探针当作 #44 的真实完整评测。
+
+## 独立验收与变异
+
+修复后的固定探针在本机严格模式再次通过：Landlock 21 项检查 / 13 项宿主对照，bubblewrap 12 项检查 / 4 项宿主对照。独立测试在临时源码副本分别移除 Landlock、seccomp：前者在宿主读/只读目录写断言失败（0.208 秒），后者在各 socket family/socketpair 等目标断言失败（0.194 秒）；均正常编译、返回完整 JSON，没有将超时算作成功杀变异。bubblewrap 副本加入 `--share-net` 后可连接真实宿主 listener，禁联通断言失败。
+
+最初移除 seccomp 暴露探针 `ptrace(0,...)` 会执行 PTRACE_TRACEME、改变被测进程状态并导致超时。已改用无效 request/FD/命令并清零其他参数，socketpair 在无过滤对照成功时关闭 FD；恢复探针后重复验证通过。这个修正只让固定实验无副作用，不是生产隔离策略变更。
+
+外层 seccomp 分别强制 Landlock ABI 查询 ENOSYS、seccomp 安装 EPERM，原探针均 exit 2 / status unsupported、无 payload checks；证明确实失败关闭，无宿主 fallback。继承 fd 的反例仍如实保留为 #41 约束。
+
+本地 `CGO_ENABLED=0 go test ./... -count=1`、build/vet、Windows build/vet 全通过；探针修正后又执行严格实验、build/vet 与 Windows build。跨平台编译不代表提供了其他平台沙箱。
 
 ## #41 实施约束与残余风险
 

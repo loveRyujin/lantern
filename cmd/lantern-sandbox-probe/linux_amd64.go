@@ -271,11 +271,29 @@ func checks(root string) report {
 		}
 		add(fmt.Sprintf("deny-socket-family-%d", family), errors.Is(err, unix.EPERM), err)
 	}
-	_, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+	if err == nil {
+		unix.Close(fds[0])
+		unix.Close(fds[1])
+	}
 	add("deny-socketpair", errors.Is(err, unix.EPERM), err)
-	for _, nr := range []uintptr{unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER, unix.SYS_PTRACE, unix.SYS_BPF, unix.SYS_PIDFD_GETFD, unix.SYS_SOCKET | 0x40000000} {
-		_, _, e := unix.Syscall(nr, 0, 0, 0)
-		add(fmt.Sprintf("deny-syscall-%d", nr), e == unix.EPERM, e)
+	// Use invalid, side-effect-free arguments even when the filter is removed.
+	// In particular, ptrace request 0 is PTRACE_TRACEME: a successful mutation
+	// would change process tracing state and can hang its parent at the next exec.
+	invalid := ^uintptr(0)
+	for _, probe := range []struct {
+		nr, arg1, arg2, arg3 uintptr
+	}{
+		{unix.SYS_IO_URING_SETUP, 0, 0, 0}, // zero entries and null params
+		{unix.SYS_IO_URING_ENTER, invalid, 0, 0},
+		{unix.SYS_IO_URING_REGISTER, invalid, invalid, 0},
+		{unix.SYS_PTRACE, invalid, 0, 0}, // unknown request; never TRACEME/ATTACH
+		{unix.SYS_BPF, invalid, 0, 0},
+		{unix.SYS_PIDFD_GETFD, invalid, invalid, 0},
+		{unix.SYS_SOCKET | 0x40000000, invalid, invalid, invalid},
+	} {
+		_, _, e := unix.Syscall6(probe.nr, probe.arg1, probe.arg2, probe.arg3, 0, 0, 0)
+		add(fmt.Sprintf("deny-syscall-%d", probe.nr), e == unix.EPERM, e)
 	}
 	py := `import os,socket,sys
 r=sys.argv[1]
