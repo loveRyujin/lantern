@@ -12,14 +12,17 @@ import (
 	"github.com/loveRyujin/lantern/internal/eval"
 )
 
-// platformAllSummaryDigest 是 eval-v1.1 的 --platform all 计分指纹。
+// platformAllSummaryDigest 是 --platform all 的计分指纹。
+// #34 增加 4 条只读 SQL 用例后，指纹从
+// c0febb350ee46c31f3ddf87dede0af5e57a1326c70d629c295a31dbe99a01ebc 换成下面这一条。
+// 其中 W2-SQL-004 把上一条 0a130ea77bf68437c25d676ce07093c9b80dfe09dbf511d5fea12a707415779f 再换掉。
 // 重算：在仓库根目录执行
 //
 //	go test ./internal/eval/ -run TestPlatformAllDigestUnchanged -count=1
 //
 // 失败信息会打印 ScoringDigest。算法见 eval.ScoringDigest：只哈希计分内容，
 // 直接排除 environment 和路径字段，不替换成假值。步骤写在 eval/v1/README.md。
-const platformAllSummaryDigest = "c0febb350ee46c31f3ddf87dede0af5e57a1326c70d629c295a31dbe99a01ebc"
+const platformAllSummaryDigest = "ef3431dd8f2099b81bc29896f99e91e82c0fe1741b45cdb124b8eb2fbd881f1f"
 
 func TestPlatformAllDigestUnchanged(t *testing.T) {
 	suite := filepath.Join(moduleRoot(t), "eval", "v1")
@@ -32,8 +35,8 @@ func TestPlatformAllDigestUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := res.Report.Summary
-	if res.Report.SelectedPlatform != "all" || sum.Cases != 233 {
-		t.Fatalf("--platform all 正式集共 %d 条，平台 %s，应为 233", sum.Cases, res.Report.SelectedPlatform)
+	if res.Report.SelectedPlatform != "all" || sum.Cases != 237 {
+		t.Fatalf("--platform all 正式集共 %d 条，平台 %s，应为 237", sum.Cases, res.Report.SelectedPlatform)
 	}
 	got, err := eval.ScoringDigest(res.Report)
 	if err != nil {

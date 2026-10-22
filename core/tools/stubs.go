@@ -25,6 +25,8 @@ var (
 		}`),
 	}
 	// SpecRunSQL 是只读 SQL 工具的注册说明。#34 按这个 Schema 注册真正的执行。
+	// limit 不传时，执行层默认返回 200 行。这里的 maximum 是 1000，再大就在执行前被 Schema 拒绝。
+	// 结果超过生效的行数时截断，并在结果里标 truncated。
 	SpecRunSQL = Spec{
 		Name:        "run_sql",
 		Description: "在当前工作区的分析库上执行只读查询",
@@ -33,8 +35,8 @@ var (
 			"additionalProperties": false,
 			"required": ["sql"],
 			"properties": {
-				"sql": {"type": "string", "minLength": 1},
-				"limit": {"type": "integer", "minimum": 1}
+				"sql": {"type": "string", "minLength": 1, "maxLength": 65536},
+				"limit": {"type": "integer", "minimum": 1, "maximum": 1000}
 			}
 		}`),
 		Timeout:     0,

@@ -7,24 +7,21 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
-	"reflect"
 	"sync"
-	"unsafe"
 
-	"modernc.org/libc"
+	"github.com/loveRyujin/lantern/core/sqlx"
 	"modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
 )
 
-// 技术设计 §14：每条由本包打开的连接都要设 SQLITE_LIMIT_ATTACHED=0，并用 authorizer
-// 拒绝 SQLITE_ATTACH。modernc 的 Driver 文档写明它不暴露 authorizer；sqlite.Limit 又要
-// 已经包进 database/sql 的 *sql.Conn，连接钩子里还拿不到。钩子拿到的是驱动自己的
-// 连接，这里在交还给连接池之前直接调用 lib 里的 sqlite3_limit 和 sqlite3_set_authorizer。
-// 读不到连接内部字段就拒绝打开，避免静默退回到没有防护的连接。
+// 技术设计 §14：每条由本包打开的连接都拒绝 ATTACH。实现在 [sqlx.RejectAttach]：
+// 设 SQLITE_LIMIT_ATTACHED=0，并用 authorizer 拒绝 SQLITE_ATTACH。读不到连接内部
+// 字段就拒绝打开，避免静默退回到没有防护的连接。
+//
+// 这里的连接要跑迁移和种子写入，所以不开 mode=ro，也不开 query_only。
+// 模型提交的 SQL 走 sqlx 的只读连接，不走这个池。
 //
 // kb、analytics、runs 在启动时打开，sensitive 要等 [Handle.OpenSensitive]。它们走同一个
-// 驱动，所以确认导出之后打开的连接也拒绝 ATTACH。外部 SQL 只会落到 analytics 上，
-// 这是验收要挡住的那条连接。
+// 驱动，所以确认导出之后打开的连接也拒绝 ATTACH。
 
 var (
 	driverOnce sync.Once
@@ -35,7 +32,7 @@ func workspaceDriver() *sqlite.Driver {
 	driverOnce.Do(func() {
 		drv = &sqlite.Driver{}
 		drv.RegisterConnectionHook(func(conn sqlite.ExecQuerierContext, _ string) error {
-			return installAttachGuard(conn)
+			return sqlx.RejectAttach(conn)
 		})
 	})
 	return drv
@@ -110,69 +107,4 @@ func sqliteDSN(path string) string {
 		}.Encode(),
 	}
 	return u.String()
-}
-
-func installAttachGuard(conn sqlite.ExecQuerierContext) error {
-	db, tls, err := sqliteConn(conn)
-	if err != nil {
-		return err
-	}
-	if got := sqlite3.Xsqlite3_limit(tls, db, sqlite3.SQLITE_LIMIT_ATTACHED, 0); got < 0 {
-		return fmt.Errorf("workspace: sqlite3_limit(SQLITE_LIMIT_ATTACHED): %d", got)
-	}
-	if got := sqlite3.Xsqlite3_limit(tls, db, sqlite3.SQLITE_LIMIT_ATTACHED, -1); got != 0 {
-		return fmt.Errorf("workspace: SQLITE_LIMIT_ATTACHED = %d, want 0", got)
-	}
-	rc := sqlite3.Xsqlite3_set_authorizer(tls, db, cFuncPointer(denyAttach), 0)
-	if rc != sqlite3.SQLITE_OK {
-		return fmt.Errorf("workspace: sqlite3_set_authorizer: %d", rc)
-	}
-	return nil
-}
-
-// denyAttach 是 sqlite3_set_authorizer 的回调。必须是包级函数：modernc 用函数值的
-// 代码指针注册回调，闭包的表示和这个约定不一致。除 SQLITE_ATTACH 以外全部放行，
-// 迁移和业务写入不受影响。
-func denyAttach(_ *libc.TLS, _ uintptr, action int32, _, _, _, _ uintptr) int32 {
-	if action == sqlite3.SQLITE_ATTACH {
-		return sqlite3.SQLITE_DENY
-	}
-	return sqlite3.SQLITE_OK
-}
-
-// cFuncPointer 与 modernc.org/sqlite 内部把 Go 函数交给 ccgo 的方式相同。
-func cFuncPointer[T any](f T) uintptr {
-	return *(*uintptr)(unsafe.Pointer(&struct{ f T }{f}))
-}
-
-func sqliteConn(conn sqlite.ExecQuerierContext) (uintptr, *libc.TLS, error) {
-	v := reflect.ValueOf(conn)
-	if v.Kind() != reflect.Pointer || v.IsNil() {
-		return 0, nil, fmt.Errorf("workspace: sqlite connection type %T has no handle", conn)
-	}
-	v = v.Elem()
-	if v.Kind() != reflect.Struct {
-		return 0, nil, fmt.Errorf("workspace: sqlite connection type %T has no handle", conn)
-	}
-	dbField := v.FieldByName("db")
-	tlsField := v.FieldByName("tls")
-	if !dbField.IsValid() || !tlsField.IsValid() {
-		return 0, nil, fmt.Errorf("workspace: sqlite connection type %T has no db/tls fields; refusing to open without ATTACH guard", conn)
-	}
-	dbField = exportedView(dbField)
-	tlsField = exportedView(tlsField)
-	db := uintptr(dbField.Uint())
-	tls, ok := tlsField.Interface().(*libc.TLS)
-	if !ok || tls == nil || db == 0 {
-		return 0, nil, fmt.Errorf("workspace: sqlite connection type %T has an empty handle", conn)
-	}
-	return db, tls, nil
-}
-
-// exportedView 读取其他包里的未导出字段。modernc v1.60.1 的 *conn.db / *conn.tls 没有导出访问器。
-func exportedView(f reflect.Value) reflect.Value {
-	if f.CanInterface() {
-		return f
-	}
-	return reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem()
 }

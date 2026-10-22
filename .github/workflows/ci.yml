@@ -50,7 +50,7 @@ jobs:
       - name: Demonstrate rejected cgo and mygo imports
         run: bash scripts/demo-constraint-ci.sh
 
-      - name: Official eval on Linux scores 213
+      - name: Official eval on Linux scores 217
         run: |
           make eval REPORT_DIR="${RUNNER_TEMP}/eval-official"
           python3 scripts/check-eval-platform.py linux "${RUNNER_TEMP}/eval-official"
