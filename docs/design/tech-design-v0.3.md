@@ -89,6 +89,12 @@ lantern/
 - `PRAGMA` 和 `pragma_*` 表值函数都拒绝。双引号、方括号、反引号里的名字按解析后的标识符判断，不在整段 SQL 里搜子串。
 - `SELECT sqlite_master` 允许，看到的是业务库自己的表。连接只打开工作区登记的那一个业务库（`analytics.db`）。要打开的路径和登记路径都先做绝对化和 `EvalSymlinks`，再比较，并用 `os.SameFile` 核对文件身份。指向别处的符号链接、改名副本和硬链接都打不开。`sensitive.db` 也不能靠 `ATTACH` 或 URI 参数进来。
 
+### SQL worker 当前边界与验收
+
+- 文件哈希与身份检查的测试必须实际到达 worker 的查询后校验：同 inode 内容改变与内容相同但 inode 改变分别验证；临时禁用对应检查后，测试必须失败。父进程的测试钩子和启动前替换测试不能代替这两项。
+- 路径两侧校验尚未绑定 SQLite 实际持有的文件描述符，不能抵御具有工作区写权限的同用户进程在检查间隙来回替换路径。工作区目录仍属于应用信任边界，后续 Python 沙箱不得写入这些目录。
+- Linux `Pdeathsig` 实际绑定发起创建的 OS 线程，线程退出也可能使 worker 异常退出；此时按 `sql_worker_failed` 处理，不伪装成 OOM。临时文件尚无磁盘配额，墙钟超时不是磁盘硬上限；当前 Agent 串行调用工具，尚未提供全局 worker 并发预算。它们是后续资源隔离工作需要继续覆盖的边界。
+
 ## 7. 沙箱
 统一接口 `Sandbox.Run(ctx, Spec) (Result, error)`，错误类型分为 `timeout | oom | killed | error | runtime_unavailable`。
 
