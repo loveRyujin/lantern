@@ -97,8 +97,8 @@ func TestRunSQLCommentAndLiteralDoNotWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spy.n != 1 {
-		t.Fatalf("查询次数 %d", spy.n)
+	if spy.n != 0 {
+		t.Fatalf("查询不应在父进程执行，查询次数 %d", spy.n)
 	}
 	got := decodeResult(t, res)
 	if got.RowCount != 1 || got.Truncated {

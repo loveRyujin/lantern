@@ -115,6 +115,8 @@ func probeSortMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sortTool.query = Query // 低层读取器的回归，产品 worker 的上限另测。
+	sortTool.local = true
 	assertMemStatusWorks(t, sortTool)
 	dir := filepath.Dir(sortPath)
 	before, err := listDir(dir)
@@ -194,6 +196,8 @@ func openMemTool(t *testing.T, path string) *Tool {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tool.query = Query // 只在测试里观察 SQLite 分配，不作为工具的默认执行路径。
+	tool.local = true
 	return tool
 }
 
@@ -227,6 +231,9 @@ func spawnMemChild(t *testing.T, testName, childID string) {
 	t.Log(string(out))
 	if err != nil {
 		t.Fatalf("内存子进程 %s 失败: %v", childID, err)
+	}
+	if !strings.Contains(string(out), "--- PASS: "+testName+" ") {
+		t.Fatalf("内存子进程未运行指定测试 %s: %s", testName, out)
 	}
 }
 

@@ -81,11 +81,9 @@ func Open(ctx context.Context, path, allowed string) (*sql.DB, error) {
 	}
 	// 记下打开时有没有 -wal。之后才出现的 -wal 说明写入者改了日志模式，
 	// 这条连接上的旧快照不能再交给模型。
-	snap, err := Snapshot(resolved)
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
+	//这里只需要记住 -wal 是否存在。读取再关闭业务库的额外 fd 会释放当前
+	//进程在同一 inode 上的 POSIX 锁；完整哈希由隔离 worker 在查询两侧计算。
+	snap := presenceSnapshot(resolved)
 	rememberGeneration(db, snap)
 	return db, nil
 }

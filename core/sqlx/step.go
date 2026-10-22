@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync/atomic"
+	"unicode/utf8"
 	"unsafe"
 
 	"modernc.org/libc"
@@ -41,7 +42,12 @@ func stepQuery(ctx context.Context, driverConn any, query string, limit int) (Re
 		cols[i] = cString(sqlite3.Xsqlite3_column_name(tls, stmt, int32(i)))
 	}
 	out := make([][]any, 0)
-	used := 0
+	// 预留完整 JSON 外壳、列名、最大 row_count 和截断标记。
+	envelope, err := encodeJSON(Result{Columns: cols, Rows: [][]any{}, RowCount: MaxLimit, Truncated: true, TruncateReason: TruncateBytes})
+	if err != nil || len(envelope) > MaxResultBytes {
+		return Result{}, errRowTooLarge
+	}
+	used := len(envelope)
 	truncated := false
 	for {
 		if err := ctx.Err(); err != nil {
@@ -63,13 +69,16 @@ func stepQuery(ctx context.Context, driverConn any, query string, limit int) (Re
 			if err != nil {
 				return Result{}, classifyStep(ctx, err)
 			}
-			if used+nbyte > MaxResultBytes {
+			if nbyte+len(envelope) > MaxResultBytes {
+				return Result{}, errRowTooLarge
+			}
+			if used+nbyte+1 > MaxResultBytes {
 				if len(out) == 0 {
 					return Result{}, errRowTooLarge
 				}
 				return cutByBytes(cols, out), nil
 			}
-			used += nbyte
+			used += nbyte + 1
 			out = append(out, row)
 		case sqlite3.SQLITE_DONE:
 			return Result{Columns: cols, Rows: out, RowCount: len(out), Truncated: truncated}, nil
@@ -115,11 +124,11 @@ func prepare(tls *libc.TLS, db uintptr, query string) (uintptr, error) {
 	return stmt, nil
 }
 
-// readRow 逐列看这一列写进 JSON 之后的长度。这一列放不进 1 MiB 时，不拷贝它，整行失败。
-// BLOB 在 JSON 里是 base64，按编码后的长度计。TEXT 按原始字节计。
+// readRow 先按原始长度拒绝明显过大的列，再按实际 JSON 字节数累计。
+// 非法 UTF-8 TEXT 使用带 encoding 标记的 base64 对象，保留全部原始字节。
 func readRow(tls *libc.TLS, stmt uintptr, n int) ([]any, int, error) {
 	row := make([]any, n)
-	sum := 0
+	sum := 2 // 数组方括号。
 	for i := range n {
 		typ := sqlite3.Xsqlite3_column_type(tls, stmt, int32(i))
 		raw, nb, err := columnSize(tls, stmt, int32(i), typ)
@@ -133,7 +142,17 @@ func readRow(tls *libc.TLS, stmt uintptr, n int) ([]any, int, error) {
 		if err != nil {
 			return nil, 0, err
 		}
-		sum += nb
+		encoded, err := encodeJSON(val)
+		if err != nil {
+			return nil, 0, err
+		}
+		sum += len(encoded)
+		if i > 0 {
+			sum++
+		}
+		if sum > MaxResultBytes {
+			return nil, 0, errRowTooLarge
+		}
 		row[i] = val
 	}
 	return row, sum, nil
@@ -179,7 +198,11 @@ func copyColumn(tls *libc.TLS, stmt uintptr, i, typ int32, n int) (any, error) {
 	case sqlite3.SQLITE_FLOAT:
 		return sqlite3.Xsqlite3_column_double(tls, stmt, i), nil
 	case sqlite3.SQLITE_TEXT:
-		return copyText(tls, stmt, i, n), nil
+		text := copyText(tls, stmt, i, n)
+		if !utf8.ValidString(text) {
+			return EncodedText{Encoding: "base64", Data: base64.StdEncoding.EncodeToString([]byte(text))}, nil
+		}
+		return text, nil
 	case sqlite3.SQLITE_BLOB:
 		return copyBlob(tls, stmt, i, n), nil
 	default:

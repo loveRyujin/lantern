@@ -18,7 +18,7 @@ type Queryer interface {
 
 // 结果字节上限。和行数上限一起生效。单个单元格也算进这个总数。
 const (
-	// MaxResultBytes 是交回模型的一行最多能有的字节。中间值不算在这里。
+	// MaxResultBytes 是交回模型的完整 JSON 上限（含列名、外壳、转义和 base64）。
 	MaxResultBytes = 1 << 20
 	// MaxValueBytes 是 SQLite 里单个值和表达式中间值的上限。
 	// 2 MiB 的中间值还能返回 length()。不按列数再除，也不用 SQLITE_LIMIT_COLUMN。
@@ -32,7 +32,7 @@ const (
 	// 不设置 sqlite3_hard_heap_limit64：那个上限是进程级的，工作区、审计和敏感库也会被卡住。
 	CacheKiB = 256
 	// SortMemBytes 是排序这类查询在 SQLite 堆上的大约上限，只给回归测试用。
-	// 生产路径没有进程级硬上限。超过之后若 SQLite 返回 NOMEM，映射成 sql_result_too_large。
+	// 这里只量低层排序器；产品工具另外受 Linux worker 的 RLIMIT_AS 约束。
 	SortMemBytes  int64 = 256 << 20
 	TruncateBytes       = "bytes"
 )
@@ -47,20 +47,20 @@ type Result struct {
 	TruncateReason string   `json:"truncate_reason,omitempty"`
 }
 
-// Query 执行一条已经通过扫描的语句，最多取 limit 行，并且不超过 MaxResultBytes。
-// 多读一行只为了判断要不要标 truncated。limit 必须在 1 和 MaxLimit 之间。
-// 准备完成就先看结果列数，超过 [MaxResultColumns] 返回 [errTooManyColumns]，此时还没有 step。
-// 每一行按写进 JSON 的长度逐列累加，拷贝之前就停。BLOB 按 base64 长度计，TEXT 按原始字节计。
-// 一行超过 MaxResultBytes，或者 SQLite 报 TOOBIG，
-// 返回 [errRowTooLarge]，这次已读出的行也不返回。
-// 多行各自没超限、加在一起超了，才截断并保留已经放下的完整行。
-// 表达式的中间值不受这 1 MiB 约束，只受连接上的 MaxValueBytes 约束。
-// Go 这边停在 1 MiB，不再把超出的列拷进来。
-// 32 列 × 4 MiB 只约束最终结果行，不约束中间值。
-// 子查询、物化 CTE、GROUP BY、UNION 和 IN 列表的中间值没有内存上限。实测峰值 1.2–2.75 GB。
-// 这些中间值几秒内就能把内存占满，超时来不及拦住。
-// temp_store=FILE 和较小的 cache_size 只帮 ORDER BY 把多出来的行写到临时文件，不设进程级堆上限。
-// 修复记在 https://github.com/loveRyujin/lantern/issues/38 ：把 run_sql 放进单独的子进程，用 RLIMIT_AS 或 cgroup 限制内存。
+// EncodedText 保留 SQLite TEXT 里的非法 UTF-8；不会把原始字节替换成 U+FFFD。
+// 合法 TEXT 仍返回字符串，BLOB 仍按 encoding/json 的 []byte 约定返回 base64 字符串。
+type EncodedText struct {
+	Encoding string `json:"encoding"`
+	Data     string `json:"data"`
+}
+
+// Query 是受信任调用方使用的低层读取器，直接使用当前进程的 SQLite 连接。
+// 模型工具必须经 NewTool，不能直接调用本函数；Linux Tool 在设有 RLIMIT_AS 的 worker 内使用它。
+// limit 必须在 1 和 MaxLimit 之间；多读一行判断是否截断。结果列在 prepare 后最多 32 列。
+// 每列先拒绝明显超限的原始数据，再按实际 JSON 长度累计，包含字符串转义和 base64。
+// 单行超限或 SQLite TOOBIG/NOMEM 时整次失败；多行累计超限时只保留完整行并标截断。
+// 最终 JSON 含列名和元数据最多 1 MiB，编码时关闭 HTML 转义。非法 UTF-8 TEXT 用 EncodedText 无损表示。
+// 本函数不限制 SQLite 中间值总内存，不能代替 Tool 的进程隔离。
 func Query(ctx context.Context, db Queryer, query string, limit int) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, &codedTimeout{err: err}
@@ -142,7 +142,7 @@ func isTooBig(err error) bool {
 // rowTooLarge 是整次查询该失败的结果过大。
 // TOOBIG 来自超过 MaxValueBytes 的单个值或中间值。结果行超过 MaxResultBytes 时，
 // 列门闩在拷贝这一列之前返回 [errRowTooLarge]，后面的列不再计算。
-// NOMEM 也走这里：没有进程级硬上限，但 SQLite 自己报内存不够时仍返回 sql_result_too_large。
+// NOMEM 也走这里；在 worker 内触及系统地址空间限制后的分配失败同样返回 sql_result_too_large。
 func rowTooLarge(err error) bool {
 	if err == nil {
 		return false
