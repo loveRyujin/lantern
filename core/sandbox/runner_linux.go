@@ -251,17 +251,18 @@ func executeGuarded(req guardianRequest, parentGone <-chan struct{}) (reply guar
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
 	started := time.Now()
-	lastSample := started
+	var lastSample time.Time
 	ticker := time.NewTicker(samplePeriod)
 	defer ticker.Stop()
 	usage := Usage{PythonPID: cmd.Process.Pid}
-	canonicalPython, _ := canonical(req.Plan.Python)
 	var waitErr error
 	var reason error
 	var messages []setupMessage
 	var statusReceived bool
 	var launcherCPU time.Duration
 	var inspectionSince time.Time
+	var usageInspectionSince time.Time
+	var untrusted bool
 	for running := true; running; {
 		select {
 		case messages = <-statusDone:
@@ -269,7 +270,15 @@ func executeGuarded(req guardianRequest, parentGone <-chan struct{}) (reply guar
 			for _, m := range messages {
 				if m.Ready {
 					launcherCPU = m.LauncherCPU
+					untrusted = true
 				}
+				if m.Error != "" {
+					untrusted = false
+					break
+				}
+			}
+			if untrusted {
+				lastSample = time.Now()
 			}
 			statusDone = nil
 		case waitErr = <-waited:
@@ -281,17 +290,21 @@ func executeGuarded(req guardianRequest, parentGone <-chan struct{}) (reply guar
 			running = false
 		case <-ticker.C:
 			now := time.Now()
-			gap := now.Sub(lastSample)
-			if gap > usage.MaxSampleGap {
-				usage.MaxSampleGap = gap
-			}
-			lastSample = now
 			if now.Sub(started) > req.Spec.Limits.Wall {
 				reason = Timeout("wall limit exceeded")
 			}
-			if actual, e := os.Readlink(fmt.Sprintf("/proc/%d/exe", cmd.Process.Pid)); e == nil && actual == canonicalPython {
+			// EOF on the CLOEXEC setup pipe plus Ready confirms the exec handoff.
+			// The same untrusted PID remains monitored across every later exec,
+			// including direct ELF-loader invocation; executable names are not a
+			// resource-enforcement boundary.
+			if untrusted {
 				rss, hwm, cpu, e := sampleTask(cmd.Process.Pid)
 				if e == nil {
+					usageInspectionSince = time.Time{}
+					if gap := now.Sub(lastSample); gap > usage.MaxSampleGap {
+						usage.MaxSampleGap = gap
+					}
+					lastSample = now
 					usage.SampleCount++
 					if hwm > usage.PeakRSS {
 						usage.PeakRSS = hwm
@@ -310,6 +323,13 @@ func executeGuarded(req guardianRequest, parentGone <-chan struct{}) (reply guar
 					}
 					if cpu > req.Spec.Limits.CPU {
 						reason = Timeout("sampled CPU limit exceeded")
+					}
+				} else {
+					if usageInspectionSince.IsZero() {
+						usageInspectionSince = now
+					}
+					if now.Sub(usageInspectionSince) >= 2*samplePeriod {
+						reason = Failed("task resource inspection unavailable: " + e.Error())
 					}
 				}
 			}

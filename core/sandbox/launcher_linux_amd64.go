@@ -86,14 +86,14 @@ func launcherMain() int {
 	if err = installFiles(req.Root, req.Plan); err != nil {
 		return fail(err)
 	}
+	if err = installFilter(); err != nil {
+		return fail(err)
+	}
 	// Report startup high-water separately; it must not be called Python RSS.
 	var ru unix.Rusage
 	_ = unix.Getrusage(unix.RUSAGE_SELF, &ru)
 	if err = json.NewEncoder(status).Encode(setupMessage{Ready: true, LauncherPeakRSS: uint64(ru.Maxrss) * 1024, LauncherCPU: time.Duration(ru.Utime.Sec+ru.Stime.Sec)*time.Second + time.Duration(ru.Utime.Usec+ru.Stime.Usec)*time.Microsecond}); err != nil {
 		return 125
-	}
-	if err = installFilter(); err != nil {
-		return fail(err)
 	}
 	if err = unix.Exec(req.Plan.Python, []string{req.Plan.Python, "-I", "-B", filepath.Join(req.Root, "in/__code__.py")}, pythonEnv(req.Root)); err != nil {
 		return fail(err)

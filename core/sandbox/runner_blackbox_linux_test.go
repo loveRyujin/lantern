@@ -226,6 +226,13 @@ for action in [lambda:resource.prlimit(%d,resource.RLIMIT_NOFILE,(16,%d)),lambda
  else: raise AssertionError('host process or credential modification allowed')
 libc=ctypes.CDLL(None,use_errno=True)
 assert libc.prctl(1,0,0,0,0)==-1 and ctypes.get_errno()==errno.EPERM
+ctypes.set_errno(0)
+child=libc.syscall(57)
+if child==0: os._exit(0)
+if child>0:
+ os.waitpid(child,0)
+ raise AssertionError('raw fork allowed')
+assert child==-1 and ctypes.get_errno()==errno.EPERM
 print('single-task-verified')`, helper.Process.Pid, helper.Process.Pid, originalLimit.Max, helper.Process.Pid, firstCPU, helper.Process.Pid)
 	result, err := blackboxRun(t, runner, sandbox.Spec{Code: code})
 	if err != nil || !strings.Contains(result.Stdout, "single-task-verified") {
@@ -418,6 +425,9 @@ func TestSandboxBlackboxParentDeathReapsAndCleans(t *testing.T) {
 	go func() { done <- helper.Wait() }()
 	defer func() { _ = helper.Process.Kill() }()
 	pid := blackboxWaitMarker(t, root, "parent-death-ready", done)
+	// Keep a removed EOF guard from leaving its deliberately long-running
+	// Python task behind after this regression has failed its target assertion.
+	defer unix.Kill(pid, unix.SIGKILL)
 	if err := helper.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
@@ -487,15 +497,31 @@ func TestSandboxBlackboxRealPackages(t *testing.T) {
 	}
 	root := t.TempDir()
 	runner := sandbox.New(sandbox.Config{TempRoot: root})
-	result, err := runner.Run(ctx, sandbox.Spec{Runtime: sandbox.Runtime{Python: prepared.Python, PyRoot: prepared.Base.Stdlib, Venv: prepared.Venv}, Code: `import os,pandas as pd,matplotlib
+	hostMarker := filepath.Join(t.TempDir(), "font-preparation-must-not-execute-user-code")
+	if err := os.WriteFile(hostMarker, []byte("host-write-control"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(hostMarker); err != nil {
+		t.Fatal(err)
+	}
+	code := fmt.Sprintf(`import os,pathlib
+try: open(%q,'w').write('user code executed on host')
+except PermissionError: pass
+else: raise AssertionError('user code escaped through trusted runtime/font preparation')
+import pandas as pd,matplotlib
 matplotlib.use('Agg')
+import matplotlib.font_manager as fm
+bundle=pathlib.Path(matplotlib.get_data_path()).resolve()
+assert fm.fontManager.ttflist
+assert all(pathlib.Path(entry.fname).resolve().is_relative_to(bundle) for entry in fm.fontManager.ttflist+fm.fontManager.afmlist)
 import matplotlib.pyplot as plt
 frame=pd.DataFrame({'x':[1,2,3],'y':[2,4,6]})
 assert frame['y'].sum()==12
 fig,ax=plt.subplots()
 ax.plot(frame['x'],frame['y'])
 fig.savefig(os.path.join(os.environ['OUTPUT_DIR'],'chart.png'))
-print('pandas-result:12')`})
+print('pandas-result:12')`, hostMarker)
+	result, err := runner.Run(ctx, sandbox.Spec{Runtime: sandbox.Runtime{Python: prepared.Python, PyRoot: prepared.Base.Stdlib, Venv: prepared.Venv}, Code: code})
 	if err != nil || !strings.Contains(result.Stdout, "pandas-result:12") {
 		t.Fatalf("required real-package sandbox execution: result=%+v error=%v", result, err)
 	}
@@ -510,6 +536,9 @@ print('pandas-result:12')`})
 	}
 	if !found {
 		t.Fatal("sandbox did not return the generated PNG before cleaning execution files")
+	}
+	if _, err := os.Stat(hostMarker); !os.IsNotExist(err) {
+		t.Fatalf("trusted runtime/font preparation executed user code: %v", err)
 	}
 	blackboxReaped(t, result.Usage.PythonPID)
 	blackboxClean(t, root)
