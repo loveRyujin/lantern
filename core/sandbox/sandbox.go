@@ -73,6 +73,10 @@ type Limits struct {
 
 // Result 是一次执行的产出。
 type Result struct {
+	// Usage reports actual task observations; sampled limits are not hard RSS quotas.
+	Usage Usage
+	// RuntimeWarnings lists host optional extensions whose dependency closure is unavailable.
+	RuntimeWarnings []string
 	// Stdout 是标准输出文本。
 	Stdout string
 	// Stderr 是标准错误文本。
