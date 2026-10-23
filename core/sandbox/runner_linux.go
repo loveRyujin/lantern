@@ -109,7 +109,15 @@ func (r *Runner) run(ctx context.Context, spec Spec) (Result, error) {
 		}
 	}
 	var reply guardianReply
-	if err = json.Unmarshal([]byte(output.String()), &reply); err != nil || waitErr != nil {
+	err = json.Unmarshal([]byte(output.String()), &reply)
+	// Cancellation can kill the launcher before Ready, or interrupt the guardian
+	// before its reply. Wait/cleanup has finished above; missing setup state must
+	// not turn a caller cancellation into an isolation-installation failure.
+	if ctx.Err() != nil {
+		reply.Result.Artifacts = nil
+		return align(reply.Result, Timeout(ctx.Err().Error()))
+	}
+	if err != nil || waitErr != nil {
 		return align(Result{}, Failed(fmt.Sprintf("guardian failed: %v JSON: %v %s", waitErr, err, diagnostic.String())))
 	}
 	if reply.Code != "" {

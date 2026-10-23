@@ -111,7 +111,7 @@ lantern/
 
 **真实 Linux Runner（#41，见 [ADR 0006](../adr/0006-linux-sandbox-run.md)）**：当前非 root、无 effective/permitted capabilities 的 Linux amd64 采用严格单任务 profile，NProc 仅 0/1，内核拒绝创建进程/线程、脱离进程组和跨进程控制；不把 PRD 的 64 进程建议值称为已达。可信 guardian 在应用退出后的 EOF 负责 kill、Wait 与目录清理；Python 父死信号单独处理 guardian 退出。RSS 每 10ms 目标采样终止并报告实际间隔，不是瞬时内核 RSS quota；CPU 为累计时间而非 1 核速率。runtime 使用标准库/venv 与 ELF 依赖闭包只读权限，不放行整个 /usr。产物复制为有界字节后才删除临时目录。#42–#44 继续负责输入业务、工具接入及完整评测。
 
-**数据与产物**：SQL 结果写成 `tmp/<exec>/in/*.csv`（只读），产物从 `out/` 收集，只收 png/csv/json，单文件不超过 5MB，并按文件头校验真实类型；执行完删除临时目录。
+**数据与产物（#42，见 [ADR 0007](../adr/0007-sql-sandbox-data.md)）**：成功的生产 SQL JSON 观察值经独立适配层转换为位置 ID 表头、JSON 单元格的 CSV 与列名/截断 metadata，保留 NULL、数字精度和重复列；固定 Python reader 按位置解码。可信调用方配置工作区专属执行根，输入只读。产物仅 PNG/CSV/JSON，单件 5 MiB、总量 20 MiB/16 件；PNG 限尺寸并完整解码，CSV 严格解析，JSON 语法与 UTF-8 验证，拒绝链接和特殊文件。全部复制为字节后清理，不返回半套产物。本轮实现与验收状态以 PR/Issue 为准。
 
 ## 8. Python 运行时（已决：检测本机 Python + 专用 venv）
 - 检测顺序：用户在设置里指定的路径 → `python3` 在 PATH 中的位置 → 常见路径（Homebrew、`/usr/bin`）。版本要求 ≥3.10。

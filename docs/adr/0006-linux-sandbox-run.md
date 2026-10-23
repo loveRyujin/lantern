@@ -2,7 +2,7 @@
 
 ## 状态与范围
 
-实现与验收中（2026-10-23），对应 #41。沿用 ADR 0005 的 Landlock + seccomp 主方案。本轮实现真实 `Sandbox.Run`，数据导出业务、`run_python` 工具和完整评测分别由 #42–#44 验收。
+已完成 #41（2026-10-23），沿用 ADR 0005 的 Landlock + seccomp 主方案。真实 `Sandbox.Run` 与启动窗口 hotfix 已通过最终 PR/main 验收，证据见 PR47/48 与 W3-03 笔记。SQL 输入适配/产物链、`run_python` 工具和完整评测分别由 #42–#44 验收。
 
 ## 决策：先提供严格单任务 profile
 
@@ -56,7 +56,7 @@ PR47 的最终 CI 全绿，但合并提交 92f2540 的 main CI 在快速退出�
 
 修复只在已 LockOSThread 的 launcher 执行线程安装 seccomp（flags=0），与该线程的 Landlock 一致。其他线程仅运行可信 bootstrap，exec 成功时会被销毁；保留下来的执行线程及其 Python 继承完整策略。因此线程创建禁令保持不变。策略、argv/env 指针和状态缓冲在安装前全部构造；安装后的终端函数与辅助函数使用 nosplit/norace 和 RawSyscall，采集启动基线、发送 Ready、执行 execve，失败也仅写固定错误并 exit_group，不返回 Go 运行时。需要同时审查编译产物和独立压力测试，不能仅凭注释或 nosplit 标记证明没有调度窗口。
 
-main 失败记录：[39892568701](https://github.com/loveRyujin/lantern/actions/runs/39892568701)。#41 已重开，待 hotfix 最终提交的独立测试、PR/main CI、审查和笔记全部完成后重新关闭。
+main 失败记录：[39892568701](https://github.com/loveRyujin/lantern/actions/runs/39892568701)。该失败触发 #41 重开；hotfix PR48 最终提交 43b8dd2 经三角色验收、[PR CI](https://github.com/loveRyujin/lantern/actions/runs/39893828615) 与合并 3449ea4 的 [main CI](https://github.com/loveRyujin/lantern/actions/runs/39894146440) 四 job 全部通过后，#41 重新关闭。完整过程见 lantern-notes 的 W3-03。
 
 launcher 自身的固定环境额外禁用 Go 异步抢占（GODEBUG=asyncpreemptoff=1），避免 raw 辅助调用边界在过滤后被异步抢占；此变量不进入 Python 的白名单环境。nosplit 标记不能单独代替这项调度边界审查。其他可信线程仍可调度，Python 的进程、线程和网络权限不增加。
 

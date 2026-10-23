@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"path/filepath"
 	"testing"
 	"time"
@@ -139,8 +141,11 @@ func TestFakeRejectsInvalidSpecWithoutRecording(t *testing.T) {
 }
 
 func TestValidateArtifact(t *testing.T) {
-	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0}
-	if err := sandbox.ValidateArtifact(sandbox.Artifact{Name: "chart.png", Kind: sandbox.KindPNG, Data: png}, 0); err != nil {
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.ValidateArtifact(sandbox.Artifact{Name: "chart.png", Kind: sandbox.KindPNG, Data: encoded.Bytes()}, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := sandbox.ValidateArtifact(sandbox.Artifact{Name: "chart.png", Kind: sandbox.KindPNG, Data: []byte("not-png!!!!")}, 0); !errors.Is(err, sandbox.ErrArtifact) {

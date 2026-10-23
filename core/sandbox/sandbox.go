@@ -3,7 +3,6 @@ package sandbox
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -101,9 +100,9 @@ type Artifact struct {
 type ArtifactKind string
 
 const (
-	// KindPNG 是 PNG 图片，文件头必须是 PNG 签名。
+	// KindPNG 是完整可解码、尺寸受限的 PNG 图片。
 	KindPNG ArtifactKind = "png"
-	// KindCSV 是 CSV 文本。CSV 没有魔数，只拒绝二进制和路径逃逸。
+	// KindCSV 是 UTF-8 CSV 文本，要求严格引号与一致的字段数。
 	KindCSV ArtifactKind = "csv"
 	// KindJSON 是 JSON 文本，内容必须能通过 JSON 语法检查。
 	KindJSON ArtifactKind = "json"
@@ -191,19 +190,8 @@ func ValidateArtifact(a Artifact, limit int64) error {
 	if size == 0 || size > limit {
 		return fmt.Errorf("%w: %s 的大小 %d 不在 1..%d", ErrArtifact, a.Name, size, limit)
 	}
-	switch a.Kind {
-	case KindPNG:
-		if !hasPNGSignature(a.Data) {
-			return fmt.Errorf("%w: %s 的文件头不是 PNG", ErrArtifact, a.Name)
-		}
-	case KindJSON:
-		if !json.Valid(a.Data) {
-			return fmt.Errorf("%w: %s 不是 JSON", ErrArtifact, a.Name)
-		}
-	case KindCSV:
-		if hasPNGSignature(a.Data) || bytesContainNUL(a.Data) {
-			return fmt.Errorf("%w: %s 不是 CSV 文本", ErrArtifact, a.Name)
-		}
+	if err := validateArtifactContent(a); err != nil {
+		return fmt.Errorf("%w: %s: %v", ErrArtifact, a.Name, err)
 	}
 	return nil
 }
