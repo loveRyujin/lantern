@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"syscall"
 	"time"
 )
+
+var errTaskFDNotReady = errors.New("task FD inspection temporarily unavailable")
 
 func sampleTask(pid int) (rss, hwm uint64, cpu time.Duration, err error) {
 	file, e := os.Open(fmt.Sprintf("/proc/%d/status", pid))
@@ -126,6 +129,9 @@ func checkWorkspace(root string, pid int) error {
 	}
 	// Unlink does not release disk while a descriptor remains open. Include those
 	// live inodes once, even if a task hides them from the directory traversal.
+	if pid <= 0 {
+		return nil
+	} // The single task was reaped; no deleted-open inodes remain.
 	fds, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
 	if os.IsNotExist(err) {
 		return nil
@@ -144,6 +150,7 @@ func checkWorkspace(root string, pid int) error {
 					return nil
 				}
 			}
+			return fmt.Errorf("%w: %v", errTaskFDNotReady, err)
 		}
 		return err
 	}

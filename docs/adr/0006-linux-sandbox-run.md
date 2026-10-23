@@ -40,9 +40,9 @@ guardian 不执行用户 Python；它负责监测唯一不可信进程、等待�
 
 首次 CI 发现 Matplotlib 构造字体缓存会启动 warning Timer，与单线程 profile 不兼容。解决方式是在可信运行时准备阶段执行固定字体缓存生成片段（不传入或执行 Spec.Code），仅保留 Matplotlib 自带字体条目，缓存作为有界 seed 写入每次运行的私有 MPLCONFIGDIR。实际代码执行仍拒绝线程创建，不修改 Matplotlib 的运行时代码，不扩大宿主字体目录权限。该路径绑定当前锁定版本的缓存格式，仍须真实出图验收；用户自行删掉缓存或强制重建字体管理器属于当前 profile 不支持的线程行为。
 
-信号边界也不能只拒绝 kill：fcntl 的 SETOWN/SETSIG、SETFL(O_ASYNC) 和异步 ioctl 可以产生 SIGIO。当前 fcntl 只放行普通描述符、状态和锁操作，禁止 O_ASYNC；ioctl 只放行少数描述符/只读查询命令。CPython 打开脚本使用 FIOCLEX，必须保留，不能简单拒绝所有 ioctl 后将正常执行失败当作安全成功。
+信号边界也不能只拒绝 kill：fcntl 的 SETOWN/SETSIG、SETFL(O_ASYNC) 和异步 ioctl 可以产生 SIGIO。当前 fcntl 只放行普通描述符、状态及只读锁查询，禁止 O_ASYNC、设置锁及 flock；ioctl 只放行少数描述符/只读查询命令。CPython 打开脚本使用 FIOCLEX，必须保留，不能简单拒绝所有 ioctl 后将正常执行失败当作安全成功。
 
-CI 暴露快速退出与采样的竞态：退出中的 zombie 已无可持有文件，但 procfs fd 读取可能先返回 EACCES。只在确认已退出/僵尸时忽略这一终态，存活进程无法检查仍失败关闭。需要观测 RSS 的专项主动保持运行跨越采样周期；不能为快速任务伪造 PeakRSS 或采样次数。
+CI 暴露快速退出与采样的竞态：退出中的 zombie 已无可持有文件，但 procfs fd 读取可能先返回 EACCES。确认已退出/僵尸时不再检查其 FD；退出通知尚未到达时，只允许两个目标采样周期的重试观察窗口，持续存活却无法检查仍失败关闭。需要观测 RSS 的专项主动保持运行跨越采样周期；不能为快速任务伪造 PeakRSS 或采样次数。
 
 ## 验收计划与证据位置
 

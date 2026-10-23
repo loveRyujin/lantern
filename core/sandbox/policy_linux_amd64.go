@@ -75,7 +75,7 @@ func installFilter() error {
 		unix.SYS_UTIME, unix.SYS_UTIMES, unix.SYS_FUTIMESAT, unix.SYS_UTIMENSAT, unix.SYS_SETXATTR, unix.SYS_LSETXATTR, unix.SYS_FSETXATTR, unix.SYS_REMOVEXATTR, unix.SYS_LREMOVEXATTR, unix.SYS_FREMOVEXATTR,
 		unix.SYS_KEYCTL, unix.SYS_ADD_KEY, unix.SYS_REQUEST_KEY, unix.SYS_USERFAULTFD, unix.SYS_PERF_EVENT_OPEN, unix.SYS_FANOTIFY_INIT, unix.SYS_FANOTIFY_MARK, unix.SYS_INOTIFY_INIT, unix.SYS_INOTIFY_INIT1, unix.SYS_INOTIFY_ADD_WATCH, unix.SYS_INOTIFY_RM_WATCH, unix.SYS_TIMER_CREATE,
 		unix.SYS_FORK, unix.SYS_VFORK, unix.SYS_CLONE, unix.SYS_CLONE3, unix.SYS_SETSID, unix.SYS_SETPGID, unix.SYS_KILL, unix.SYS_TKILL, unix.SYS_TGKILL, unix.SYS_RT_SIGQUEUEINFO, unix.SYS_RT_TGSIGQUEUEINFO,
-		unix.SYS_PRCTL, unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_PIVOT_ROOT, unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_SETNS, unix.SYS_UNSHARE, unix.SYS_CHROOT,
+		unix.SYS_PRCTL, unix.SYS_FLOCK, unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_PIVOT_ROOT, unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_SETNS, unix.SYS_UNSHARE, unix.SYS_CHROOT,
 		unix.SYS_CHMOD, unix.SYS_FCHMOD, unix.SYS_FCHMODAT, unix.SYS_FCHMODAT2, unix.SYS_CHOWN, unix.SYS_FCHOWN, unix.SYS_LCHOWN, unix.SYS_FCHOWNAT, unix.SYS_MKNOD, unix.SYS_MKNODAT,
 	}
 	stmt := func(code uint16, k uint32) unix.SockFilter { return unix.SockFilter{Code: code, K: k} }
@@ -90,7 +90,7 @@ func installFilter() error {
 	// process without kill(2). Allow only ordinary FD/status/locking commands;
 	// F_SETFL must never enable O_ASYNC. Only ordinary descriptor ioctls are permitted below.
 	fcntlPolicy := []unix.SockFilter{stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, 24)}
-	for _, command := range []uint32{unix.F_DUPFD, unix.F_DUPFD_CLOEXEC, unix.F_GETFD, unix.F_SETFD, unix.F_GETFL, unix.F_GETLK, unix.F_SETLK, unix.F_SETLKW, unix.F_GETPIPE_SZ} {
+	for _, command := range []uint32{unix.F_DUPFD, unix.F_DUPFD_CLOEXEC, unix.F_GETFD, unix.F_SETFD, unix.F_GETFL, unix.F_GETLK, unix.F_GETPIPE_SZ} {
 		fcntlPolicy = append(fcntlPolicy, jeq(command, 0, 1), stmt(unix.BPF_RET|unix.BPF_K, unix.SECCOMP_RET_ALLOW))
 	}
 	fcntlPolicy = append(fcntlPolicy,

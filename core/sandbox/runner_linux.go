@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -260,6 +261,7 @@ func executeGuarded(req guardianRequest, parentGone <-chan struct{}) (reply guar
 	var messages []setupMessage
 	var statusReceived bool
 	var launcherCPU time.Duration
+	var inspectionSince time.Time
 	for running := true; running; {
 		select {
 		case messages = <-statusDone:
@@ -315,7 +317,21 @@ func executeGuarded(req guardianRequest, parentGone <-chan struct{}) (reply guar
 				reason = Failed("stdout/stderr exceeds 64 KiB")
 			}
 			if e := checkWorkspace(root, cmd.Process.Pid); e != nil {
-				reason = Failed(e.Error())
+				if errors.Is(e, errTaskFDNotReady) {
+					if inspectionSince.IsZero() {
+						inspectionSince = now
+					}
+					// Exit teardown may hide proc fds before Wait is delivered.
+					// Retry only a bounded observation window; a live inaccessible
+					// task still fails closed rather than bypassing disk accounting.
+					if now.Sub(inspectionSince) >= 2*samplePeriod {
+						reason = Failed(e.Error())
+					}
+				} else {
+					reason = Failed(e.Error())
+				}
+			} else {
+				inspectionSince = time.Time{}
 			}
 			if reason != nil {
 				_ = cmd.Process.Kill()
@@ -366,7 +382,7 @@ func executeGuarded(req guardianRequest, parentGone <-chan struct{}) (reply guar
 		reason = Failed("stdout/stderr exceeds 64 KiB")
 	}
 	if reason == nil {
-		reason = checkWorkspace(root, cmd.Process.Pid)
+		reason = checkWorkspace(root, 0)
 	}
 	if reason == nil && waitErr != nil {
 		if state, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && state.Signaled() {

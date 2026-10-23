@@ -49,3 +49,15 @@ func TestSandboxInputEntryBudgets(t *testing.T) {
 		}
 	}
 }
+
+func TestSandboxQuickExitProcfsRace(t *testing.T) {
+	runner, root := blackboxRunner(t)
+	for i := 0; i < 20; i++ {
+		result, err := blackboxRun(t, runner, sandbox.Spec{Code: "print('quick-exit')"})
+		if err != nil || result.Stdout != "quick-exit\n" {
+			t.Fatalf("run %d: result=%+v error=%v", i, result, err)
+		}
+		blackboxReaped(t, result.Usage.PythonPID)
+		blackboxClean(t, root)
+	}
+}
