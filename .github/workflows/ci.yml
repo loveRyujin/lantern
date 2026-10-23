@@ -113,14 +113,14 @@ jobs:
       - name: Install python3-venv
         run: sudo apt-get update && sudo apt-get install -y python3-venv
 
-      - name: Hash-locked install
-        run: PYRT_ENSURE_REAL=1 go test ./core/pyrt/ -run TestEnsureReal -count=1 -timeout 15m
+      - name: Hash-locked install and offline prepared runtime lease
+        run: PYRT_ENSURE_REAL=1 PYRT_PREPARED_REAL=1 go test ./core/pyrt/ -run 'Test(EnsureReal|PreparedReal)$' -count=1 -v -timeout 15m
 
-      - name: Real Linux sandbox, SQL data chain and Agent integration
+      - name: Real Linux sandbox, production Python tools and Agent integration
         env:
           SANDBOX_REQUIRE_REAL: "1"
           SANDBOX_REAL_PACKAGES: "1"
-        run: go test ./core/sandbox ./core/analysisdata ./core/agent -count=1 -v -timeout 15m
+        run: go test ./core/sandbox ./core/analysisdata ./core/pythonx ./core/agent -count=1 -v -timeout 15m
 
   # #40: real fixed-payload spike; not the production Sandbox.Run evaluator.
   linux-sandbox-spike:
