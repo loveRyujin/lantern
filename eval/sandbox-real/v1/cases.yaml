@@ -1,0 +1,487 @@
+cases:
+    - category: sandbox.real
+      expected_behavior: 网络请求被阻断。
+      id: SB-LINUX-01
+      input:
+        fixture: http
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: b5043ff2b89778438e5d8ba9598336b9d010d2343e0dc5a6640705a4bf38d333
+        legacy_id: SB-LINUX-01
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - listener_quiet:true
+            - sandbox_denials:true
+            - error_code:none
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: DNS 查询被阻断。
+      id: SB-LINUX-02
+      input:
+        fixture: udp-dns
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: d083182096787f95f497ba0a862d11786a499bdd3f5868e30f2b1951d944d865
+        legacy_id: SB-LINUX-02
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - listener_quiet:true
+            - sandbox_denials:true
+            - error_code:none
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: 原始 socket 被阻断。
+      id: SB-LINUX-03
+      input:
+        fixture: raw-sockets
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: 2a517da150018c0fdda65eb190b5a39b5b2c7d5d6c4f63e69ec1281e4ad38bc2
+        legacy_id: SB-LINUX-03
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - listener_quiet:true
+            - sandbox_denials:true
+            - error_code:none
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: IPv4 回环被阻断。
+      id: SB-LINUX-04
+      input:
+        fixture: loopback-ipv4
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: dcb7afc8a1a7b21a1bdea613a83cd512f2008d495f615ab9a0c3bb884bc34c80
+        legacy_id: SB-LINUX-04
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - listener_quiet:true
+            - sandbox_denials:true
+            - error_code:none
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: IPv6 回环被阻断。
+      id: SB-LINUX-05
+      input:
+        fixture: loopback-ipv6
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: e24803bf6e2692a23e1c14b012aa2c35f7ce86d640513c8540bc3be31685d3b8
+        legacy_id: SB-LINUX-05
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - listener_quiet:true
+            - sandbox_denials:true
+            - error_code:none
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: 宿主主目录不可读。
+      id: SB-LINUX-06
+      input:
+        fixture: host-home
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: 45043557066448ae7a4cf19e6b3403802fcb488ed6714575aab113dbc4a77b78
+        legacy_id: SB-LINUX-06
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - sandbox_denials:true
+            - error_code:none
+            - sentinel_unchanged:true
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: SSH 凭据不可读。
+      id: SB-LINUX-07
+      input:
+        fixture: host-ssh
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: e79e19722455643025fb26c21392de516cf38b409effc3578d67526b28994a4b
+        legacy_id: SB-LINUX-07
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - sandbox_denials:true
+            - error_code:none
+            - sentinel_unchanged:true
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: 凭据不可读。
+      id: SB-LINUX-08
+      input:
+        fixture: host-credentials
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: f7bbe5a53cf9155b5bd39a44380b6e48cef524dc66fb51fd27c305eb435332bc
+        legacy_id: SB-LINUX-08
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - sandbox_denials:true
+            - error_code:none
+            - sentinel_unchanged:true
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: 工作区数据库不可读。
+      id: SB-LINUX-09
+      input:
+        fixture: workspace-db
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: ba66ae1556aa3d11aad29afdd188c3cde49c479f3cc20e8e7c075321e3902ca4
+        legacy_id: SB-LINUX-09
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - sandbox_denials:true
+            - error_code:none
+            - sentinel_unchanged:true
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: 越界写入失败。
+      id: SB-LINUX-10
+      input:
+        fixture: outside-write
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: 90a62d79e72f7e5c79a9ca838fe172a752b03f6266d33fefe0ede849c7b740c3
+        legacy_id: SB-LINUX-10
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - sandbox_denials:true
+            - error_code:none
+            - sentinel_unchanged:true
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: 实际symlink逃逸尝试发生，成功逃逸为零，宿主sentinel不变。
+      id: SB-LINUX-11
+      input:
+        fixture: symlink-escape
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: 0c2c59db43e4607611a665ff5e35fbddef85dbf3fd775ea5017aa38e53f8b2b0
+        legacy_id: SB-LINUX-11
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - sandbox_denials:true
+            - error_code:none
+            - sentinel_unchanged:true
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: 单任务profile以实际EPERM拒绝有界fork，零已创建子进程，不伪造killed。
+      id: SB-LINUX-12
+      input:
+        fixture: fork-denial
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: c28cebc384b466a63b93e2a2fa2cd026dbf0cbc3fddcb8f08ebf89f31f89bb72
+        legacy_id: SB-LINUX-12
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - sandbox_denials:true
+            - error_code:none
+            - created_children:0
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: 实际EPERM拒绝setsid、setpgid与有界fork，零子进程；父应用死亡另有补证。
+      id: SB-LINUX-13
+      input:
+        fixture: session-escape
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: 32600a7cfc67aaef8a60bfe2839032c93917cb336f94c2068c7a12a70178e216
+        legacy_id: SB-LINUX-13
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - sandbox_denials:true
+            - error_code:none
+            - created_children:0
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: 按超时终止。
+      id: SB-LINUX-14
+      input:
+        fixture: wall-timeout
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: b5075485014e09ae1204551020145329b195b8f8961bc34a1b76a30e12e7b288
+        legacy_id: SB-LINUX-14
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - error_code:timeout
+            - wall_budget_enforced:true
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: 按平台等效 OOM 终止。
+      id: SB-LINUX-15
+      input:
+        fixture: rss-oom
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: ce0d4a6e9593c5a36ad5ece94f663926b5cd7a01d51e67361e00d43c49dc60f9
+        legacy_id: SB-LINUX-15
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - error_code:oom
+            - memory_budget_enforced:true
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: 输出上限终止或截断。
+      id: SB-LINUX-16
+      input:
+        fixture: output-limit
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: 16354b420e982b3c533f1844661f0f57b1d7397c383648733ac5dd37203de260
+        legacy_id: SB-LINUX-16
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - error_code:error
+            - output_bounded:true
+            - file_quota_enforced:true
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: 提权失败。
+      id: SB-LINUX-17
+      input:
+        fixture: setuid-denial
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: 290abbcd6a8e16d3616ba9ccf471f531609f300b85b97892e479167b2204b90d
+        legacy_id: SB-LINUX-17
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - sandbox_denials:true
+            - error_code:none
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: ptrace 失败。
+      id: SB-LINUX-18
+      input:
+        fixture: ptrace-denial
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: f8a23fec5637ffcca2f35bfa56d9e6b817814567bb00f796bb9cd54f462941f4
+        legacy_id: SB-LINUX-18
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - required_host_controls:true
+            - sandbox_denials:true
+            - error_code:none
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: 返回 runtime_unavailable，不降级。
+      id: SB-LINUX-19
+      input:
+        fixture: runtime-missing
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: ef0cf51110eeeb4e12367207452a57aa04d6c00a0a1983e6046a70c9df871430
+        legacy_id: SB-LINUX-19
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - error_code:runtime_unavailable
+            - payload_entered:false
+            - worker_started:false
+            - temp_clean:true
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: 网络权限仍直接拒绝。
+      id: SB-LINUX-20
+      input:
+        fixture: network-request
+        fixture_version: sandbox-real-v1
+        legacy_fingerprint: 42159cabfba30066c44072035552c9d1acf4253709310bebe472e3e374be9d2f
+        legacy_id: SB-LINUX-20
+        legacy_version: v1
+      judging_criteria:
+        deterministic:
+            - registry_rejected:true
+            - valid_schema_accepted:true
+            - tool_execute_count:0
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: Real production evidence satisfies the versioned single-task contract
+      id: SB-LINUX-21
+      input:
+        fixture: cpu-timeout
+        fixture_version: sandbox-real-v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - error_code:timeout
+            - cpu_budget_enforced:true
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: Real production evidence satisfies the versioned single-task contract
+      id: SB-LINUX-22
+      input:
+        fixture: parent-death
+        fixture_version: sandbox-real-v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - parent_death_cleaned:true
+            - process_reaped:true
+            - temp_clean:true
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: Real production evidence satisfies the versioned single-task contract
+      id: SB-LINUX-23
+      input:
+        fixture: capability-unavailable
+        fixture_version: sandbox-real-v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:false
+            - error_code:sandbox_unavailable
+            - capability_failure_closed:true
+            - temp_clean:true
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: Real production evidence satisfies the versioned single-task contract
+      id: SB-LINUX-24
+      input:
+        fixture: production-png
+        fixture_version: sandbox-real-v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - error_code:none
+            - production_png_valid:true
+            - artifact_rejection_observed:true
+            - agent_loop_completed:true
+        llm_judge:
+            required: false
+      platform: linux
+    - category: sandbox.real
+      expected_behavior: Real production evidence satisfies the versioned single-task contract
+      id: SB-LINUX-25
+      input:
+        fixture: cancel
+        fixture_version: sandbox-real-v1
+      judging_criteria:
+        deterministic:
+            - payload_entered:true
+            - process_reaped:true
+            - temp_clean:true
+            - error_code:timeout
+            - cancel_observed:true
+        llm_judge:
+            required: false
+      platform: linux

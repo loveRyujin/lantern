@@ -38,6 +38,7 @@ type Report struct {
 	Metrics          []Metric          `json:"metrics"`
 	Sandbox          []SandboxPlatform `json:"sandbox"`
 	Cases            []CaseResult      `json:"cases"`
+	SandboxReal      *SandboxRealInfo  `json:"sandbox_real,omitempty"`
 }
 
 // Environment 是报告里的运行环境。评测 CLI 不链接 mygo，版本从 go.mod 读取。
@@ -124,16 +125,17 @@ type SandboxPlatform struct {
 // CaseResult 是一条用例的计分结果。
 // Failures 只记计分失败和缺观测。跳过、平台过滤写在 NotScoredReasons，避免下游把未评分当成失败。
 type CaseResult struct {
-	ID               string   `json:"id"`
-	RunID            string   `json:"run_id"`
-	Category         string   `json:"category"`
-	Platform         string   `json:"platform"`
-	Source           string   `json:"source"`
-	Status           string   `json:"status"`
-	Passed           bool     `json:"passed"`
-	JudgeCalled      bool     `json:"judge_called"`
-	Failures         []string `json:"failures"`
-	NotScoredReasons []string `json:"not_scored_reasons,omitempty"`
+	ID               string           `json:"id"`
+	RunID            string           `json:"run_id"`
+	Category         string           `json:"category"`
+	Platform         string           `json:"platform"`
+	Source           string           `json:"source"`
+	Status           string           `json:"status"`
+	Passed           bool             `json:"passed"`
+	JudgeCalled      bool             `json:"judge_called"`
+	Failures         []string         `json:"failures"`
+	NotScoredReasons []string         `json:"not_scored_reasons,omitempty"`
+	Evidence         *SandboxEvidence `json:"evidence,omitempty"`
 }
 
 func buildHardGates(gates GateSet, tally gateTally) []HardGate {
@@ -402,7 +404,11 @@ func renderMarkdown(report Report) string {
 	fmt.Fprintf(&b, "- 用例总数: %d\n", report.Summary.Cases)
 	fmt.Fprintf(&b, "- 实际评分: %d（通过 %d，失败 %d，缺观测 %d）\n",
 		report.Summary.Scored, report.Summary.Passed, report.Summary.Failed, report.Summary.MissingObservation)
-	fmt.Fprintf(&b, "- 跳过: %d（没有 input.mock，不计入通过率）\n", report.Summary.Skipped)
+	if report.Mode == ModeSandboxReal {
+		fmt.Fprintf(&b, "- 跳过: %d（真实模式不允许跳过）\n", report.Summary.Skipped)
+	} else {
+		fmt.Fprintf(&b, "- 跳过: %d（没有 input.mock，不计入通过率）\n", report.Summary.Skipped)
+	}
 	fmt.Fprintf(&b, "- 平台过滤: %d（本次平台 %s，不计入通过率）\n", report.Summary.Filtered, report.SelectedPlatform)
 	fmt.Fprintf(&b, "- 通过率: %s\n", rateText(report.Summary))
 	fmt.Fprintf(&b, "- 摘要指纹: %s\n", report.Digest)
@@ -484,6 +490,9 @@ func renderMarkdown(report Report) string {
 		b.WriteString("无\n")
 	}
 	b.WriteByte('\n')
+	if report.SandboxReal != nil {
+		renderSandboxRealEvidence(&b, report)
+	}
 	return b.String()
 }
 

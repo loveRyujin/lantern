@@ -1,4 +1,4 @@
-.PHONY: seed test eval eval-negative build
+.PHONY: seed test eval eval-negative eval-sandbox-real build
 
 export CGO_ENABLED := 0
 
@@ -13,6 +13,7 @@ EVAL_DIR ?= eval/v1
 REPORT_DIR ?= reports
 RULES ?=
 GATES ?=
+EVAL_RUNTIME_CONFIG ?=
 # 故意违规不进正式集。规则和门槛仍用 eval/v1。
 # .yaml.disabled 默认不被扫描，本目标会把它复制成 .yaml 再跑。
 NEG_FIXTURES ?= eval/v1/negative-fixtures/cases.yaml.disabled
@@ -28,6 +29,12 @@ test:
 
 eval:
 	go run ./cmd/lantern-eval run --mode="$(MODE)" --platform="$(PLATFORM)" --root="$(EVAL_DIR)" --out="$(REPORT_DIR)" $(if $(CATEGORY),--category="$(CATEGORY)",) $(if $(RULES),--rules="$(RULES)",) $(if $(GATES),--gates="$(GATES)",)
+
+# Preparation is explicit: lantern-eval prepare-runtime --root <dir> --out <new.json>.
+# This target only consumes that prepared configuration and executes real probes.
+eval-sandbox-real:
+	@test -n "$(EVAL_RUNTIME_CONFIG)" || { echo "需要 EVAL_RUNTIME_CONFIG=<已准备的Runtime.json>" >&2; exit 2; }
+	go run ./cmd/lantern-eval run --mode=sandbox-real --platform=linux --root=eval/sandbox-real/v1 --runtime-config="$(EVAL_RUNTIME_CONFIG)" --out="$(REPORT_DIR)"
 
 # eval-negative 同时跑 negative-fixtures/cases.yaml.disabled 和 testdata/violations。
 # 三道门槛都应失败，因此本目标非零退出。

@@ -120,7 +120,43 @@ jobs:
         env:
           SANDBOX_REQUIRE_REAL: "1"
           SANDBOX_REAL_PACKAGES: "1"
-        run: go test ./core/sandbox ./core/analysisdata ./core/pythonx ./core/agent -count=1 -v -timeout 15m
+        run: go test ./core/sandbox ./core/analysisdata ./core/pythonx ./core/agent ./internal/eval ./cmd/lantern-eval -count=1 -v -timeout 15m
+
+      - name: Explicitly prepare runtime for real sandbox evaluation
+        run: go run ./cmd/lantern-eval prepare-runtime --root "${RUNNER_TEMP}/lantern-eval-runtime" --out "${RUNNER_TEMP}/lantern-eval-runtime.json"
+
+      - name: Evaluate all real Linux sandbox intents and required evidence
+        run: |
+          go run ./cmd/lantern-eval run --mode sandbox-real --runtime-config "${RUNNER_TEMP}/lantern-eval-runtime.json" --out "${RUNNER_TEMP}/sandbox-real-reports"
+          python3 - <<'PY'
+          import glob, json, os, subprocess
+          paths = glob.glob(os.path.join(os.environ['RUNNER_TEMP'], 'sandbox-real-reports', '*.json'))
+          assert len(paths) == 1, paths
+          with open(paths[0], encoding='utf-8') as handle:
+              report = json.load(handle)
+          assert report['mode'] == 'sandbox-real'
+          summary = report['summary']
+          assert summary['scored'] == summary['passed'] == 25, summary
+          assert summary['failed'] == summary['missing_observation'] == summary['skipped'] == summary['filtered'] == 0, summary
+          assert summary['hard_gates_passed'] is True, summary
+          evidence = report['sandbox_real']
+          assert evidence['original']['required'] == evidence['original']['executed'] == evidence['original']['passed'] == 20, evidence['original']
+          assert evidence['supplemental']['required'] == evidence['supplemental']['executed'] == evidence['supplemental']['passed'] == 5, evidence['supplemental']
+          assert not evidence.get('preflight_failure'), evidence
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert report['environment']['commit'] == commit
+          assert evidence['environment']['source_dirty'] is False, evidence['environment']
+          assert {case['id'] for case in report['cases']} == {'SB-LINUX-%02d' % i for i in range(1, 26)}
+          assert all(case['status'] == 'passed' and case.get('evidence') for case in report['cases'])
+          PY
+
+      - name: Preserve real Linux sandbox report and observations
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: linux-sandbox-real-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sandbox-real-reports/
+          if-no-files-found: error
 
   # #40: real fixed-payload spike; not the production Sandbox.Run evaluator.
   linux-sandbox-spike:

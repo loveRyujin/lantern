@@ -72,6 +72,9 @@ type Limits struct {
 
 // Result 是一次执行的产出。
 type Result struct {
+	// Limits reports normalized configured budgets, not successful installation
+	// when startup failed. ErrKind and Usage distinguish that execution stage.
+	Limits Limits
 	// Usage reports actual task observations; sampled limits are not hard RSS quotas.
 	Usage Usage
 	// RuntimeWarnings lists host optional extensions whose dependency closure is unavailable.

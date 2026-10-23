@@ -99,6 +99,7 @@ func normalize(spec Spec) (Spec, error) {
 		spec.Limits.Memory = defaultMemory
 	}
 	spec.Limits.NProc = 1
+	spec.Limits.MaxOutput = artifactLimit(spec.Limits.MaxOutput)
 	return cloneSpec(spec), nil
 }
 func (r *Runner) Run(ctx context.Context, spec Spec) (Result, error) {
@@ -110,7 +111,9 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (Result, error) {
 		return Result{}, err
 	}
 	if err = ctx.Err(); err != nil {
-		return align(Result{}, Timeout(err.Error()))
+		return align(Result{Limits: spec.Limits}, Timeout(err.Error()))
 	}
-	return r.run(ctx, spec)
+	result, err := r.run(ctx, spec)
+	result.Limits = spec.Limits
+	return result, err
 }

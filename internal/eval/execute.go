@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/loveRyujin/lantern/core/pyrt"
 )
 
 const (
@@ -17,8 +19,9 @@ const (
 	// ExitUsage 表示参数、用例或规则清单无法使用，没有可用的计分报告。
 	ExitUsage = 2
 
-	ModeMock = "mock"
-	ModeLive = "live"
+	ModeMock        = "mock"
+	ModeLive        = "live"
+	ModeSandboxReal = "sandbox-real"
 )
 
 // Options 控制一次评测。RulesPath 为空时读取用例目录下的 rules.yaml。
@@ -38,6 +41,9 @@ type Options struct {
 	// Environment 非 nil 时，用其中的 Model、EmbedderID、EmbeddingModel、SandboxImpl
 	// 盖住报告环境，空字符串也会盖住。用来确认缺字段时不写报告。
 	Environment *Environment
+	// SandboxRuntime comes from explicit trusted preparation, never a model call.
+	// sandbox-real validates it and does not install or repair the environment.
+	SandboxRuntime *pyrt.Runtime
 }
 
 // Result 是写出的报告和进程退出码。
@@ -58,6 +64,9 @@ func Execute(ctx context.Context, opt Options) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
+	if opt.Mode == ModeSandboxReal {
+		return executeSandboxReal(ctx, opt)
+	}
 	if opt.Root == "" {
 		return Result{}, fmt.Errorf("eval: 用例目录不能为空")
 	}
@@ -66,7 +75,7 @@ func Execute(ctx context.Context, opt Options) (Result, error) {
 		mode = ModeMock
 	}
 	if mode != ModeMock && mode != ModeLive {
-		return Result{}, fmt.Errorf("eval: mode 必须是 mock 或 live")
+		return Result{}, fmt.Errorf("eval: mode 必须是 mock、live 或 sandbox-real")
 	}
 	if mode == ModeLive {
 		return Result{}, fmt.Errorf("eval: live 未接入")

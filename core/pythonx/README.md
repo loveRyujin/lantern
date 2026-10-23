@@ -42,7 +42,9 @@ current marker, interpreter metadata, locked package versions and imports withou
 pip, repair, fallback or user code. Explicit Ensure cannot replace a leased venv.
 
 Successful Content contains bounded stdout/stderr (8 KiB each, UTF-8, known local
-paths redacted), observed usage and `artifacts:[{id,name,kind,bytes}]`. Artifact
+paths redacted), observed usage, normalized configured `limits`, and
+`artifacts:[{id,name,kind,bytes}]`. Startup failure does not imply limits were
+successfully installed. Artifact
 bytes stay outside the model transcript. A caller can retrieve an independent
 copy with `GetArtifact(workspaceID, runID, id)` after Agent.Run completes and
 before Session.Close. This is ephemeral storage, not W7 desktop persistence.
