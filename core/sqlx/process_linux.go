@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -189,6 +190,11 @@ func runSQLProcessCommand(ctx context.Context, req processRequest, cmd *exec.Cmd
 		return err
 	}
 	cmd.WaitDelay = time.Second
+	// Linux Pdeathsig belongs to the creating OS thread, not the Go process.
+	// Keep that thread alive through Wait, including failure/cancellation, so
+	// trusted runtime thread retirement cannot kill an otherwise healthy worker.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	runErr := cmd.Start()
 	if runErr == nil {
 		stats.PID = cmd.Process.Pid

@@ -116,11 +116,11 @@ jobs:
       - name: Hash-locked install
         run: PYRT_ENSURE_REAL=1 go test ./core/pyrt/ -run TestEnsureReal -count=1 -timeout 15m
 
-      - name: Real Linux Sandbox.Run and analysis packages
+      - name: Real Linux sandbox, SQL data chain and Agent integration
         env:
           SANDBOX_REQUIRE_REAL: "1"
           SANDBOX_REAL_PACKAGES: "1"
-        run: go test ./core/sandbox -count=1 -v -timeout 15m
+        run: go test ./core/sandbox ./core/analysisdata ./core/agent -count=1 -v -timeout 15m
 
   # #40: real fixed-payload spike; not the production Sandbox.Run evaluator.
   linux-sandbox-spike:

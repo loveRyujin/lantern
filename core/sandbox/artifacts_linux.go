@@ -32,10 +32,11 @@ func collectArtifacts(dir string, limit int64) ([]Artifact, error) {
 			return nil, e
 		}
 		file := os.NewFile(uintptr(fd), name)
-		info, e := file.Stat()
-		if e != nil || !info.Mode().IsRegular() {
+		var stat unix.Stat_t
+		e = unix.Fstat(fd, &stat)
+		if e != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
 			file.Close()
-			return nil, fmt.Errorf("artifact not regular: %s", name)
+			return nil, fmt.Errorf("artifact must be regular with one link: %s", name)
 		}
 		data, e := io.ReadAll(io.LimitReader(file, artifactLimit(limit)+1))
 		file.Close()
