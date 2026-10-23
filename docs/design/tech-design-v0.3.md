@@ -113,6 +113,8 @@ lantern/
 
 **数据与产物（#42，见 [ADR 0007](../adr/0007-sql-sandbox-data.md)）**：成功的生产 SQL JSON 观察值经独立适配层转换为位置 ID 表头、JSON 单元格的 CSV 与列名/截断 metadata，保留 NULL、数字精度和重复列；固定 Python reader 按位置解码。可信调用方配置工作区专属执行根，输入只读。产物仅 PNG/CSV/JSON，单件 5 MiB、总量 20 MiB/16 件；PNG 限尺寸并完整解码，CSV 严格解析，JSON 语法与 UTF-8 验证，拒绝链接和特殊文件。全部复制为字节后清理，不返回半套产物。本轮实现与验收状态以 PR/Issue 为准。
 
+**生产工具（#43，见 [ADR 0008](../adr/0008-production-run-python.md)）**：`pythonx.Session` 按 workspace/run 注册真实 SQL/Python，Python 仅引用显式成功 SQL 调用 ID；默认 Schema 不开放网络、目录或资源扩权。可信设置阶段显式准备 venv，执行阶段用只读共享 lease 验证并保护环境，全程不安装/修复。模型观察值返回有界文本和不透明产物 ID，字节在 Session 内有界保留；Run 后至 Close 前可按归属校验取回副本。当前实现与独立验收中，不包含 W7 桌面展示与持久化。
+
 ## 8. Python 运行时（已决：检测本机 Python + 专用 venv）
 - 检测顺序：用户在设置里指定的路径 → `python3` 在 PATH 中的位置 → 常见路径（Homebrew、`/usr/bin`）。版本要求 ≥3.10。
 - 在 `<appdata>/pyenv/venv` 创建 venv，用 `pip install` 安装锁定版本的 pandas、matplotlib（requirements 带哈希）。这一步在沙箱外进行，需要联网，在设置页由用户手动触发，并写审计。

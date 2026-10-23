@@ -45,15 +45,17 @@ var (
 	// SpecRunPython 是沙箱代码工具的注册说明。
 	SpecRunPython = Spec{
 		Name:        "run_python",
-		Description: "在沙箱里执行 Python",
+		Description: "在禁网沙箱中执行 Python 分析；可用 sql_call_id 引用同一运行中成功的 run_sql 调用，用 load_table() 读取 (columns, rows, metadata)。图表写入 OUTPUT_DIR，返回可取回产物 ID。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"additionalProperties": false,
 			"required": ["code"],
 			"properties": {
-				"code": {"type": "string", "minLength": 1}
+				"code": {"type": "string", "minLength": 1, "maxLength": 1048000},
+				"sql_call_id": {"type": "string", "minLength": 1, "maxLength": 256}
 			}
 		}`),
+		MaxAttempts: 1,
 	}
 	// SpecExportData 是敏感导出工具的注册说明。确认由 Policy 决定，不写在 Schema 里。
 	SpecExportData = Spec{
