@@ -61,3 +61,15 @@ func TestSandboxQuickExitProcfsRace(t *testing.T) {
 		blackboxClean(t, root)
 	}
 }
+
+func TestSandboxRuntimeDirectoriesCannotExpandReadAccess(t *testing.T) {
+	runner, root := blackboxRunner(t)
+	unrelated := t.TempDir()
+	for _, rt := range []sandbox.Runtime{{PyRoot: unrelated}, {Venv: unrelated}} {
+		result, err := blackboxRun(t, runner, sandbox.Spec{Code: "raise AssertionError('unrelated runtime directory accepted')", Runtime: rt})
+		if !errors.Is(err, sandbox.ErrRuntimeUnavailable) {
+			t.Fatalf("result=%+v error=%v; want runtime_unavailable", result, err)
+		}
+		blackboxClean(t, root)
+	}
+}

@@ -75,6 +75,10 @@ func prepareRuntime(ctx context.Context, rt Runtime, extra []string) (runtimePla
 	if err != nil {
 		return plan, RuntimeUnavailable("stdlib: " + err.Error())
 	}
+	actualStdlib, stdlibErr := canonical(info.Stdlib)
+	if stdlibErr != nil || plan.Stdlib != actualStdlib {
+		return plan, RuntimeUnavailable("PyRoot must match the configured interpreter standard library")
+	}
 	if filepath.Base(plan.Stdlib) == "usr" || plan.Stdlib == "/" {
 		return plan, RuntimeUnavailable("PyRoot must be stdlib, not a system prefix")
 	}
@@ -86,6 +90,10 @@ func prepareRuntime(ctx context.Context, rt Runtime, extra []string) (runtimePla
 		plan.Venv, err = canonical(venv)
 		if err != nil {
 			return plan, RuntimeUnavailable("venv: " + err.Error())
+		}
+		actualPrefix, prefixErr := canonical(info.Prefix)
+		if info.Prefix == info.Base || prefixErr != nil || plan.Venv != actualPrefix {
+			return plan, RuntimeUnavailable("Venv must match the configured virtual-environment interpreter")
 		}
 	}
 	plan.ReadDirs = []string{plan.Stdlib}
