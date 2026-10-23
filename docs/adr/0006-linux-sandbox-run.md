@@ -50,6 +50,16 @@ CI 暴露快速退出与采样的竞态：退出中的 zombie 已无可持有文
 
 ## 验收计划与证据位置
 
+### 合并后发现的 launcher 调度竞态
+
+PR47 的最终 CI 全绿，但合并提交 92f2540 的 main CI 在快速退出回归中捕获 `newosproc EPERM`：TSYNC 已将拒绝 clone 的策略施加到所有可信 Go 线程，后续 JSON/普通 syscall 仍可能触发 Go 调度并尝试创建线程。这属于执行器启动错误，不能归咎于用户 Python，也不能靠放开 clone 修复。
+
+修复只在已 LockOSThread 的 launcher 执行线程安装 seccomp（flags=0），与该线程的 Landlock 一致。其他线程仅运行可信 bootstrap，exec 成功时会被销毁；保留下来的执行线程及其 Python 继承完整策略。因此线程创建禁令保持不变。策略、argv/env 指针和状态缓冲在安装前全部构造；安装后的终端函数与辅助函数使用 nosplit/norace 和 RawSyscall，采集启动基线、发送 Ready、执行 execve，失败也仅写固定错误并 exit_group，不返回 Go 运行时。需要同时审查编译产物和独立压力测试，不能仅凭注释或 nosplit 标记证明没有调度窗口。
+
+main 失败记录：[39892568701](https://github.com/loveRyujin/lantern/actions/runs/39892568701)。#41 已重开，待 hotfix 最终提交的独立测试、PR/main CI、审查和笔记全部完成后重新关闭。
+
+launcher 自身的固定环境额外禁用 Go 异步抢占（GODEBUG=asyncpreemptoff=1），避免 raw 辅助调用边界在过滤后被异步抢占；此变量不进入 Python 的白名单环境。nosplit 标记不能单独代替这项调度边界审查。其他可信线程仍可调度，Python 的进程、线程和网络权限不增加。
+
 开发专项和独立测试应覆盖真实成功/异常及恢复、宿主权限正对照、只读边界、socket、继承文件/联网 FD、信号、创建进程/线程/脱组的拒绝、RSS 与大虚拟地址预留的区别、CPU 忙循环与睡眠、超时/取消、父应用退出后的 Python/guardian 回收及目录清理、并发互不影响、总体输出与磁盘预算。
 
 关键防护移除后必须在对应断言失败，不能将编译错误或挂死当作成功杀变异。通过真实 Agent loop 的测试适配器验证底层执行结果与资源错误反馈；它不等于 #43 的生产 run_python 工具已经完成。

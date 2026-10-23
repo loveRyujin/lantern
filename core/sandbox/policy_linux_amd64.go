@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -62,7 +61,7 @@ func installFiles(root string, plan runtimePlan) error {
 	}
 	return nil
 }
-func installFilter() error {
+func buildFilter() []unix.SockFilter {
 	deny := []uint32{
 		unix.SYS_SOCKET, unix.SYS_SOCKETPAIR, unix.SYS_CONNECT, unix.SYS_BIND, unix.SYS_LISTEN, unix.SYS_ACCEPT, unix.SYS_ACCEPT4, unix.SYS_SENDTO, unix.SYS_SENDMSG, unix.SYS_SENDMMSG, unix.SYS_RECVFROM, unix.SYS_RECVMSG, unix.SYS_RECVMMSG,
 		unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER, unix.SYS_PTRACE, unix.SYS_PROCESS_VM_READV, unix.SYS_PROCESS_VM_WRITEV, unix.SYS_PIDFD_GETFD, unix.SYS_PIDFD_SEND_SIGNAL, unix.SYS_BPF,
@@ -114,16 +113,7 @@ func installFilter() error {
 	// prlimit64 may inspect/change only self (pid 0), never the host guardian.
 	f = append(f, jeq(unix.SYS_PRLIMIT64, 0, 4), stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, 16), jeq(0, 1, 0), stmt(unix.BPF_RET|unix.BPF_K, unix.SECCOMP_RET_ERRNO|uint32(unix.EPERM)), stmt(unix.BPF_RET|unix.BPF_K, unix.SECCOMP_RET_ALLOW))
 	f = append(f, stmt(unix.BPF_RET|unix.BPF_K, unix.SECCOMP_RET_ALLOW))
-	p := unix.SockFprog{Len: uint16(len(f)), Filter: &f[0]}
-	v, _, e := unix.Syscall(unix.SYS_SECCOMP, unix.SECCOMP_SET_MODE_FILTER, unix.SECCOMP_FILTER_FLAG_TSYNC, uintptr(unsafe.Pointer(&p)))
-	runtime.KeepAlive(f)
-	if e != 0 {
-		return e
-	}
-	if v != 0 {
-		return fmt.Errorf("seccomp TSYNC failed thread %d", v)
-	}
-	return nil
+	return f
 }
 func pythonEnv(root string) []string {
 	env := []string{"PATH=/nonexistent", "LANG=C.UTF-8", "PYTHONDONTWRITEBYTECODE=1", "PYTHONNOUSERSITE=1", "MPLBACKEND=Agg", "HOME=" + filepath.Join(root, "tmp"), "TMPDIR=" + filepath.Join(root, "tmp"), "MPLCONFIGDIR=" + filepath.Join(root, "tmp/mpl"), "INPUT_DIR=" + filepath.Join(root, "in"), "OUTPUT_DIR=" + filepath.Join(root, "out")}

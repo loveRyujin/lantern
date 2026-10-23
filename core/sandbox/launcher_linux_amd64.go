@@ -86,17 +86,12 @@ func launcherMain() int {
 	if err = installFiles(req.Root, req.Plan); err != nil {
 		return fail(err)
 	}
-	if err = installFilter(); err != nil {
+	// Complete allocations, pointer conversion and policy construction before
+	// entering the filtered thread's terminal path. That path never returns to Go.
+	terminal, err := prepareRawLaunch(req.Plan.Python, []string{req.Plan.Python, "-I", "-B", filepath.Join(req.Root, "in/__code__.py")}, pythonEnv(req.Root))
+	if err != nil {
 		return fail(err)
 	}
-	// Report startup high-water separately; it must not be called Python RSS.
-	var ru unix.Rusage
-	_ = unix.Getrusage(unix.RUSAGE_SELF, &ru)
-	if err = json.NewEncoder(status).Encode(setupMessage{Ready: true, LauncherPeakRSS: uint64(ru.Maxrss) * 1024, LauncherCPU: time.Duration(ru.Utime.Sec+ru.Stime.Sec)*time.Second + time.Duration(ru.Utime.Usec+ru.Stime.Usec)*time.Microsecond}); err != nil {
-		return 125
-	}
-	if err = unix.Exec(req.Plan.Python, []string{req.Plan.Python, "-I", "-B", filepath.Join(req.Root, "in/__code__.py")}, pythonEnv(req.Root)); err != nil {
-		return fail(err)
-	}
-	return 125
+	rawLaunchTerminal(terminal)
+	return 125 // rawLaunchTerminal exits the process on every failure.
 }

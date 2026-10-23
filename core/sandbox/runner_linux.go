@@ -223,7 +223,12 @@ func executeGuarded(req guardianRequest, parentGone <-chan struct{}) (reply guar
 	}
 	cmd := exec.Command(exe, launcherArg)
 	cmd.Stdin = bytes.NewReader(data)
-	cmd.Env = []string{"GOMAXPROCS=2", "GOMEMLIMIT=64MiB"}
+	// The filtered terminal chain is deeply nosplit and uses RawSyscall only.
+	// Go nevertheless permits asynchronous preemption at call boundaries in
+	// nosplit functions. Disable it for this trusted launcher so that the
+	// filtered OS thread never re-enters the Go scheduler before exec/exit.
+	// This launcher-only variable is absent from pythonEnv's allowlist.
+	cmd.Env = []string{"GOMAXPROCS=2", "GOMEMLIMIT=64MiB", "GODEBUG=asyncpreemptoff=1"}
 	cmd.ExtraFiles = []*os.File{statusWrite}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	var out, stderr cappedStream
