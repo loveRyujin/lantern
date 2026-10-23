@@ -3,6 +3,8 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"path"
+	"strings"
 	"time"
 )
 
@@ -47,6 +49,9 @@ const (
 )
 
 func normalize(spec Spec) (Spec, error) {
+	if len(spec.Inputs) > maxWorkEntries {
+		return spec, fmt.Errorf("%w: inputs exceed 1024 entries", ErrInvalidSpec)
+	}
 	if err := ValidateSpec(spec); err != nil {
 		return spec, err
 	}
@@ -57,7 +62,22 @@ func normalize(spec Spec) (Spec, error) {
 		return spec, fmt.Errorf("%w: reserved input name __code__.py", ErrInvalidSpec)
 	}
 	total := 0
-	for _, v := range spec.Inputs {
+	nameBytes := 0
+	inputEntries := make(map[string]bool)
+	for name, v := range spec.Inputs {
+		nameBytes += len(name)
+		if len(name) > 4096 || nameBytes > 128<<10 {
+			return spec, fmt.Errorf("%w: input path metadata exceeds budget", ErrInvalidSpec)
+		}
+		if strings.HasPrefix(name, "__code__.py/") {
+			return spec, fmt.Errorf("%w: reserved input name __code__.py", ErrInvalidSpec)
+		}
+		for entry := name; entry != "."; entry = path.Dir(entry) {
+			inputEntries[entry] = true
+			if len(inputEntries) > maxWorkEntries {
+				return spec, fmt.Errorf("%w: inputs exceed 1024 files/directories", ErrInvalidSpec)
+			}
+		}
 		if len(v) > maxInputs-total {
 			return spec, fmt.Errorf("%w: inputs exceed 16 MiB", ErrInvalidSpec)
 		}

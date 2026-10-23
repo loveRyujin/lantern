@@ -177,6 +177,20 @@ func executeGuarded(req guardianRequest, parentGone <-chan struct{}) (reply guar
 			return guardianReply{Code: errcode.Exec, Detail: err.Error()}
 		}
 	}
+	if len(req.Plan.FontCache) > 0 {
+		cacheDir := filepath.Join(root, "tmp", "mpl")
+		if err = os.Mkdir(cacheDir, 0700); err != nil {
+			return guardianReply{Code: errcode.Exec, Detail: err.Error()}
+		}
+		for name, data := range req.Plan.FontCache {
+			if !validFontSeed(name, data) {
+				return guardianReply{Code: errcode.SandboxUnavailable, Detail: "invalid font-cache seed"}
+			}
+			if err = os.WriteFile(filepath.Join(cacheDir, name), data, 0600); err != nil {
+				return guardianReply{Code: errcode.Exec, Detail: err.Error()}
+			}
+		}
+	}
 	if _, ok := req.Spec.Inputs["__code__.py"]; ok {
 		return guardianReply{Code: errcode.Exec, Detail: "reserved input name __code__.py"}
 	}

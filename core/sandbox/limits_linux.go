@@ -131,6 +131,20 @@ func checkWorkspace(root string, pid int) error {
 		return nil
 	}
 	if err != nil {
+		// A task entering zombie state has no surviving file descriptors, but
+		// procfs may reject fd inspection before Wait observes its exit.
+		if os.IsPermission(err) {
+			stat, readErr := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+			if readErr != nil && os.IsNotExist(readErr) {
+				return nil
+			}
+			if end := strings.LastIndexByte(string(stat), ')'); end >= 0 {
+				fields := strings.Fields(string(stat[end+1:]))
+				if len(fields) > 0 && (fields[0] == "Z" || fields[0] == "X") {
+					return nil
+				}
+			}
+		}
 		return err
 	}
 	for _, fd := range fds {

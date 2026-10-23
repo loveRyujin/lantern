@@ -86,6 +86,31 @@ func installFilter() error {
 	for _, nr := range deny {
 		f = append(f, jeq(nr, 0, 1), stmt(unix.BPF_RET|unix.BPF_K, unix.SECCOMP_RET_ERRNO|uint32(unix.EPERM)))
 	}
+	// File-owner/async fcntl commands can send SIGIO to another same-UID
+	// process without kill(2). Allow only ordinary FD/status/locking commands;
+	// F_SETFL must never enable O_ASYNC. Only ordinary descriptor ioctls are permitted below.
+	fcntlPolicy := []unix.SockFilter{stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, 24)}
+	for _, command := range []uint32{unix.F_DUPFD, unix.F_DUPFD_CLOEXEC, unix.F_GETFD, unix.F_SETFD, unix.F_GETFL, unix.F_GETLK, unix.F_SETLK, unix.F_SETLKW, unix.F_GETPIPE_SZ} {
+		fcntlPolicy = append(fcntlPolicy, jeq(command, 0, 1), stmt(unix.BPF_RET|unix.BPF_K, unix.SECCOMP_RET_ALLOW))
+	}
+	fcntlPolicy = append(fcntlPolicy,
+		jeq(unix.F_SETFL, 0, 4),
+		stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, 32),
+		unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JSET | unix.BPF_K, K: unix.O_ASYNC, Jf: 1},
+		stmt(unix.BPF_RET|unix.BPF_K, unix.SECCOMP_RET_ERRNO|uint32(unix.EPERM)),
+		stmt(unix.BPF_RET|unix.BPF_K, unix.SECCOMP_RET_ALLOW),
+		stmt(unix.BPF_RET|unix.BPF_K, unix.SECCOMP_RET_ERRNO|uint32(unix.EPERM)))
+	f = append(f, jeq(unix.SYS_FCNTL, 0, uint8(len(fcntlPolicy))))
+	f = append(f, fcntlPolicy...)
+	// CPython uses FIOCLEX when opening scripts. Preserve descriptor/query-only
+	// commands without permitting FIOASYNC/FIOSETOWN or device-specific controls.
+	ioctlPolicy := []unix.SockFilter{stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, 24)}
+	for _, command := range []uint32{0x5451 /* FIOCLEX */, 0x5450 /* FIONCLEX */, unix.TCGETS, unix.TIOCGWINSZ, unix.TIOCINQ, 0x5421 /* FIONBIO */} {
+		ioctlPolicy = append(ioctlPolicy, jeq(command, 0, 1), stmt(unix.BPF_RET|unix.BPF_K, unix.SECCOMP_RET_ALLOW))
+	}
+	ioctlPolicy = append(ioctlPolicy, stmt(unix.BPF_RET|unix.BPF_K, unix.SECCOMP_RET_ERRNO|uint32(unix.EPERM)))
+	f = append(f, jeq(unix.SYS_IOCTL, 0, uint8(len(ioctlPolicy))))
+	f = append(f, ioctlPolicy...)
 	// prlimit64 may inspect/change only self (pid 0), never the host guardian.
 	f = append(f, jeq(unix.SYS_PRLIMIT64, 0, 4), stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, 16), jeq(0, 1, 0), stmt(unix.BPF_RET|unix.BPF_K, unix.SECCOMP_RET_ERRNO|uint32(unix.EPERM)), stmt(unix.BPF_RET|unix.BPF_K, unix.SECCOMP_RET_ALLOW))
 	f = append(f, stmt(unix.BPF_RET|unix.BPF_K, unix.SECCOMP_RET_ALLOW))

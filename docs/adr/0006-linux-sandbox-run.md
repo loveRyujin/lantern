@@ -26,7 +26,7 @@ guardian 不执行用户 Python；它负责监测唯一不可信进程、等待�
 - CPU 是累计 CPU 时间预算，默认 10 秒、请求硬上限 30 秒。单任务 profile 下不存在可逃到短命后代的累计时间；进程统计加 rlimit 兜底，不宣称控制“1 核速率”。
 - 墙钟默认 30 秒、请求硬上限 60 秒，取消与到期都要终止并回收。
 - RSS 默认 512 MiB、请求硬上限 1 GiB；请求大于后端硬上限明确拒绝。可信 guardian 的开销单独存在，不混称为不可信代码 RSS。launcher 累计 CPU 在交接时记录为 baseline，从执行统计中扣除；Wait RSS 含启动开销需单独披露。
-- stdout/stderr 各 64 KiB，代码最多 1 MiB、输入总量最多 16 MiB；工作目录总量 64 MiB/1024 项使用采样终止，单文件限制与总量采样分别说明。产物单件 5 MiB、合计 20 MiB/16 件。全进程同时最多两个 Run，等待配额须尊重 context。
+- stdout/stderr 各 64 KiB，代码最多 1 MiB、输入总量最多 16 MiB，输入文件/路径前缀目录最多 1024 项、路径元数据最多 128 KiB；out/tmp 总量 64 MiB/1024 项使用采样终止，单文件限制与总量采样分别说明。产物单件 5 MiB、合计 20 MiB/16 件。全进程同时最多两个 Run，等待配额须尊重 context。
 
 以上为冻结的实施/验收目标，最终限制和实际测量以代码、测试与本轮 PR 为准；不能将目标表述为尚未跑过的测试结果。
 
@@ -35,6 +35,14 @@ guardian 不执行用户 Python；它负责监测唯一不可信进程、等待�
 `Runtime.PyRoot` 统一指标准库目录；`pyrt.Runtime.Base.Stdlib` 对应此字段，不能把 `/usr` 前缀整体放行。解析解释器、stdlib、venv、ELF loader 与递归共享库闭包，精确放行所需只读文件/目录；不执行 ldd，不默认开放 home、工作区或系统目录整树。解释器/loader 必需闭包不完整返回 runtime_unavailable，不扩大权限兜底。宿主本就缺库的可选扩展记录 RuntimeWarnings，不阻断与它无关的普通任务；导入该扩展仍会失败，不能将其承诺为可用。实际 pandas/Agg 必须实测。
 
 `ExtraReadOnly` 来自可信调用方已经完成的 Policy/Approver 决策，Sandbox 自身不新增 UI，也不接受用户代码申请扩权。Landlock 不隐藏全部元数据、不撤销已有 FD；关闭继承 fd 与限制进程间影响必须单独验证。内核本身的漏洞不在此隔离保证内。
+
+## 实际兼容与旁路修复
+
+首次 CI 发现 Matplotlib 构造字体缓存会启动 warning Timer，与单线程 profile 不兼容。解决方式是在可信运行时准备阶段执行固定字体缓存生成片段（不传入或执行 Spec.Code），仅保留 Matplotlib 自带字体条目，缓存作为有界 seed 写入每次运行的私有 MPLCONFIGDIR。实际代码执行仍拒绝线程创建，不修改 Matplotlib 的运行时代码，不扩大宿主字体目录权限。该路径绑定当前锁定版本的缓存格式，仍须真实出图验收；用户自行删掉缓存或强制重建字体管理器属于当前 profile 不支持的线程行为。
+
+信号边界也不能只拒绝 kill：fcntl 的 SETOWN/SETSIG、SETFL(O_ASYNC) 和异步 ioctl 可以产生 SIGIO。当前 fcntl 只放行普通描述符、状态和锁操作，禁止 O_ASYNC；ioctl 只放行少数描述符/只读查询命令。CPython 打开脚本使用 FIOCLEX，必须保留，不能简单拒绝所有 ioctl 后将正常执行失败当作安全成功。
+
+CI 暴露快速退出与采样的竞态：退出中的 zombie 已无可持有文件，但 procfs fd 读取可能先返回 EACCES。只在确认已退出/僵尸时忽略这一终态，存活进程无法检查仍失败关闭。需要观测 RSS 的专项主动保持运行跨越采样周期；不能为快速任务伪造 PeakRSS 或采样次数。
 
 ## 验收计划与证据位置
 

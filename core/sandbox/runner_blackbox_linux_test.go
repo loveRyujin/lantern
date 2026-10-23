@@ -77,7 +77,7 @@ func blackboxClean(t *testing.T, root string) {
 
 func TestSandboxBlackboxSuccessFailureAndRecovery(t *testing.T) {
 	runner, root := blackboxRunner(t)
-	result, err := blackboxRun(t, runner, sandbox.Spec{Code: "import sys\nprint('stdout-marker')\nprint('stderr-marker',file=sys.stderr)"})
+	result, err := blackboxRun(t, runner, sandbox.Spec{Code: "import sys,time\nprint('stdout-marker')\nprint('stderr-marker',file=sys.stderr)\ntime.sleep(0.05)"})
 	if err != nil || result.ErrKind != "" || result.Stdout != "stdout-marker\n" || result.Stderr != "stderr-marker\n" {
 		t.Fatalf("stdout/stderr result=%+v error=%v", result, err)
 	}
@@ -174,7 +174,32 @@ time.sleep(20)`, marker)
 	if err := unix.Kill(helper.Process.Pid, 0); err != nil {
 		t.Fatal(err)
 	}
-	code := fmt.Sprintf(`import os,threading,subprocess,ctypes,errno
+	var originalLimit unix.Rlimit
+	if err := unix.Prlimit(helper.Process.Pid, unix.RLIMIT_NOFILE, nil, &originalLimit); err != nil {
+		t.Fatal(err)
+	}
+	// A no-op host setter proves same-UID permission without altering the helper.
+	if err := unix.Prlimit(helper.Process.Pid, unix.RLIMIT_NOFILE, &originalLimit, nil); err != nil {
+		t.Fatalf("host prlimit setter positive control: %v", err)
+	}
+	var originalAffinity unix.CPUSet
+	if err := unix.SchedGetaffinity(helper.Process.Pid, &originalAffinity); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.SchedSetaffinity(helper.Process.Pid, &originalAffinity); err != nil {
+		t.Fatalf("host affinity setter positive control: %v", err)
+	}
+	firstCPU := -1
+	for i := 0; i < 1024; i++ {
+		if originalAffinity.IsSet(i) {
+			firstCPU = i
+			break
+		}
+	}
+	if firstCPU < 0 {
+		t.Fatal("controlled helper has no allowed CPU")
+	}
+	code := fmt.Sprintf(`import os,threading,subprocess,ctypes,errno,resource
 try:
  p=os.fork()
 except PermissionError: pass
@@ -195,15 +220,27 @@ else: raise AssertionError('subprocess allowed')
 try: os.kill(%d,10)
 except PermissionError: pass
 else: raise AssertionError('host signal allowed')
+for action in [lambda:resource.prlimit(%d,resource.RLIMIT_NOFILE,(16,%d)),lambda:os.sched_setaffinity(%d,{%d}),lambda:os.setpriority(os.PRIO_PROCESS,%d,19),lambda:os.setuid(os.getuid()),lambda:os.setgid(os.getgid())]:
+ try: action()
+ except PermissionError: pass
+ else: raise AssertionError('host process or credential modification allowed')
 libc=ctypes.CDLL(None,use_errno=True)
 assert libc.prctl(1,0,0,0,0)==-1 and ctypes.get_errno()==errno.EPERM
-print('single-task-verified')`, helper.Process.Pid)
+print('single-task-verified')`, helper.Process.Pid, helper.Process.Pid, originalLimit.Max, helper.Process.Pid, firstCPU, helper.Process.Pid)
 	result, err := blackboxRun(t, runner, sandbox.Spec{Code: code})
 	if err != nil || !strings.Contains(result.Stdout, "single-task-verified") {
 		t.Fatalf("strict profile result=%+v error=%v", result, err)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("sandbox affected host helper: %v", err)
+	}
+	var afterLimit unix.Rlimit
+	var afterAffinity unix.CPUSet
+	if err := unix.Prlimit(helper.Process.Pid, unix.RLIMIT_NOFILE, nil, &afterLimit); err != nil || afterLimit != originalLimit {
+		t.Fatalf("host helper limits changed: before=%+v after=%+v error=%v", originalLimit, afterLimit, err)
+	}
+	if err := unix.SchedGetaffinity(helper.Process.Pid, &afterAffinity); err != nil || afterAffinity != originalAffinity {
+		t.Fatalf("host helper affinity changed: error=%v", err)
 	}
 	blackboxClean(t, root)
 }
@@ -235,7 +272,7 @@ func TestSandboxBlackboxInheritedDescriptors(t *testing.T) {
 	defer unix.Close(pair[0])
 	defer unix.Close(pair[1])
 	code := fmt.Sprintf(`import os,errno
-for fd in [%d,%d,%d]:
+for fd in [3,%d,%d,%d]:
  try: os.fstat(fd)
  except OSError as e: assert e.errno==errno.EBADF
  else: raise AssertionError('inherited host descriptor: '+str(fd))

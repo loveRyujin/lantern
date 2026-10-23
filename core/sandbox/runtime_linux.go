@@ -16,6 +16,7 @@ import (
 )
 
 type runtimePlan struct {
+	FontCache map[string][]byte
 	Python    string
 	Stdlib    string
 	Venv      string
@@ -217,5 +218,9 @@ func prepareRuntime(ctx context.Context, rt Runtime, extra []string) (runtimePla
 		plan.ReadFiles = append(plan.ReadFiles, p)
 	}
 	sort.Strings(plan.ReadFiles)
+	plan.FontCache, err = prepareFontCache(ctx, original)
+	if err != nil {
+		return plan, err
+	}
 	return plan, nil
 }
