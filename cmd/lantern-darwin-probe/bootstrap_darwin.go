@@ -46,7 +46,7 @@ func (x *experiment) bootstrapTrials() []BootstrapTrial {
 }
 
 func (x *experiment) bootstrapTrial(id string, targets []string) BootstrapTrial {
-	t := BootstrapTrial{ID: id, Targets: append([]string(nil), targets...), Scope: "diagnostic-only exact directory open/enumeration; no child-content, write, network or general exec grant; never a fallback"}
+	t := BootstrapTrial{ID: id, Targets: append([]string(nil), targets...), Scope: "diagnostic-only: the additional literal directory grant permits open/enumeration but does not grant child contents, writes, network or general exec; existing baseline runtime grants remain; never a fallback"}
 	plan := x.plan
 	plan.OpenDirectories = append([]string(nil), x.plan.OpenDirectories...)
 	grants := map[string]bool{}

@@ -185,7 +185,7 @@ func runProbe(ctx context.Context, o options) (r Report) {
 		}
 	}
 	pre.check("readonly_plan", narrow, "no whole /usr or /System/Library content grant")
-	pre.Details = map[string]interface{}{"runtime_read_plan": plan, "metadata_disclosure": "file-read-metadata, sysctl-read and exact bootstrap-directory enumeration are allowed; host file contents remain denied", "bootstrap_directory_hypothesis": "Native trace confirms directory FD then relative Cryptex root open; /usr/lib as initial FD origin is inferred from dyld location and remains subject to native verification."}
+	pre.Details = map[string]interface{}{"runtime_read_plan": plan, "metadata_disclosure": "file-read-metadata, sysctl-read and exact bootstrap-directory enumeration, including root directory names, are allowed; these directory grants do not grant child file contents", "bootstrap_directory_evidence": "Prior native fixed diagnostic trial adding literal / entered the actual payload; ten other single-directory additions aborted. The selected baseline now uses literal / plus the trace-observed Cryptex root and removes the unproven /usr/lib grant. Complete execution and confinement assertions must revalidate this baseline; no automatic trial fallback."}
 	r.Fingerprints["policy_sha256"] = digest([]byte(makePolicy(plan, c, exe)))
 	r.stage(pre)
 	_ = os.RemoveAll(c.Root)

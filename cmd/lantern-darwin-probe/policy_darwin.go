@@ -45,11 +45,13 @@ func listSorted(m map[string]bool) []string {
 func runtimeReadPlan(rt pyrt.Runtime) (readPlan, error) {
 	dirs := map[string]bool{canonical(rt.Venv): true, canonical(rt.Base.Stdlib): true}
 	openDirs := map[string]bool{}
-	// Native fs_usage evidence records dyld followed by a directory FD and
-	// openat(fd, ../../System/Volumes/Preboot/Cryptexes/OS). /usr/lib is the
-	// hypothesised FD origin, not a confirmed pathname from the trace. These
-	// grants open/list only the exact existing directories, never their files.
-	for _, p := range []string{"/usr/lib", "/System/Volumes/Preboot/Cryptexes/OS"} {
+	// Native fixed single-directory trials established that adding literal /
+	// lets the payload enter, while the ten other single additions did not.
+	// fs_usage also records opening the Cryptex root. These open/list grants
+	// cover only the exact directories, never child contents. The provisional
+	// /usr/lib grant is removed; the complete native suite must revalidate this
+	// deliberately selected baseline, not automatically fall back to a trial.
+	for _, p := range []string{"/", "/System/Volumes/Preboot/Cryptexes/OS"} {
 		if st, e := os.Stat(p); e == nil && st.IsDir() {
 			openDirs[p] = true
 			openDirs[canonical(p)] = true
