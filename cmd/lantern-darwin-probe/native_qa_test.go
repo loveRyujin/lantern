@@ -280,6 +280,22 @@ func qaNativeAssertBaseline(t *testing.T, r Report, head string) {
 			t.Fatalf("baseline stage missing: %s", id)
 		}
 	}
+	// A receipt proves that the guardian waited for Python; it does not prove
+	// the orphaned guardian itself has exited. Require that separate observation.
+	lifecycle := qaNativeStage(t, r, "lifecycle")
+	for _, kind := range []string{"app_death", "guardian_death"} {
+		var o deathObservation
+		b, _ := json.Marshal(lifecycle.Details[kind])
+		if err := json.Unmarshal(b, &o); err != nil || o.Error != "" || !o.PayloadEntered || !o.VictimWaited || !o.GuardianAbsent || !o.PythonAbsentAfterRescue || !o.TaskRootClean {
+			t.Fatalf("missing actual process absence/cleanup after %s: %+v error=%v", kind, o, err)
+		}
+		if kind == "app_death" && (!o.MechanismCleanup || o.HarnessRescue || o.Receipt == nil || !o.Receipt.Execution.Usage.Waited || o.Receipt.Execution.StopReason != "cancelled") {
+			t.Fatal("application death cleanup was not performed by the actual guardian EOF mechanism")
+		}
+		if kind == "guardian_death" && (o.PythonPresentBeforeRescue != o.HarnessRescue || (o.MechanismCleanup && o.HarnessRescue)) {
+			t.Fatal("guardian-death raw negative observation was confused with harness rescue")
+		}
+	}
 }
 
 func qaNativeAssertMutantBehavior(t *testing.T, name string, stage Stage, r Report) {
@@ -312,7 +328,7 @@ func qaNativeAssertMutantBehavior(t *testing.T, name string, stage Stage, r Repo
 	case "guardian-eof-disabled":
 		var o deathObservation
 		b, _ := json.Marshal(stage.Details["app_death"])
-		if err := json.Unmarshal(b, &o); err != nil || o.Error != "" || !o.PayloadEntered || !o.VictimWaited || o.MechanismCleanup || !o.PythonPresentBeforeRescue || !o.HarnessRescue || !o.PythonAbsentAfterRescue {
+		if err := json.Unmarshal(b, &o); err != nil || o.Error != "" || !o.PayloadEntered || !o.VictimWaited || !o.GuardianAbsent || o.MechanismCleanup || !o.PythonPresentBeforeRescue || !o.HarnessRescue || !o.PythonAbsentAfterRescue {
 			t.Fatalf("EOF mutation did not produce the actual observed orphan followed by labelled rescue: %+v error=%v", o, err)
 		}
 	case "rss-monitor-disabled":

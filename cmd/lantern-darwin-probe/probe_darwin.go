@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/loveRyujin/lantern/core/pyrt"
+	"golang.org/x/sys/unix"
 )
 
 const sentinel = "lantern-owned-sentinel\n"
@@ -477,6 +478,8 @@ func (x *experiment) networkStage() {
 
 func (x *experiment) processStage() {
 	s := stageStart("process-profile", []string{"Bounded process/control experiments actually execute; same-UID host controls work; direct children Wait and task roots clean."}, []string{"fork", "posix_spawn", "thread", "setsid", "setpgid", "cross_signal", "uid_scoped_nproc_soft_zero"})
+	var parentBefore, parentAfter unix.Rlimit
+	beforeError := unix.Getrlimit(unix.RLIMIT_NPROC, &parentBefore)
 	h, e := x.task("process-profile", false, x.exe)
 	if e != nil {
 		s.check("host_controls", false, e.Error())
@@ -522,18 +525,23 @@ func (x *experiment) processStage() {
 	groupObservation, groupAttempted := findOp(groupRun, "setpgid")
 	attempted = attempted && groupAttempted && groupObservation.Attempted
 	for _, run := range []Execution{host, run} {
-		for _, name := range []string{"nproc_original_limits", "nproc_soft_zero_fork"} {
+		for _, name := range []string{"nproc_original_limits", "nproc_set_soft_zero", "nproc_after_set_limits", "nproc_soft_zero_fork", "nproc_current_before_restore", "nproc_restore_soft", "nproc_after_restore_limits"} {
 			o, ok := findOp(run, name)
 			attempted = attempted && ok && o.Attempted
 		}
 	}
-	s.check("host_controls", controls && strings.Contains(string(before), "signal"), "host fork/spawn/thread/session/group and actual SIGUSR1 against owned signal-target")
+	afterError := unix.Getrlimit(unix.RLIMIT_NPROC, &parentAfter)
+	parentStable := beforeError == nil && afterError == nil && parentBefore == parentAfter
+	s.check("host_controls", controls && strings.Contains(string(before), "signal") && parentStable, "host fork/spawn/thread/session/group and actual SIGUSR1 against owned signal-target; parent NPROC limits must remain unchanged")
 	s.check("all_attempted", attempted, "capabilities are observations, not a claim that Linux's strict no-thread profile exists")
 	s.check("payload_completed", goodRun(run) && goodRun(groupRun), "fixed process experiments completed, including a separately isolated real group change")
 	s.check("waited", allWaited(s.Runs), "direct and bounded fork/spawn children waited")
 	s.check("temp_clean", x.cleanTasks(h.Root, c.Root, groupHost.Root, groupSandbox.Root), "task roots removed")
-	s.Details = map[string]interface{}{"signal_target_changed_during_sandbox": string(before) != string(after), "profile": "single direct PID monitoring; threads/session/group capabilities characterized, no arbitrary process-tree quota claimed"}
-	s.Limitations = []string{"Any successful process/thread/session/group capability must be considered before a production profile is selected.", "NPROC experiment lowers only this disposable process's soft limit to zero, attempts one bounded fork and restores it. UID-wide counting is not a per-run process quota; its EAGAIN is not attributed to sandbox policy."}
+	preciseLimits := func(l unix.Rlimit) map[string]string {
+		return map[string]string{"soft": strconv.FormatUint(l.Cur, 10), "hard": strconv.FormatUint(l.Max, 10)}
+	}
+	s.Details = map[string]interface{}{"signal_target_changed_during_sandbox": string(before) != string(after), "profile": "single direct PID monitoring; threads/session/group capabilities characterized, no arbitrary process-tree quota claimed", "parent_nproc_before": preciseLimits(parentBefore), "parent_nproc_after": preciseLimits(parentAfter), "parent_nproc_unchanged": parentStable}
+	s.Limitations = []string{"Any successful process/thread/session/group capability must be considered before a production profile is selected.", "NPROC experiment lowers only this disposable process's soft limit to zero and attempts at most one bounded fork. Set, fork, current limits and restore are separate observations. Restore requests soft <= actual current hard without raising hard; exactly_original explicitly records whether both original values could be restored after kernel normalisation. UID-wide counting is not a per-run quota; NPROC EAGAIN is not attributed to sandbox policy."}
 	x.report.stage(s)
 }
 

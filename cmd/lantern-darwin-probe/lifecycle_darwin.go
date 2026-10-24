@@ -27,6 +27,7 @@ type deathObservation struct {
 	Kind                      string          `json:"kind"`
 	AppPID                    int             `json:"app_pid"`
 	GuardianPID               int             `json:"guardian_pid"`
+	GuardianAbsent            bool            `json:"guardian_absent"`
 	PythonPID                 int             `json:"python_pid"`
 	PythonImage               string          `json:"python_image"`
 	PythonIdentity            ProcessIdentity `json:"python_identity"`
@@ -258,6 +259,10 @@ func (x *experiment) deathExperiment(kind string) (o deathObservation) {
 		}
 	}
 	o.PythonAbsentAfterRescue = waitAbsent(x.ctx, x.monitor, o.PythonPID, 2*time.Second)
+	// The orphaned guardian is not a child of this harness after app death.
+	// Observe ESRCH after its own exit/reparenting; never call this wait4 or
+	// send another signal merely to make an absence assertion pass.
+	o.GuardianAbsent = waitAbsent(x.ctx, x.monitor, o.GuardianPID, 2*time.Second)
 	if !o.PythonPresentBeforeRescue && kind == "app_death" {
 		o.TaskRootClean = func() bool { _, e := os.Lstat(c.Root); return os.IsNotExist(e) }()
 	} else {
@@ -309,10 +314,10 @@ func (x *experiment) lifecycleStage() {
 	}
 	appDeath := x.deathExperiment("app_death")
 	guardianDeath := x.deathExperiment("guardian_death")
-	s.check("app_death", appDeath.Error == "" && appDeath.PayloadEntered && appDeath.VictimWaited && appDeath.MechanismCleanup && !appDeath.HarnessRescue && appDeath.PythonAbsentAfterRescue && appDeath.TaskRootClean, "actual SIGKILL of app helper; mechanism receipt must prove EOF cancellation, child Wait and cleanup without harness rescue")
-	s.check("guardian_death_observed", guardianDeath.Error == "" && guardianDeath.PayloadEntered && guardianDeath.VictimWaited && guardianDeath.PythonAbsentAfterRescue && guardianDeath.TaskRootClean, "actual guardian SIGKILL; record before-rescue survival rather than presume parent-death kill")
+	s.check("app_death", appDeath.Error == "" && appDeath.PayloadEntered && appDeath.VictimWaited && appDeath.MechanismCleanup && !appDeath.HarnessRescue && appDeath.PythonAbsentAfterRescue && appDeath.GuardianAbsent && appDeath.TaskRootClean, "actual SIGKILL of app helper; guardian receipt proves EOF cancellation, Python Wait and cleanup without rescue; orphan guardian must then be observed absent")
+	s.check("guardian_death_observed", guardianDeath.Error == "" && guardianDeath.PayloadEntered && guardianDeath.VictimWaited && guardianDeath.PythonAbsentAfterRescue && guardianDeath.GuardianAbsent && guardianDeath.TaskRootClean, "actual guardian SIGKILL and observed guardian absence; record Python before-rescue survival rather than presume parent-death kill")
 	s.check("rescue_separate", !guardianDeath.PythonPresentBeforeRescue || guardianDeath.HarnessRescue, "raw negative observation and explicit harness rescue are separate fields")
-	s.check("waited", allWaited(s.Runs) && appDeath.VictimWaited && guardianDeath.VictimWaited, "direct children Waited; orphan absence observed separately, no false claim of harness wait4 on a grandchild")
+	s.check("waited", allWaited(s.Runs) && appDeath.VictimWaited && guardianDeath.VictimWaited && appDeath.GuardianAbsent && guardianDeath.GuardianAbsent, "direct children Waited; both guardians observed absent; orphan absence is not a claim of harness wait4 on a grandchild")
 	s.check("temp_clean", x.cleanTasks(roots...) && appDeath.TaskRootClean && guardianDeath.TaskRootClean, "normal and exceptional task roots absent")
 	s.Details = map[string]interface{}{"app_death": appDeath, "guardian_death": guardianDeath}
 	s.Limitations = []string{"Guardian death can orphan Python; the outer test harness rescues it. This candidate is not production-feasible until an independent lifecycle mechanism is validated."}

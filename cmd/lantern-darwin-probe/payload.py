@@ -22,9 +22,11 @@ def operation(name, fn):
         result = fn()
         emit({"operation": name, "attempted": True, "success": True, "errno": 0,
               "detail": str(result)[:240] if result is not None else ""})
-    except (OSError, RuntimeError) as exc:
+        return True
+    except (OSError, RuntimeError, ValueError) as exc:
         emit({"operation": name, "attempted": True, "success": False,
               "errno": getattr(exc, "errno", 0) or 0, "detail": type(exc).__name__})
+        return False
 
 def read(path):
     with open(path, "rb") as handle:
@@ -101,17 +103,37 @@ elif mode == "process-profile":
     operation("thread", thread_once)
     operation("cross_signal", lambda: os.kill(cfg["signal_pid"], signal.SIGUSR1))
     original_nproc = resource.getrlimit(resource.RLIMIT_NPROC)
-    emit({"operation": "nproc_original_limits", "attempted": True, "success": True,
-          "errno": 0, "detail": json.dumps({"uid": os.getuid(), "soft": original_nproc[0], "hard": original_nproc[1]})})
-    def nproc_once():
-        # Affects this disposable process's soft limit only. Never modify the
-        # hard limit or a host process. At most one child, immediately reaped.
-        try:
-            resource.setrlimit(resource.RLIMIT_NPROC, (0, original_nproc[1]))
-            fork_once()
-        finally:
-            resource.setrlimit(resource.RLIMIT_NPROC, original_nproc)
-    operation("nproc_soft_zero_fork", nproc_once)
+    def nproc_limits(name):
+        limits = resource.getrlimit(resource.RLIMIT_NPROC)
+        emit({"operation": name, "attempted": True, "success": True, "errno": 0,
+              "metrics": {"uid": os.getuid(), "soft": limits[0], "hard": limits[1],
+                          "original_soft": original_nproc[0], "original_hard": original_nproc[1],
+                          "rlim_infinity": resource.RLIM_INFINITY,
+                          "exactly_original": int(limits == original_nproc)},
+              "detail": json.dumps({"scope": "disposable PID only; parent independently observed",
+                                    "soft": str(limits[0]), "hard": str(limits[1]),
+                                    "original_soft": str(original_nproc[0]), "original_hard": str(original_nproc[1]),
+                                    "rlim_infinity": str(resource.RLIM_INFINITY),
+                                    "exactly_original": limits == original_nproc})})
+        return limits
+    nproc_limits("nproc_original_limits")
+    # Preserve the requested hard limit. Darwin may itself clamp/normalise it;
+    # read the actual result and never subsequently try to raise that hard cap.
+    set_ok = operation("nproc_set_soft_zero", lambda: resource.setrlimit(resource.RLIMIT_NPROC, (0, original_nproc[1])))
+    after_set = nproc_limits("nproc_after_set_limits")
+    if set_ok and after_set[0] == 0:
+        # Emit the fork result before restoring, so EAGAIN is never hidden by a
+        # later restore error. At most one successful child, immediately Waited.
+        operation("nproc_soft_zero_fork", fork_once)
+    else:
+        emit({"operation": "nproc_soft_zero_fork", "attempted": False, "success": False,
+              "errno": 0, "detail": "Soft-zero limit was not installed; no attribution or extra fork."})
+    current = nproc_limits("nproc_current_before_restore")
+    restored_soft = original_nproc[0]
+    if current[1] != resource.RLIM_INFINITY and (restored_soft == resource.RLIM_INFINITY or restored_soft > current[1]):
+        restored_soft = current[1]
+    operation("nproc_restore_soft", lambda: resource.setrlimit(resource.RLIMIT_NPROC, (restored_soft, current[1])))
+    nproc_limits("nproc_after_restore_limits")
     # Last: changing session/group must not affect subsequent probes.
     operation("setsid", os.setsid)
 elif mode == "setpgid-change":
