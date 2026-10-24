@@ -16,10 +16,11 @@ import (
 )
 
 type readPlan struct {
-	Directories []string `json:"directories"`
-	Files       []string `json:"files"`
-	Executables []string `json:"executables"`
-	Unresolved  []string `json:"optional_unresolved"`
+	Directories     []string `json:"directories"`
+	OpenDirectories []string `json:"open_directories"`
+	Files           []string `json:"files"`
+	Executables     []string `json:"executables"`
+	Unresolved      []string `json:"optional_unresolved"`
 }
 
 func canonical(path string) string {
@@ -43,6 +44,17 @@ func listSorted(m map[string]bool) []string {
 // extension failures never cause a whole-prefix read grant.
 func runtimeReadPlan(rt pyrt.Runtime) (readPlan, error) {
 	dirs := map[string]bool{canonical(rt.Venv): true, canonical(rt.Base.Stdlib): true}
+	openDirs := map[string]bool{}
+	// Native fs_usage evidence records dyld followed by a directory FD and
+	// openat(fd, ../../System/Volumes/Preboot/Cryptexes/OS). /usr/lib is the
+	// hypothesised FD origin, not a confirmed pathname from the trace. These
+	// grants open/list only the exact existing directories, never their files.
+	for _, p := range []string{"/usr/lib", "/System/Volumes/Preboot/Cryptexes/OS"} {
+		if st, e := os.Stat(p); e == nil && st.IsDir() {
+			openDirs[p] = true
+			openDirs[canonical(p)] = true
+		}
+	}
 	files := map[string]bool{rt.Python: true, canonical(rt.Python): true, rt.Base.Path: true, canonical(rt.Base.Path): true,
 		"/dev/null": true, "/dev/urandom": true, "/dev/random": true, "/etc/localtime": true, "/private/etc/localtime": true}
 	for _, p := range []string{"/System/Library/dyld", "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld"} {
@@ -166,7 +178,7 @@ func runtimeReadPlan(rt pyrt.Runtime) (readPlan, error) {
 			return readPlan{}, e
 		}
 	}
-	return readPlan{Directories: listSorted(dirs), Files: listSorted(files), Executables: listSorted(executables), Unresolved: listSorted(warnings)}, nil
+	return readPlan{Directories: listSorted(dirs), OpenDirectories: listSorted(openDirs), Files: listSorted(files), Executables: listSorted(executables), Unresolved: listSorted(warnings)}, nil
 }
 
 func makePolicy(plan readPlan, c taskConfig, exe string) string {
@@ -176,6 +188,9 @@ func makePolicy(plan readPlan, c taskConfig, exe string) string {
 	// stay constrained to the explicit runtime/task roots and exact dependencies.
 	b.WriteString("(allow file-read-metadata)\n(allow sysctl-read)\n(allow process-info* (target self))\n(allow signal (target self))\n")
 	b.WriteString("(deny network*)\n(deny process-fork)\n")
+	for _, p := range plan.OpenDirectories {
+		fmt.Fprintf(&b, "(allow file-read-data (literal %s))\n", strconv.Quote(p))
+	}
 	for _, p := range plan.Directories {
 		fmt.Fprintf(&b, "(allow file-read* file-map-executable (subpath %s))\n", strconv.Quote(p))
 	}

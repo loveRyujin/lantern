@@ -206,7 +206,7 @@ jobs:
       - name: Build pure Go experiment carrier
         run: go build -o "${RUNNER_TEMP}/lantern-darwin-probe" ./cmd/lantern-darwin-probe
       - name: Test Darwin experiment contracts
-        run: go test ./cmd/lantern-darwin-probe -count=1 -v -timeout 10m
+        run: go test ./cmd/lantern-darwin-probe -run '^TestDarwinProbeQA' -count=1 -v -timeout 10m
       - name: Run real isolation, lifecycle and signed bundle experiments
         run: |
           # Bounded diagnostic for only the fixed experiment interpreter name.
@@ -219,7 +219,14 @@ jobs:
           code=$?
           wait "$trace_pid"
           set -e
-          head -c 2097152 "${RUNNER_TEMP}/darwin-bootstrap-filesys.log" > "${RUNNER_TEMP}/darwin-spike-reports/bootstrap-filesys.log"
+          python3 - <<'PYTRACE'
+          import os, pathlib, re
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          raw = (root / 'darwin-bootstrap-filesys.log').read_text(errors='replace')
+          lines = [line for line in raw.splitlines() if re.search(r'python3\.12\.\d+\s*$', line)]
+          data = '\n'.join(lines).encode()
+          (root / 'darwin-spike-reports' / 'bootstrap-filesys.log').write_bytes(data[:2097152])
+          PYTRACE
           exit "$code"
       - name: Preserve diagnostics from owned native process IDs
         if: always()
@@ -258,6 +265,13 @@ jobs:
           assert report['environment']['runtime_sentinel_cleanup'] == 'passed', report['environment']
           assert report['environment']['signal_target_waited'] == 'true', report['environment']
           PY
+      - name: Independently remove safeguards against the real native baseline
+        env:
+          DARWIN_SPIKE_REAL_QA: "1"
+          DARWIN_SPIKE_PROBE: ${{ runner.temp }}/lantern-darwin-probe
+          DARWIN_SPIKE_RUNTIME_CONFIG: ${{ runner.temp }}/darwin-spike-runtime.json
+          DARWIN_SPIKE_BASELINE_REPORT: ${{ runner.temp }}/darwin-spike-reports/report.json
+        run: go test ./cmd/lantern-darwin-probe -run '^TestDarwinSpikeNativeIndependentQA$' -count=1 -v -timeout 18m
       - name: Preserve real macOS report, policy and signature evidence
         if: always()
         uses: actions/upload-artifact@v7.0.2

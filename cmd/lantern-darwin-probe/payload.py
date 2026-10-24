@@ -43,7 +43,7 @@ if mode == "filesystem":
     operation("host_read", lambda: read(cfg["outside"]))
     operation("database_read", lambda: read_database(cfg["database"]))
     operation("symlink_read", lambda: read(os.path.join(os.path.dirname(cfg["input"]), "escape-link")))
-    operation("sibling_read", lambda: read(cfg["outside"] + "-sibling"))
+    operation("sibling_read", lambda: read(os.path.join(os.path.dirname(cfg["input"]) + "-sibling", "secret")))
     operation("runtime_read", lambda: read(cfg["runtime_sentinel"]))
     operation("input_write", lambda: write(cfg["input"]))
     operation("host_write", lambda: write(cfg["outside"]))

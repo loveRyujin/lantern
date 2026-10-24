@@ -185,7 +185,7 @@ func runProbe(ctx context.Context, o options) (r Report) {
 		}
 	}
 	pre.check("readonly_plan", narrow, "no whole /usr or /System/Library content grant")
-	pre.Details = map[string]interface{}{"runtime_read_plan": plan, "metadata_disclosure": "file-read-metadata and sysctl-read are allowed; host file contents remain denied"}
+	pre.Details = map[string]interface{}{"runtime_read_plan": plan, "metadata_disclosure": "file-read-metadata, sysctl-read and exact bootstrap-directory enumeration are allowed; host file contents remain denied", "bootstrap_directory_hypothesis": "Native trace confirms directory FD then relative Cryptex root open; /usr/lib as initial FD origin is inferred from dyld location and remains subject to native verification."}
 	r.Fingerprints["policy_sha256"] = digest([]byte(makePolicy(plan, c, exe)))
 	r.stage(pre)
 	_ = os.RemoveAll(c.Root)
@@ -206,7 +206,7 @@ func runProbe(ctx context.Context, o options) (r Report) {
 }
 
 func (x *experiment) setupControls() error {
-	for _, p := range []string{"host-secret", "host-secret-sibling"} {
+	for _, p := range []string{"host-secret"} {
 		if e := os.WriteFile(filepath.Join(x.base, p), []byte(sentinel), 0600); e != nil {
 			return e
 		}
@@ -250,14 +250,14 @@ func (x *experiment) task(mode string, sandboxed bool, exe string) (taskConfig, 
 	}
 	c := taskConfig{Mode: mode, Python: x.rt.Python, Root: root, Input: filepath.Join(root, "input", "table.csv"), Outside: filepath.Join(x.base, "host-secret"), Database: filepath.Join(x.base, "workspace.sqlite"), RuntimeSentinel: x.runtimeSentinel, Out: filepath.Join(root, "out"), Tmp: filepath.Join(root, "tmp"), Sandboxed: sandboxed, Budget: defaultBudget(), TCPPort: x.tcpPort, UDPPort: x.udpPort, UnixSocket: x.unixSocket, SignalPID: x.signalPID}
 	c.PythonImages = x.plan.Executables
-	for _, d := range []string{filepath.Dir(c.Input), c.Out, c.Tmp, filepath.Join(c.Tmp, "mpl")} {
+	for _, d := range []string{filepath.Dir(c.Input), filepath.Dir(c.Input) + "-sibling", c.Out, c.Tmp, filepath.Join(c.Tmp, "mpl")} {
 		if e = os.MkdirAll(d, 0700); e != nil {
 			return c, e
 		}
 	}
 	c.Script = filepath.Join(root, "input", "payload.py")
 	c.Policy = filepath.Join(x.out, "policies", filepath.Base(root)+".sb")
-	for p, b := range map[string][]byte{c.Input: []byte(sentinel), c.Script: pythonPayload} {
+	for p, b := range map[string][]byte{c.Input: []byte(sentinel), filepath.Join(filepath.Dir(c.Input)+"-sibling", "secret"): []byte(sentinel), c.Script: pythonPayload} {
 		if e = os.WriteFile(p, b, 0600); e != nil {
 			return c, e
 		}
