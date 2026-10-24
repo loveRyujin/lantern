@@ -22,7 +22,7 @@ ad-hoc 签名实验使用最小 Go .app，保存签名校验及 entitlement 状�
 
 `lantern.darwin-spike.v1` 报告把实验完整性与候选可行性分开。默认成功只表示预定实验实际执行、正控和断言证据完整，不等同生产机制可行；真实机制不足可记录 unresolved，并给复现与后续约束。平台/运行时/策略前提不可用必须结构化失败，未执行不能计作隔离通过。安全断言被实际突破是实验失败，不能改为“可行性不足”掩盖。
 
-报告保留实际 OS/build/arch、Go/Python、锁文件、提交/dirty、策略和 payload 指纹，分阶段记录环境、隔离、资源、生命周期与签名证据。`--require-feasible` 额外要求候选可行，供后续生产门槛使用。当前尚无本轮结果，不能预填通过。
+报告保留实际 OS/build/arch、Go/Python、锁文件、提交/dirty、策略和 payload 指纹，分阶段记录环境、隔离、资源、生命周期与签名证据。`--require-feasible` 额外要求候选可行，供后续生产门槛使用。结果须来自实际执行，未运行阶段不得预填通过。
 
 ## 出口与后续
 
@@ -44,7 +44,7 @@ ad-hoc 签名实验使用最小 Go .app，保存签名校验及 entitlement 状�
 
 有界文件系统跟踪观察到宿主成功打开一个 pathname 未显示的目录 FD，继而相对定位 Cryptex；沙箱在相应初次 open 返回 EPERM 后退出。精确 /usr/lib 与 Cryptex 根目录 candidate 未解决启动问题。固定十一项单目录诊断均从相同基线独立增加 literal 权限，不自动累加或改变基线状态；其中仅增加 literal / 的试验实际进入 Python 并完成 256 MiB untouched mmap，Wait/清理成立，其余十项失败。这个证据只证明该额外权限在旧基线上有效，不证明其它授权必要或唯一根因。
 
-下一候选手动冻结为已确认存在的 / 与 Cryptex 根目录精确 file-read-data，并移除未证必要的 /usr/lib 目录权限。OpenDirectories 与子树读取 Directories 分离：新增规则可能允许枚举这些目录的名称，本身不允许子内容/写/网络；整体另有精确运行依赖读取。该精确组合仍须重新执行八阶段、签名后的正负例和七项独立原生变异，诊断成功不能替代完整验收。
+下一候选手动冻结为已确认存在的 / 与 Cryptex 根目录精确 file-read-data，并移除未证必要的 /usr/lib 目录权限。OpenDirectories 与子树读取 Directories 分离：新增规则可能允许枚举这些目录的名称，本身不允许子内容/写/网络；整体另有精确运行依赖读取。该精确组合当时仍待八阶段验证，后续 4d5f3df 已完整执行通过；最终提交及七项独立原生变异仍受合并门槛约束，诊断成功不能替代完整验收。
 
 采样口径另已校正：proc_taskinfo 的累计时间依据实际 mach_timebase_info 换算，保存 numer/denom；虚拟内存正例使用 Python 实际 mmap 长度与不触页观测，不用 Go 启动器的大 PeakVirtual 作证明。payload-ready 后采样与整条启动链资源值分列。延迟清理用具名返回值带回，实际 Lstat 不存在与自建进程 Wait/退出分开留证，不能只凭 RemoveAll 返回 nil。
 
