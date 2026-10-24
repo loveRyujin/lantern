@@ -2,7 +2,7 @@
 
 ## 状态与边界
 
-实验中（#52），已取得真实 macOS 启动失败及独立目录诊断结果，尚未完成完整基线验收。基线是完成 W3 验收的 main `2e84228f8f133f80c91347d52facb58bfecd5772`。本轮交付固定、有界探针、报告和后续实现决策，生产 Darwin Runner 与 SQL worker 保持失败关闭，不能用实验可运行代替后端交付。
+已形成原生实验结论（#52/PR53），完整八阶段基线已执行通过；交付出口以独立变异、最终 CI 和合并验收为准。基线是完成 W3 验收的 main `2e84228f8f133f80c91347d52facb58bfecd5772`。本轮交付固定、有界探针、报告和后续实现决策，生产 Darwin Runner 与 SQL worker 保持失败关闭，不能用实验可运行代替后端交付。
 
 现有 `probe-sandbox-exec.sh` 以 allow-default 能执行 true 判定工具可用；curl 失败可能只是 DNS 或无服务，不能证明网络策略。本轮使用真实受控端点和宿主成功正控。旧 Darwin 20 条 Mock 评测与 Linux 真实套件保持独立。
 
@@ -47,3 +47,16 @@ ad-hoc 签名实验使用最小 Go .app，保存签名校验及 entitlement 状�
 下一候选手动冻结为已确认存在的 / 与 Cryptex 根目录精确 file-read-data，并移除未证必要的 /usr/lib 目录权限。OpenDirectories 与子树读取 Directories 分离：新增规则可能允许枚举这些目录的名称，本身不允许子内容/写/网络；整体另有精确运行依赖读取。该精确组合仍须重新执行八阶段、签名后的正负例和七项独立原生变异，诊断成功不能替代完整验收。
 
 采样口径另已校正：proc_taskinfo 的累计时间依据实际 mach_timebase_info 换算，保存 numer/denom；虚拟内存正例使用 Python 实际 mmap 长度与不触页观测，不用 Go 启动器的大 PeakVirtual 作证明。payload-ready 后采样与整条启动链资源值分列。延迟清理用具名返回值带回，实际 Lstat 不存在与自建进程 Wait/退出分开留证，不能只凭 RemoveAll 返回 nil。
+
+## 实验结论与生产决策
+
+在上述记录的 macOS 15.7.9/arm64/Python3.12.10 上，4d5f3df 候选的八阶段与 65 项检查完整通过，原生独立变异和最终 CI 仍是合并门槛。该结果只覆盖固定探针和所记录系统版本，生产 Darwin Runner/SQL worker 仍未实现。证据与最终提交见 PR53 和 lantern-notes/W4-01，不能用旧 Mock 或交叉编译代替。
+
+- 最终目录候选为精确 / 与 Cryptex 根目录打开权限，已移除 /usr/lib 目录授权。实际 payload 进入后，原有文件/真实 SQLite/只读 input/可写 out/tmp、symlink/相邻前缀与网络正负例保持有效；这支持候选在该环境运行，不证明唯一根因或跨版本有效。
+- fork/posix_spawn/跨进程信号在沙箱内为实际 EPERM，宿主正控成功；线程、setsid 与实际 setpgid 变组仍可成功。不能写成 Linux 的严格单线程 profile，也不能依赖进程组作为唯一身份边界。
+- NPROC 实测在自有子进程由 soft/hard=1333/2000 请求仅降 soft 到零后，实际成为 0/1333；有限 fork 返回 EAGAIN35，安全恢复成为 1333/1333，并明确 exactly_original=false。独立父进程仍为 1333/2000。此 UID 计数范围及 hard 钳制行为不能归因 Seatbelt，也不能冒充单 Run 进程配额。
+- 应用被杀时，guardian 通过 EOF 取消、Wait Python、清理目录后自身消失；guardian 被杀时 Python 确实存活，需要 harness 在核对 starttime/镜像后救援。两者原始结果与救援分别保存。故 feasibility=unresolved，不能直接交付声称 guardian 意外死亡也保证回收的生产后端。下一阶段须先冻结故障模型和监督设计。
+- libproc CPU 使用实际 timebase，RSS、文件目录体积为采样口径。它们不是瞬时硬配额；目录扫描不能保证统计已 unlink 但仍打开的文件，单文件 RLIMIT_FSIZE 也不是整次磁盘配额。该限制属于后续生产设计问题，不以固定 payload 通过遮蔽。
+- ad-hoc .app 校验成功并在实际 bundle/helper 路径重跑 Python 出图与文件/网络拒绝。签名标志为 ad-hoc；本实验未验证 Hardened Runtime、App Sandbox、Gatekeeper 或干净机器安装，不等于 W8 分发完成。
+
+首轮独立原生测试曾被 Git archive 的标准 PAX global header 阻断：这是测试脚手架错误，不是防护变异检出。修复仅忽略元数据头，不创建该路径，其余绝对路径/穿越/符号链接/硬链接仍拒绝；以实际变异执行结果作为最终证据。

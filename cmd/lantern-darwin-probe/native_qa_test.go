@@ -3,12 +3,10 @@
 package main
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -384,37 +382,7 @@ func qaNativeArchive(t *testing.T, repo, destination string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := tar.NewReader(bytes.NewReader(data))
-	for {
-		h, err := r.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !filepath.IsLocal(h.Name) {
-			t.Fatalf("archive path escape: %q", h.Name)
-		}
-		p := filepath.Join(destination, h.Name)
-		switch h.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(p, 0700); err != nil {
-				t.Fatal(err)
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
-				t.Fatal(err)
-			}
-			b, err := io.ReadAll(r)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(p, b, os.FileMode(h.Mode)&0777); err != nil {
-				t.Fatal(err)
-			}
-		default:
-			t.Fatalf("unsupported archive entry type %d: %s", h.Typeflag, h.Name)
-		}
+	if err := qaExtractNativeArchive(data, destination); err != nil {
+		t.Fatal(err)
 	}
 }
