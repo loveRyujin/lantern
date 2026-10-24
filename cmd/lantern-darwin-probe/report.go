@@ -69,26 +69,30 @@ type Check struct {
 }
 
 type Observation struct {
-	Operation string `json:"operation"`
-	Attempted bool   `json:"attempted"`
-	Success   bool   `json:"success"`
-	Errno     int    `json:"errno"`
-	Detail    string `json:"detail,omitempty"`
+	Operation string           `json:"operation"`
+	Attempted bool             `json:"attempted"`
+	Success   bool             `json:"success"`
+	Errno     int              `json:"errno"`
+	Detail    string           `json:"detail,omitempty"`
+	Metrics   map[string]int64 `json:"metrics,omitempty"`
 }
 
 type Usage struct {
-	Scope          string  `json:"scope"`
-	Samples        int     `json:"samples"`
-	PeakRSS        uint64  `json:"peak_rss_bytes"`
-	PeakVirtual    uint64  `json:"peak_virtual_bytes"`
-	CPUSeconds     float64 `json:"cpu_seconds"`
-	WallSeconds    float64 `json:"wall_seconds"`
-	MaxSampleGapMS float64 `json:"max_sample_gap_ms"`
-	KillLatencyMS  float64 `json:"kill_to_wait_ms"`
-	PeakFiles      int     `json:"peak_file_entries"`
-	PeakDiskBytes  int64   `json:"peak_disk_bytes"`
-	ReadErrors     int     `json:"resource_read_errors"`
-	Waited         bool    `json:"waited"`
+	Scope              string  `json:"scope"`
+	Samples            int     `json:"samples"`
+	PeakRSS            uint64  `json:"peak_rss_bytes"`
+	PeakVirtual        uint64  `json:"peak_virtual_bytes"`
+	CPUSeconds         float64 `json:"cpu_seconds"`
+	WallSeconds        float64 `json:"wall_seconds"`
+	MaxSampleGapMS     float64 `json:"max_sample_gap_ms"`
+	KillLatencyMS      float64 `json:"kill_to_wait_ms"`
+	PeakFiles          int     `json:"peak_file_entries"`
+	PeakDiskBytes      int64   `json:"peak_disk_bytes"`
+	ReadErrors         int     `json:"resource_read_errors"`
+	Waited             bool    `json:"waited"`
+	PayloadSamples     int     `json:"payload_samples_after_ready"`
+	PayloadPeakRSS     uint64  `json:"payload_peak_rss_after_ready_bytes"`
+	PayloadPeakVirtual uint64  `json:"payload_peak_virtual_after_ready_bytes"`
 }
 
 type Budget struct {

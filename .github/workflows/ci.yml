@@ -208,7 +208,19 @@ jobs:
       - name: Test Darwin experiment contracts
         run: go test ./cmd/lantern-darwin-probe -count=1 -v -timeout 10m
       - name: Run real isolation, lifecycle and signed bundle experiments
-        run: bash scripts/probe-darwin-sandbox.sh --probe "${RUNNER_TEMP}/lantern-darwin-probe" --runtime-config "${RUNNER_TEMP}/darwin-spike-runtime.json" --out "${RUNNER_TEMP}/darwin-spike-reports"
+        run: |
+          # Bounded diagnostic for only the fixed experiment interpreter name.
+          # Retain the original experiment exit status, never turn a failure green.
+          sudo -n /usr/bin/fs_usage -w -f filesys -t 15 python3.12 > "${RUNNER_TEMP}/darwin-bootstrap-filesys.log" 2>&1 &
+          trace_pid=$!
+          sleep 0.2
+          set +e
+          bash scripts/probe-darwin-sandbox.sh --probe "${RUNNER_TEMP}/lantern-darwin-probe" --runtime-config "${RUNNER_TEMP}/darwin-spike-runtime.json" --out "${RUNNER_TEMP}/darwin-spike-reports"
+          code=$?
+          wait "$trace_pid"
+          set -e
+          head -c 2097152 "${RUNNER_TEMP}/darwin-bootstrap-filesys.log" > "${RUNNER_TEMP}/darwin-spike-reports/bootstrap-filesys.log"
+          exit "$code"
       - name: Preserve diagnostics from owned native process IDs
         if: always()
         run: python3 scripts/collect-darwin-spike-diagnostics.py "${RUNNER_TEMP}/darwin-spike-reports"

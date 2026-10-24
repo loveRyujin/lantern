@@ -559,7 +559,9 @@ func (x *experiment) resourceStage() {
 		s.Runs = append(s.Runs, run)
 		pass := run.Entered && run.Usage.Waited && run.StopReason == tc.reason
 		if tc.mode == "vmem" {
-			pass = goodRun(run) && run.Usage.PeakRSS < c.Budget.RSSBytes && run.Usage.PeakVirtual >= 256<<20
+			mapping, ok := findOp(run, "untouched_mapping")
+			touched, touchRecorded := mapping.Metrics["payload_pages_touched"]
+			pass = goodRun(run) && ok && mapping.Attempted && mapping.Success && mapping.Metrics["mapped_bytes"] == 256<<20 && touchRecorded && touched == 0 && run.Usage.PayloadSamples > 0 && run.Usage.PayloadPeakRSS < c.Budget.RSSBytes
 		} else {
 			pass = pass && run.ExitCode != 0 && run.Usage.KillLatencyMS < 2000
 		}

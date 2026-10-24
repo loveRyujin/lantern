@@ -155,6 +155,10 @@ elif mode == "rss":
 elif mode == "vmem":
     import mmap
     mapping = mmap.mmap(-1, 256 << 20)
+    assert len(mapping) == 256 << 20
+    emit({"operation": "untouched_mapping", "attempted": True, "success": True,
+          "errno": 0, "metrics": {"mapped_bytes": len(mapping), "payload_pages_touched": 0},
+          "detail": "Actual mmap object length; payload never indexes or writes the mapping. RSS is independently sampled after the payload marker."})
     time.sleep(0.2)
     mapping.close()
 elif mode in {"output", "stderr"}:

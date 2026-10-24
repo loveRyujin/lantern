@@ -283,6 +283,7 @@ func runFixed(ctx context.Context, exe string, c taskConfig, monitor *processMon
 	wall := time.NewTimer(time.Duration(c.Budget.WallMS) * time.Millisecond)
 	defer wall.Stop()
 	var killed, lastSample time.Time
+	payloadReady := false
 	stop := func(reason string) {
 		if r.StopReason == "" {
 			r.StopReason = reason
@@ -340,6 +341,24 @@ func runFixed(ctx context.Context, exe string, c taskConfig, monitor *processMon
 				}
 				if !found {
 					r.ObservedImages = append(r.ObservedImages, image)
+				}
+			}
+			if !payloadReady && pythonImageMatches(image, c) {
+				var ready struct {
+					PID  int    `json:"pid"`
+					Mode string `json:"mode"`
+				}
+				if readJSON(filepath.Join(c.Out, "ready.json"), &ready) == nil && ready.PID == r.PID && ready.Mode == c.Mode {
+					payloadReady = true
+				}
+			}
+			if payloadReady {
+				r.Usage.PayloadSamples++
+				if t.Resident > r.Usage.PayloadPeakRSS {
+					r.Usage.PayloadPeakRSS = t.Resident
+				}
+				if t.Virtual > r.Usage.PayloadPeakVirtual {
+					r.Usage.PayloadPeakVirtual = t.Virtual
 				}
 			}
 			r.Usage.CPUSeconds = monitor.cpuSeconds(t)

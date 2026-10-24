@@ -48,6 +48,7 @@ func runtimeReadPlan(rt pyrt.Runtime) (readPlan, error) {
 	for _, p := range []string{"/System/Library/dyld", "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld"} {
 		if st, e := os.Stat(p); e == nil && st.IsDir() {
 			dirs[p] = true
+			dirs[canonical(p)] = true // same already-stat'ed cache vnode, not a wider read root
 		}
 	}
 	warnings := map[string]bool{}
