@@ -183,3 +183,99 @@ jobs:
           name: linux-sandbox-spike-${{ github.run_id }}
           path: ${{ runner.temp }}/linux-sandbox-report.json
           if-no-files-found: error
+
+  # #52: fixed macOS experiments; a valid negative feasibility conclusion does
+  # not claim a production Darwin Runner. The legacy diagnostic remains above.
+  macos-sandbox-spike:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Setup Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+      - name: Select supported Python
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Explicit trusted runtime preparation
+        run: go run ./cmd/lantern-eval prepare-runtime --root "${RUNNER_TEMP}/darwin-spike-runtime" --out "${RUNNER_TEMP}/darwin-spike-runtime.json"
+      - name: Build pure Go experiment carrier
+        run: go build -o "${RUNNER_TEMP}/lantern-darwin-probe" ./cmd/lantern-darwin-probe
+      - name: Test Darwin experiment contracts
+        run: go test ./cmd/lantern-darwin-probe -run '^TestDarwinProbeQA' -count=1 -v -timeout 10m
+      - name: Run real isolation, lifecycle and signed bundle experiments
+        run: |
+          # Bounded diagnostic for only the fixed experiment interpreter name.
+          # Retain the original experiment exit status, never turn a failure green.
+          sudo -n /usr/bin/fs_usage -w -f filesys -t 15 python3.12 > "${RUNNER_TEMP}/darwin-bootstrap-filesys.log" 2>&1 &
+          trace_pid=$!
+          sleep 0.2
+          set +e
+          bash scripts/probe-darwin-sandbox.sh --probe "${RUNNER_TEMP}/lantern-darwin-probe" --runtime-config "${RUNNER_TEMP}/darwin-spike-runtime.json" --out "${RUNNER_TEMP}/darwin-spike-reports"
+          code=$?
+          wait "$trace_pid"
+          set -e
+          python3 - <<'PYTRACE'
+          import os, pathlib, re
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          raw = (root / 'darwin-bootstrap-filesys.log').read_text(errors='replace')
+          lines = [line for line in raw.splitlines() if re.search(r'python3\.12\.\d+\s*$', line)]
+          data = '\n'.join(lines).encode()
+          (root / 'darwin-spike-reports' / 'bootstrap-filesys.log').write_bytes(data[:2097152])
+          PYTRACE
+          exit "$code"
+      - name: Preserve diagnostics from owned native process IDs
+        if: always()
+        run: python3 scripts/collect-darwin-spike-diagnostics.py "${RUNNER_TEMP}/darwin-spike-reports"
+      - name: Verify complete real experiment evidence
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          path = os.path.join(os.environ['RUNNER_TEMP'], 'darwin-spike-reports', 'report.json')
+          with open(path, encoding='utf-8') as handle:
+              report = json.load(handle)
+          assert report['schema'] == 'lantern.darwin-spike.v1'
+          assert report['status'] == 'passed', report
+          assert report['feasibility'] in ('viable', 'unresolved'), report
+          assert report['production_backend_available'] is False, report
+          required = {'preflight', 'filesystem', 'network', 'process-profile', 'resources', 'lifecycle', 'sql-worker', 'signed-path'}
+          stages = report['stages']
+          assert len(stages) == len(required) and {s['id'] for s in stages} == required
+          for stage in stages:
+              assert stage['executed'] is True and stage['status'] == 'passed', stage
+              assert stage['assertion_contracts'] and stage['checks'], stage
+              assert all(c['passed'] is True for c in stage['checks']), stage
+          assert report['environment']['os'] == 'darwin'
+          assert report['environment']['arch'] == 'arm64', report['environment']
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert report['environment']['source_commit'] == commit, report['environment']
+          assert report['environment']['source_dirty'] == 'false', report['environment']
+          fingerprints = report['fingerprints']
+          expected = {'payload_sha256', 'runtime_marker_sha256', 'executable_sha256', 'policy_sha256', 'signed_policy_sha256'}
+          assert expected <= fingerprints.keys(), fingerprints
+          for key in expected:
+              value = fingerprints[key]
+              assert len(value) == 64 and all(c in '0123456789abcdef' for c in value), (key, value)
+          assert report['environment']['macos_version'] and report['environment']['macos_build']
+          assert report['environment']['control_fixture_cleanup'] == 'passed', report['environment']
+          assert report['environment']['runtime_sentinel_cleanup'] == 'passed', report['environment']
+          assert report['environment']['signal_target_waited'] == 'true', report['environment']
+          PY
+      - name: Independently remove safeguards against the real native baseline
+        env:
+          DARWIN_SPIKE_REAL_QA: "1"
+          DARWIN_SPIKE_PROBE: ${{ runner.temp }}/lantern-darwin-probe
+          DARWIN_SPIKE_RUNTIME_CONFIG: ${{ runner.temp }}/darwin-spike-runtime.json
+          DARWIN_SPIKE_BASELINE_REPORT: ${{ runner.temp }}/darwin-spike-reports/report.json
+        run: go test ./cmd/lantern-darwin-probe -run '^TestDarwinSpikeNativeIndependentQA$' -count=1 -v -timeout 18m
+      - name: Preserve real macOS report, policy and signature evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: darwin-sandbox-spike-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/darwin-spike-reports/
+          if-no-files-found: error
