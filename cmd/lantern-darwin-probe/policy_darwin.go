@@ -18,6 +18,7 @@ import (
 type readPlan struct {
 	Directories []string `json:"directories"`
 	Files       []string `json:"files"`
+	Executables []string `json:"executables"`
 	Unresolved  []string `json:"optional_unresolved"`
 }
 
@@ -136,6 +137,18 @@ func runtimeReadPlan(rt pyrt.Runtime) (readPlan, error) {
 	if e := visit(rt.Python, true); e != nil {
 		return readPlan{}, e
 	}
+	executables := map[string]bool{rt.Python: true, canonical(rt.Python): true}
+	// CPython's official framework bin/python launcher uses POSIX_SPAWN_SETEXEC
+	// to enter this exact executable. It is not a dylib dependency and must be
+	// included separately; no whole-framework or general exec grant is needed.
+	frameworkPython := filepath.Join(rt.Base.Prefix, "Resources", "Python.app", "Contents", "MacOS", "Python")
+	if info, e := os.Stat(frameworkPython); e == nil && info.Mode().IsRegular() {
+		if e = visit(frameworkPython, true); e != nil {
+			return readPlan{}, e
+		}
+		executables[frameworkPython] = true
+		executables[canonical(frameworkPython)] = true
+	}
 	for _, root := range []string{rt.Base.Stdlib, rt.Venv} {
 		if e := filepath.WalkDir(root, func(path string, d os.DirEntry, e error) error {
 			if e != nil {
@@ -152,7 +165,7 @@ func runtimeReadPlan(rt pyrt.Runtime) (readPlan, error) {
 			return readPlan{}, e
 		}
 	}
-	return readPlan{listSorted(dirs), listSorted(files), listSorted(warnings)}, nil
+	return readPlan{Directories: listSorted(dirs), Files: listSorted(files), Executables: listSorted(executables), Unresolved: listSorted(warnings)}, nil
 }
 
 func makePolicy(plan readPlan, c taskConfig, exe string) string {
@@ -169,6 +182,9 @@ func makePolicy(plan readPlan, c taskConfig, exe string) string {
 		fmt.Fprintf(&b, "(allow file-read* file-map-executable (literal %s))\n", strconv.Quote(p))
 	}
 	for _, p := range []string{c.Python, canonical(c.Python), exe, canonical(exe), "/usr/bin/true"} {
+		fmt.Fprintf(&b, "(allow process-exec (literal %s))\n", strconv.Quote(p))
+	}
+	for _, p := range plan.Executables {
 		fmt.Fprintf(&b, "(allow process-exec (literal %s))\n", strconv.Quote(p))
 	}
 	for _, p := range []string{exe, canonical(exe), c.Script} {

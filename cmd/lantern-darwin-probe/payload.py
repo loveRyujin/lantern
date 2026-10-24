@@ -8,7 +8,7 @@ import time
 with open(sys.argv[1], encoding="utf-8") as handle:
     cfg = json.load(handle)
 mode = cfg["mode"]
-assert mode in {"filesystem", "network", "process-profile", "benign", "cpu", "rss", "vmem", "output", "stderr", "disk", "wall", "sleep", "error", "fontcache"}
+assert mode in {"filesystem", "network", "process-profile", "setpgid-change", "benign", "cpu", "rss", "vmem", "output", "stderr", "disk", "wall", "sleep", "error", "fontcache"}
 
 def emit(value):
     print(json.dumps(value, ensure_ascii=True), flush=True)
@@ -34,10 +34,14 @@ def write(path):
     with open(path, "ab") as handle:
         handle.write(b"x")
 
+def read_database(path):
+    with open(path, "rb") as handle:
+        assert handle.read(16) == b"SQLite format 3\x00"
+
 if mode == "filesystem":
     operation("input_read", lambda: read(cfg["input"]))
     operation("host_read", lambda: read(cfg["outside"]))
-    operation("database_read", lambda: read(cfg["database"]))
+    operation("database_read", lambda: read_database(cfg["database"]))
     operation("symlink_read", lambda: read(os.path.join(os.path.dirname(cfg["input"]), "escape-link")))
     operation("sibling_read", lambda: read(cfg["outside"] + "-sibling"))
     operation("runtime_read", lambda: read(cfg["runtime_sentinel"]))
@@ -77,6 +81,7 @@ elif mode == "network":
 elif mode == "process-profile":
     import threading
     import signal
+    import resource
     def fork_once():
         child = os.fork()
         if child == 0:
@@ -95,9 +100,27 @@ elif mode == "process-profile":
     operation("posix_spawn", spawn_once)
     operation("thread", thread_once)
     operation("cross_signal", lambda: os.kill(cfg["signal_pid"], signal.SIGUSR1))
-    operation("setpgid", lambda: os.setpgid(0, os.getpgrp()))
+    original_nproc = resource.getrlimit(resource.RLIMIT_NPROC)
+    emit({"operation": "nproc_original_limits", "attempted": True, "success": True,
+          "errno": 0, "detail": json.dumps({"uid": os.getuid(), "soft": original_nproc[0], "hard": original_nproc[1]})})
+    def nproc_once():
+        # Affects this disposable process's soft limit only. Never modify the
+        # hard limit or a host process. At most one child, immediately reaped.
+        try:
+            resource.setrlimit(resource.RLIMIT_NPROC, (0, original_nproc[1]))
+            fork_once()
+        finally:
+            resource.setrlimit(resource.RLIMIT_NPROC, original_nproc)
+    operation("nproc_soft_zero_fork", nproc_once)
     # Last: changing session/group must not affect subsequent probes.
     operation("setsid", os.setsid)
+elif mode == "setpgid-change":
+    original_group = os.getpgrp()
+    def change_group():
+        assert original_group != os.getpid(), "harness must not make payload a group leader"
+        os.setpgid(0, 0)
+        assert os.getpgrp() == os.getpid() and os.getpgrp() != original_group
+    operation("setpgid", change_group)
 elif mode == "benign":
     import pandas as pd
     import matplotlib

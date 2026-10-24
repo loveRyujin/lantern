@@ -103,25 +103,38 @@ type Budget struct {
 }
 
 type Execution struct {
-	Mode         string        `json:"mode"`
-	Sandboxed    bool          `json:"sandboxed"`
-	Entered      bool          `json:"entered"`
-	PID          int           `json:"pid"`
-	PayloadPID   int           `json:"payload_pid"`
-	ExitCode     int           `json:"exit_code"`
-	Signal       string        `json:"signal,omitempty"`
-	StopReason   string        `json:"stop_reason,omitempty"`
-	Stdout       string        `json:"stdout"`
-	Stderr       string        `json:"stderr"`
-	StdoutBytes  int64         `json:"stdout_bytes_observed"`
-	StderrBytes  int64         `json:"stderr_bytes_observed"`
-	Observations []Observation `json:"observations,omitempty"`
-	Usage        Usage         `json:"usage"`
-	Budget       Budget        `json:"budget"`
-	Error        string        `json:"error,omitempty"`
+	Mode           string        `json:"mode"`
+	Sandboxed      bool          `json:"sandboxed"`
+	Entered        bool          `json:"entered"`
+	PID            int           `json:"pid"`
+	PayloadPID     int           `json:"payload_pid"`
+	ExitCode       int           `json:"exit_code"`
+	Signal         string        `json:"signal,omitempty"`
+	StopReason     string        `json:"stop_reason,omitempty"`
+	Stdout         string        `json:"stdout"`
+	Stderr         string        `json:"stderr"`
+	StdoutBytes    int64         `json:"stdout_bytes_observed"`
+	StderrBytes    int64         `json:"stderr_bytes_observed"`
+	Observations   []Observation `json:"observations,omitempty"`
+	ObservedImages []string      `json:"observed_images,omitempty"`
+	Usage          Usage         `json:"usage"`
+	Budget         Budget        `json:"budget"`
+	Error          string        `json:"error,omitempty"`
 }
 
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+
+// Success means the trusted fixture path was observed absent, rather than just
+// trusting a deletion helper's return value. Retained artifact paths are separate.
+func cleanupFixtureRoot(path string) error {
+	if err := os.RemoveAll(path); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		return fmt.Errorf("fixture still present or unobservable after cleanup: %s (%v)", path, err)
+	}
+	return nil
+}
 
 func newReport() Report {
 	r := Report{Schema: schemaVersion, Status: "unsupported", Feasibility: "unresolved", Started: time.Now().UTC(),
@@ -167,6 +180,11 @@ func finalize(r *Report) {
 	r.Status = "passed"
 	if r.Schema != schemaVersion || r.Production || (r.Feasibility != "viable" && r.Feasibility != "unresolved") {
 		r.Status = "failed"
+	}
+	for key, want := range map[string]string{"control_fixture_cleanup": "passed", "runtime_sentinel_cleanup": "passed", "signal_target_waited": "true"} {
+		if r.Environment[key] != want {
+			r.Status = "failed"
+		}
 	}
 	for _, key := range requiredFingerprints {
 		b, e := hex.DecodeString(r.Fingerprints[key])

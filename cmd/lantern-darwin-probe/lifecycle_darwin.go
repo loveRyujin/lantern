@@ -24,19 +24,21 @@ type appReceipt struct {
 	GuardianPID int `json:"guardian_pid"`
 }
 type deathObservation struct {
-	Kind                      string        `json:"kind"`
-	AppPID                    int           `json:"app_pid"`
-	GuardianPID               int           `json:"guardian_pid"`
-	PythonPID                 int           `json:"python_pid"`
-	PayloadEntered            bool          `json:"payload_entered"`
-	VictimWaited              bool          `json:"victim_waited"`
-	PythonPresentBeforeRescue bool          `json:"python_present_before_rescue"`
-	MechanismCleanup          bool          `json:"mechanism_cleanup"`
-	HarnessRescue             bool          `json:"harness_rescue"`
-	PythonAbsentAfterRescue   bool          `json:"python_absent_after_rescue"`
-	TaskRootClean             bool          `json:"task_root_clean"`
-	Receipt                   *deathReceipt `json:"mechanism_receipt,omitempty"`
-	Error                     string        `json:"error,omitempty"`
+	Kind                      string          `json:"kind"`
+	AppPID                    int             `json:"app_pid"`
+	GuardianPID               int             `json:"guardian_pid"`
+	PythonPID                 int             `json:"python_pid"`
+	PythonImage               string          `json:"python_image"`
+	PythonIdentity            ProcessIdentity `json:"python_identity"`
+	PayloadEntered            bool            `json:"payload_entered"`
+	VictimWaited              bool            `json:"victim_waited"`
+	PythonPresentBeforeRescue bool            `json:"python_present_before_rescue"`
+	MechanismCleanup          bool            `json:"mechanism_cleanup"`
+	HarnessRescue             bool            `json:"harness_rescue"`
+	PythonAbsentAfterRescue   bool            `json:"python_absent_after_rescue"`
+	TaskRootClean             bool            `json:"task_root_clean"`
+	Receipt                   *deathReceipt   `json:"mechanism_receipt,omitempty"`
+	Error                     string          `json:"error,omitempty"`
 }
 
 func app(path string) int {
@@ -136,11 +138,22 @@ func waitAbsent(ctx context.Context, m *processMonitor, pid int, d time.Duration
 
 // Only a still-live process whose executable matches the fixed prepared Python
 // is signalled. The harness never scans/kills unrelated host process groups.
-func rescuePython(m *processMonitor, pid int, python string) bool {
+func pythonImageMatches(image string, c taskConfig) bool {
+	for _, allowed := range c.PythonImages {
+		if image == canonical(allowed) {
+			return true
+		}
+	}
+	return false
+}
+
+func rescuePython(m *processMonitor, identity ProcessIdentity, c taskConfig) bool {
+	pid := identity.PID
 	if processAbsent(m, pid) {
 		return true
 	}
-	if m.path(pid) != canonical(python) {
+	current, e := m.identity(pid)
+	if e != nil || current != identity || !pythonImageMatches(m.path(pid), c) {
 		return false
 	}
 	return syscall.Kill(pid, syscall.SIGKILL) == nil
@@ -200,7 +213,9 @@ func (x *experiment) deathExperiment(kind string) (o deathObservation) {
 		return
 	}
 	o.PythonPID = ready.PID
-	o.PayloadEntered = x.monitor.path(o.PythonPID) == canonical(c.Python)
+	o.PythonImage = x.monitor.path(o.PythonPID)
+	o.PythonIdentity, e = x.monitor.identity(o.PythonPID)
+	o.PayloadEntered = e == nil && pythonImageMatches(o.PythonImage, c) && ready.Mode == "sleep"
 	if !o.PayloadEntered {
 		o.Error = "Python executable identity mismatch"
 		return
@@ -237,7 +252,7 @@ func (x *experiment) deathExperiment(kind string) (o deathObservation) {
 	}
 	if o.PythonPresentBeforeRescue {
 		o.HarnessRescue = true
-		if !rescuePython(x.monitor, o.PythonPID, c.Python) {
+		if !rescuePython(x.monitor, o.PythonIdentity, c) {
 			o.Error = "identity-checked rescue failed"
 			return
 		}

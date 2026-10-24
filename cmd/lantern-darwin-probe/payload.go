@@ -5,11 +5,12 @@ import _ "embed"
 //go:embed payload.py
 var pythonPayload []byte
 
-var fixedModes = map[string]bool{"filesystem": true, "network": true, "process-profile": true, "benign": true, "cpu": true, "rss": true, "vmem": true, "output": true, "stderr": true, "disk": true, "wall": true, "sleep": true, "error": true, "fontcache": true, "sql": true}
+var fixedModes = map[string]bool{"filesystem": true, "network": true, "process-profile": true, "setpgid-change": true, "benign": true, "cpu": true, "rss": true, "vmem": true, "output": true, "stderr": true, "disk": true, "wall": true, "sleep": true, "error": true, "fontcache": true, "sql": true}
 
 type taskConfig struct {
 	Mode             string   `json:"mode"`
 	Python           string   `json:"python"`
+	PythonImages     []string `json:"python_images"`
 	Script           string   `json:"script"`
 	Policy           string   `json:"policy"`
 	Root             string   `json:"root"`

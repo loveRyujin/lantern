@@ -61,7 +61,7 @@ func fixedEnv(c taskConfig) []string {
 
 func readTask(path string) (taskConfig, error) {
 	var c taskConfig
-	f, e := os.Open(path)
+	f, e := openConfig(path)
 	if e != nil {
 		return c, e
 	}
@@ -198,6 +198,16 @@ func sqlTask(path string) int {
 	return 0
 }
 
+func createDatabaseFixture(path string) error {
+	db, e := sql.Open("sqlite", path)
+	if e != nil {
+		return e
+	}
+	defer db.Close()
+	_, e = db.Exec("CREATE TABLE owned_fixture(secret TEXT NOT NULL); INSERT INTO owned_fixture VALUES ('lantern-owned-sentinel');")
+	return e
+}
+
 func writeJSON(path string, v interface{}) error {
 	b, e := json.Marshal(v)
 	if e != nil {
@@ -320,7 +330,19 @@ func runFixed(ctx context.Context, exe string, c taskConfig, monitor *processMon
 			if t.Virtual > r.Usage.PeakVirtual {
 				r.Usage.PeakVirtual = t.Virtual
 			}
-			r.Usage.CPUSeconds = float64(t.User+t.System) / 1e9
+			image := monitor.path(r.PID)
+			if image != "" {
+				found := false
+				for _, s := range r.ObservedImages {
+					if s == image {
+						found = true
+					}
+				}
+				if !found {
+					r.ObservedImages = append(r.ObservedImages, image)
+				}
+			}
+			r.Usage.CPUSeconds = monitor.cpuSeconds(t)
 			if t.Resident > c.Budget.RSSBytes {
 				stop("rss_limit")
 			}

@@ -25,6 +25,9 @@ var qaRequiredChecks = map[string][]string{
 func qaCompletedReport() Report {
 	r := newReport()
 	r.Status = "passed"
+	r.Environment["control_fixture_cleanup"] = "passed"
+	r.Environment["runtime_sentinel_cleanup"] = "passed"
+	r.Environment["signal_target_waited"] = "true"
 	for _, name := range []string{"payload_sha256", "runtime_marker_sha256", "executable_sha256", "policy_sha256", "signed_policy_sha256"} {
 		r.Fingerprints[name] = strings.Repeat("ab", 32)
 	}
@@ -76,27 +79,33 @@ func TestDarwinProbeQAExperimentAndFeasibilityAreSeparate(t *testing.T) {
 
 func TestDarwinProbeQAIncompleteAndFailedEvidenceCannotPass(t *testing.T) {
 	cases := map[string]func(*Report){
-		"missing-stage":       func(r *Report) { r.Stages = r.Stages[:7] },
-		"extra-stage":         func(r *Report) { r.Stages = append(r.Stages, r.Stages[0]) },
-		"duplicate-stage":     func(r *Report) { r.Stages[7].ID = r.Stages[0].ID },
-		"unknown-stage":       func(r *Report) { r.Stages[7].ID = "unknown" },
-		"unexecuted-stage":    func(r *Report) { r.Stages[2].Executed = false },
-		"unsupported-stage":   func(r *Report) { r.Stages[2].Status = "unsupported" },
-		"failed-stage":        func(r *Report) { r.Stages[2].Status = "failed" },
-		"unknown-status":      func(r *Report) { r.Stages[2].Status = "unknown" },
-		"undeclared-contract": func(r *Report) { r.Stages[2].Contracts = nil },
-		"no-checks":           func(r *Report) { r.Stages[2].Checks = nil },
-		"missing-check":       func(r *Report) { r.Stages[2].Checks = r.Stages[2].Checks[1:] },
-		"unknown-check":       func(r *Report) { r.Stages[2].Checks[0].Name = "unregistered" },
-		"duplicate-check":     func(r *Report) { r.Stages[2].Checks[1].Name = r.Stages[2].Checks[0].Name },
-		"failed-check":        func(r *Report) { r.Stages[2].Checks[0].Passed = false },
-		"missing-fingerprint": func(r *Report) { delete(r.Fingerprints, "payload_sha256") },
-		"short-fingerprint":   func(r *Report) { r.Fingerprints["payload_sha256"] = "abcd" },
-		"nonhex-fingerprint":  func(r *Report) { r.Fingerprints["payload_sha256"] = strings.Repeat("z", 64) },
-		"error-after-passed":  func(r *Report) { r.Error = "experiment interrupted" },
-		"invalid-feasibility": func(r *Report) { r.Feasibility = "unknown" },
-		"production-claim":    func(r *Report) { r.Production = true },
-		"unknown-schema":      func(r *Report) { r.Schema = "unknown" },
+		"missing-stage":           func(r *Report) { r.Stages = r.Stages[:7] },
+		"extra-stage":             func(r *Report) { r.Stages = append(r.Stages, r.Stages[0]) },
+		"duplicate-stage":         func(r *Report) { r.Stages[7].ID = r.Stages[0].ID },
+		"unknown-stage":           func(r *Report) { r.Stages[7].ID = "unknown" },
+		"unexecuted-stage":        func(r *Report) { r.Stages[2].Executed = false },
+		"unsupported-stage":       func(r *Report) { r.Stages[2].Status = "unsupported" },
+		"failed-stage":            func(r *Report) { r.Stages[2].Status = "failed" },
+		"unknown-status":          func(r *Report) { r.Stages[2].Status = "unknown" },
+		"undeclared-contract":     func(r *Report) { r.Stages[2].Contracts = nil },
+		"no-checks":               func(r *Report) { r.Stages[2].Checks = nil },
+		"missing-check":           func(r *Report) { r.Stages[2].Checks = r.Stages[2].Checks[1:] },
+		"unknown-check":           func(r *Report) { r.Stages[2].Checks[0].Name = "unregistered" },
+		"duplicate-check":         func(r *Report) { r.Stages[2].Checks[1].Name = r.Stages[2].Checks[0].Name },
+		"failed-check":            func(r *Report) { r.Stages[2].Checks[0].Passed = false },
+		"missing-fingerprint":     func(r *Report) { delete(r.Fingerprints, "payload_sha256") },
+		"short-fingerprint":       func(r *Report) { r.Fingerprints["payload_sha256"] = "abcd" },
+		"nonhex-fingerprint":      func(r *Report) { r.Fingerprints["payload_sha256"] = strings.Repeat("z", 64) },
+		"error-after-passed":      func(r *Report) { r.Error = "experiment interrupted" },
+		"invalid-feasibility":     func(r *Report) { r.Feasibility = "unknown" },
+		"production-claim":        func(r *Report) { r.Production = true },
+		"unknown-schema":          func(r *Report) { r.Schema = "unknown" },
+		"missing-control-cleanup": func(r *Report) { delete(r.Environment, "control_fixture_cleanup") },
+		"failed-control-cleanup":  func(r *Report) { r.Environment["control_fixture_cleanup"] = "failed" },
+		"missing-runtime-cleanup": func(r *Report) { delete(r.Environment, "runtime_sentinel_cleanup") },
+		"failed-runtime-cleanup":  func(r *Report) { r.Environment["runtime_sentinel_cleanup"] = "failed" },
+		"missing-signal-wait":     func(r *Report) { delete(r.Environment, "signal_target_waited") },
+		"failed-signal-wait":      func(r *Report) { r.Environment["signal_target_waited"] = "false" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -105,6 +114,37 @@ func TestDarwinProbeQAIncompleteAndFailedEvidenceCannotPass(t *testing.T) {
 			finalize(&r)
 			if r.Status == "passed" || exitCode(r, false) == 0 {
 				t.Fatalf("invalid evidence passed: status=%s feasibility=%s error=%q", r.Status, r.Feasibility, r.Error)
+			}
+		})
+	}
+}
+
+func TestDarwinProbeQACleanupRemovesActualFixtures(t *testing.T) {
+	for _, kind := range []string{"directory", "file"} {
+		t.Run(kind, func(t *testing.T) {
+			parent := t.TempDir()
+			fixture := filepath.Join(parent, "owned 中文 fixture")
+			if kind == "directory" {
+				if err := os.MkdirAll(filepath.Join(fixture, "nested"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(fixture, "nested", "sentinel"), []byte("owned"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(fixture, []byte("owned"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := cleanupFixtureRoot(fixture); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Lstat(fixture); !os.IsNotExist(err) {
+				t.Fatalf("fixture remains after successful cleanup: %v", err)
+			}
+			if _, err := os.Stat(parent); err != nil {
+				t.Fatalf("cleanup removed unrequested parent: %v", err)
+			}
+			if err := cleanupFixtureRoot(fixture); err != nil {
+				t.Fatalf("already-absent fixture: %v", err)
 			}
 		})
 	}

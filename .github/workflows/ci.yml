@@ -209,6 +209,9 @@ jobs:
         run: go test ./cmd/lantern-darwin-probe -count=1 -v -timeout 10m
       - name: Run real isolation, lifecycle and signed bundle experiments
         run: bash scripts/probe-darwin-sandbox.sh --probe "${RUNNER_TEMP}/lantern-darwin-probe" --runtime-config "${RUNNER_TEMP}/darwin-spike-runtime.json" --out "${RUNNER_TEMP}/darwin-spike-reports"
+      - name: Preserve diagnostics from owned native process IDs
+        if: always()
+        run: python3 scripts/collect-darwin-spike-diagnostics.py "${RUNNER_TEMP}/darwin-spike-reports"
       - name: Verify complete real experiment evidence
         run: |
           python3 - <<'PY'
@@ -239,6 +242,9 @@ jobs:
               value = fingerprints[key]
               assert len(value) == 64 and all(c in '0123456789abcdef' for c in value), (key, value)
           assert report['environment']['macos_version'] and report['environment']['macos_build']
+          assert report['environment']['control_fixture_cleanup'] == 'passed', report['environment']
+          assert report['environment']['runtime_sentinel_cleanup'] == 'passed', report['environment']
+          assert report['environment']['signal_target_waited'] == 'true', report['environment']
           PY
       - name: Preserve real macOS report, policy and signature evidence
         if: always()

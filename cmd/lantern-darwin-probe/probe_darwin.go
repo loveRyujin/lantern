@@ -29,6 +29,7 @@ type experiment struct {
 	monitor                         *processMonitor
 	report                          *Report
 	signalPID                       int
+	signalDone                      chan error
 	signalFile                      string
 	tcpPort, udpPort                int
 	unixSocket                      string
@@ -45,8 +46,8 @@ func commandText(ctx context.Context, path string, args ...string) string {
 	return strings.TrimSpace(string(b))
 }
 
-func runProbe(ctx context.Context, o options) Report {
-	r := newReport()
+func runProbe(ctx context.Context, o options) (r Report) {
+	r = newReport()
 	r.Environment["source_commit"] = commandText(ctx, "git", "rev-parse", "HEAD")
 	r.Environment["source_dirty"] = strconv.FormatBool(commandText(ctx, "git", "status", "--porcelain") != "")
 	r.Environment["macos_version"] = commandText(ctx, "/usr/bin/sw_vers", "-productVersion")
@@ -88,6 +89,8 @@ func runProbe(ctx context.Context, o options) Report {
 		r.Error = "libproc: " + e.Error()
 		return r
 	}
+	r.Environment["mach_timebase_numer"] = strconv.FormatUint(uint64(monitor.TimebaseNumer), 10)
+	r.Environment["mach_timebase_denom"] = strconv.FormatUint(uint64(monitor.TimebaseDenom), 10)
 	exe, e := os.Executable()
 	if e != nil {
 		r.Error = e.Error()
@@ -115,10 +118,14 @@ func runProbe(ctx context.Context, o options) Report {
 		return r
 	}
 	base = canonical(base)
+	r.Environment["control_fixture_root"] = base
 	defer func() {
-		if e := os.RemoveAll(base); e != nil {
+		if e := cleanupFixtureRoot(base); e != nil {
+			r.Environment["control_fixture_cleanup"] = "failed"
 			r.Status = "failed"
 			r.Error = "fixture cleanup: " + e.Error()
+		} else {
+			r.Environment["control_fixture_cleanup"] = "passed"
 		}
 	}()
 	f, e := os.CreateTemp(rt.Venv, ".lantern-spike-sentinel-")
@@ -127,20 +134,36 @@ func runProbe(ctx context.Context, o options) Report {
 		return r
 	}
 	runtimeSentinel := f.Name()
+	defer func() {
+		if err := cleanupFixtureRoot(runtimeSentinel); err != nil {
+			r.Status = "failed"
+			r.Error = "runtime sentinel cleanup: " + err.Error()
+			r.Environment["runtime_sentinel_cleanup"] = "failed"
+		} else {
+			r.Environment["runtime_sentinel_cleanup"] = "passed"
+		}
+	}()
 	if _, e = f.WriteString(sentinel); e != nil {
 		f.Close()
 		r.Error = e.Error()
 		return r
 	}
 	f.Close()
-	defer os.Remove(runtimeSentinel)
 	x := &experiment{ctx: ctx, out: out, base: base, exe: exe, rt: rt, plan: plan, monitor: monitor, report: &r, runtimeSentinel: runtimeSentinel}
+	defer func() {
+		if err := x.closeControls(); err != nil {
+			r.Status = "failed"
+			r.Error = "signal-target cleanup: " + err.Error()
+			r.Environment["signal_target_waited"] = "false"
+		} else {
+			r.Environment["signal_target_waited"] = "true"
+		}
+	}()
 	if e = x.setupControls(); e != nil {
 		r.Status = "failed"
 		r.Error = "host fixtures: " + e.Error()
 		return r
 	}
-	defer x.closeControls()
 	r.Status = "failed" // All actual execution failures after prerequisites are failures.
 	fontPreparation := x.prepareFonts()
 	pre := stageStart("preflight", []string{"Prepared runtime validated offline; actual policy enters fixed payload and exits successfully; complete environment and bounded readonly closure."}, nil)
@@ -183,10 +206,13 @@ func runProbe(ctx context.Context, o options) Report {
 }
 
 func (x *experiment) setupControls() error {
-	for _, p := range []string{"host-secret", "host-secret-sibling", "workspace.sqlite"} {
+	for _, p := range []string{"host-secret", "host-secret-sibling"} {
 		if e := os.WriteFile(filepath.Join(x.base, p), []byte(sentinel), 0600); e != nil {
 			return e
 		}
+	}
+	if e := createDatabaseFixture(filepath.Join(x.base, "workspace.sqlite")); e != nil {
+		return e
 	}
 	signalFile := filepath.Join(x.base, "signal-target")
 	cmd := exec.CommandContext(x.ctx, x.exe, "__signal-target", signalFile)
@@ -194,17 +220,27 @@ func (x *experiment) setupControls() error {
 		return e
 	}
 	x.signalPID = cmd.Process.Pid
+	x.signalDone = make(chan error, 1)
 	x.signalFile = signalFile
-	go func() { _ = cmd.Wait() }()
+	go func() { x.signalDone <- cmd.Wait() }()
 	if !waitFile(x.ctx, signalFile, time.Second) {
 		return fmt.Errorf("signal target did not become ready")
 	}
 	return nil
 }
-func (x *experiment) closeControls() {
+func (x *experiment) closeControls() error {
 	if x.signalPID > 0 {
 		_ = syscall.Kill(x.signalPID, syscall.SIGKILL)
+		select {
+		case <-x.signalDone:
+		case <-time.After(2 * time.Second):
+			return fmt.Errorf("signal-target Wait timed out")
+		}
+		if syscall.Kill(x.signalPID, 0) != syscall.ESRCH {
+			return fmt.Errorf("signal-target PID still present after Wait")
+		}
 	}
+	return nil
 }
 
 func (x *experiment) task(mode string, sandboxed bool, exe string) (taskConfig, error) {
@@ -213,6 +249,7 @@ func (x *experiment) task(mode string, sandboxed bool, exe string) (taskConfig, 
 		return taskConfig{}, e
 	}
 	c := taskConfig{Mode: mode, Python: x.rt.Python, Root: root, Input: filepath.Join(root, "input", "table.csv"), Outside: filepath.Join(x.base, "host-secret"), Database: filepath.Join(x.base, "workspace.sqlite"), RuntimeSentinel: x.runtimeSentinel, Out: filepath.Join(root, "out"), Tmp: filepath.Join(root, "tmp"), Sandboxed: sandboxed, Budget: defaultBudget(), TCPPort: x.tcpPort, UDPPort: x.udpPort, UnixSocket: x.unixSocket, SignalPID: x.signalPID}
+	c.PythonImages = x.plan.Executables
 	for _, d := range []string{filepath.Dir(c.Input), c.Out, c.Tmp, filepath.Join(c.Tmp, "mpl")} {
 		if e = os.MkdirAll(d, 0700); e != nil {
 			return c, e
@@ -269,10 +306,7 @@ func allWaited(runs []Execution) bool {
 func (x *experiment) cleanTasks(roots ...string) bool {
 	ok := true
 	for _, root := range roots {
-		if e := os.RemoveAll(root); e != nil {
-			ok = false
-		}
-		if _, e := os.Lstat(root); !os.IsNotExist(e) {
+		if e := cleanupFixtureRoot(root); e != nil {
 			ok = false
 		}
 	}
@@ -438,7 +472,7 @@ func (x *experiment) networkStage() {
 }
 
 func (x *experiment) processStage() {
-	s := stageStart("process-profile", []string{"Bounded process/control experiments actually execute; same-UID host controls work; direct children Wait and task roots clean."}, []string{"fork", "posix_spawn", "thread", "setsid", "setpgid", "cross_signal"})
+	s := stageStart("process-profile", []string{"Bounded process/control experiments actually execute; same-UID host controls work; direct children Wait and task roots clean."}, []string{"fork", "posix_spawn", "thread", "setsid", "setpgid", "cross_signal", "uid_scoped_nproc_soft_zero"})
 	h, e := x.task("process-profile", false, x.exe)
 	if e != nil {
 		s.check("host_controls", false, e.Error())
@@ -458,20 +492,44 @@ func (x *experiment) processStage() {
 	s.Runs = []Execution{host, run}
 	time.Sleep(30 * time.Millisecond)
 	after, _ := os.ReadFile(x.signalFile)
+	groupHost, e := x.task("setpgid-change", false, x.exe)
+	if e != nil {
+		s.check("host_controls", false, e.Error())
+		x.report.stage(s)
+		return
+	}
+	groupSandbox, e := x.task("setpgid-change", true, x.exe)
+	if e != nil {
+		s.check("host_controls", false, e.Error())
+		x.report.stage(s)
+		return
+	}
+	groupControl := runFixed(x.ctx, x.exe, groupHost, x.monitor)
+	groupRun := runFixed(x.ctx, x.exe, groupSandbox, x.monitor)
+	s.Runs = append(s.Runs, groupControl, groupRun)
 	controls := goodRun(host)
 	attempted := true
-	for _, name := range []string{"fork", "posix_spawn", "thread", "setsid", "setpgid", "cross_signal"} {
+	for _, name := range []string{"fork", "posix_spawn", "thread", "setsid", "cross_signal"} {
 		controls = controls && opSuccess(host, name)
 		o, ok := findOp(run, name)
 		attempted = attempted && ok && o.Attempted
 	}
+	controls = controls && goodRun(groupControl) && opSuccess(groupControl, "setpgid")
+	groupObservation, groupAttempted := findOp(groupRun, "setpgid")
+	attempted = attempted && groupAttempted && groupObservation.Attempted
+	for _, run := range []Execution{host, run} {
+		for _, name := range []string{"nproc_original_limits", "nproc_soft_zero_fork"} {
+			o, ok := findOp(run, name)
+			attempted = attempted && ok && o.Attempted
+		}
+	}
 	s.check("host_controls", controls && strings.Contains(string(before), "signal"), "host fork/spawn/thread/session/group and actual SIGUSR1 against owned signal-target")
 	s.check("all_attempted", attempted, "capabilities are observations, not a claim that Linux's strict no-thread profile exists")
-	s.check("payload_completed", goodRun(run), "fixed process experiment completed")
+	s.check("payload_completed", goodRun(run) && goodRun(groupRun), "fixed process experiments completed, including a separately isolated real group change")
 	s.check("waited", allWaited(s.Runs), "direct and bounded fork/spawn children waited")
-	s.check("temp_clean", x.cleanTasks(h.Root, c.Root), "task roots removed")
+	s.check("temp_clean", x.cleanTasks(h.Root, c.Root, groupHost.Root, groupSandbox.Root), "task roots removed")
 	s.Details = map[string]interface{}{"signal_target_changed_during_sandbox": string(before) != string(after), "profile": "single direct PID monitoring; threads/session/group capabilities characterized, no arbitrary process-tree quota claimed"}
-	s.Limitations = []string{"Any successful process/thread/session/group capability must be considered before a production profile is selected."}
+	s.Limitations = []string{"Any successful process/thread/session/group capability must be considered before a production profile is selected.", "NPROC experiment lowers only this disposable process's soft limit to zero, attempts one bounded fork and restores it. UID-wide counting is not a per-run process quota; its EAGAIN is not attributed to sandbox policy."}
 	x.report.stage(s)
 }
 
