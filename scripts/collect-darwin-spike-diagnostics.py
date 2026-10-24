@@ -14,7 +14,9 @@ if not report_path.is_file():
 report = json.loads(report_path.read_text())
 pids = set()
 for stage in report.get('stages', []):
-    for run in stage.get('runs', []):
+    runs = list(stage.get('runs', []))
+    runs += [trial.get('execution', {}) for trial in stage.get('details', {}).get('diagnostic_trials', [])]
+    for run in runs:
         for key in ('pid', 'payload_pid'):
             pid = run.get(key)
             if isinstance(pid, int) and pid > 0:

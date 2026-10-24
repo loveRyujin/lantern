@@ -190,6 +190,10 @@ func runProbe(ctx context.Context, o options) (r Report) {
 	r.stage(pre)
 	_ = os.RemoveAll(c.Root)
 	if pre.Status != "passed" {
+		if !goodRun(run) {
+			pre.Details["diagnostic_trials"] = x.bootstrapTrials()
+			r.stage(pre)
+		}
 		r.Error = "actual sandbox preflight failed; later stages not executed"
 		return r
 	}
