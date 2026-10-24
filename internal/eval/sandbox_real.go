@@ -75,6 +75,22 @@ type sandboxRealExecutor interface {
 	Close() error
 	CleanupComplete() bool
 }
+
+// sandboxRealFingerprint binds the effective real manifest. Mock data is not
+// part of this mode, including YAML values that cannot be encoded as JSON.
+func sandboxRealFingerprint(item Case) (string, error) {
+	if input, ok := asMap(item.Input); ok {
+		copyInput := make(map[string]any, len(input))
+		for key, value := range input {
+			if key != "mock" {
+				copyInput[key] = value
+			}
+		}
+		item.Input = copyInput
+	}
+	return CaseFingerprint(item, Environment{})
+}
+
 type sandboxRealRuleDoc struct {
 	Version string   `yaml:"version"`
 	Keys    []string `yaml:"keys"`
@@ -127,6 +143,7 @@ func executeSandboxReal(ctx context.Context, opt Options) (Result, error) {
 	generated := now().UTC()
 	original, supplemental := sandboxRequired()
 	info := &SandboxRealInfo{Version: sandboxRealVersion, Scope: "Linux production sandbox only; whole-project live remains unavailable", RequiredOriginal: original, RequiredSupplemental: supplemental, Original: SandboxRealCounts{Required: 20}, Supplemental: SandboxRealCounts{Required: 5}, Environment: map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH}, NotApplicable: []string{"LLM judge", "RAG/embedder", "project-wide exfiltration gate", "approval gate"}}
+	info.Environment["source_fingerprint_method"] = "real-semantic/case-json-without-input.mock-v1"
 	report := Report{GeneratedAt: generated.Format(time.RFC3339Nano), Mode: ModeSandboxReal, SelectedPlatform: "linux", SuiteVersion: sandboxRealVersion, Note: "Real production execution evidence; input.mock is ignored; only actual executor observations are scored. Original 20 intentions and supplemental evidence are scored separately.", SandboxReal: info, Cases: []CaseResult{}, Metrics: []Metric{}}
 	report.Environment = collectEnvironment("not-used", sandboxRealVersion, root, module)
 	report.Environment.Model = "fixed-script(no-cloud-LLM)"
@@ -213,7 +230,12 @@ func executeSandboxReal(ctx context.Context, opt Options) (Result, error) {
 	legacySuite, legacyErr := LoadSuite(filepath.Join(module, "eval/v1/sandbox/linux"))
 	if legacyErr == nil {
 		for _, item := range legacySuite.Cases {
-			legacy[item.ID], _ = CaseFingerprint(item, Environment{})
+			fingerprint, fingerprintErr := CaseFingerprint(item, Environment{})
+			if fingerprintErr != nil {
+				configFailures = append(configFailures, fingerprintErr.Error())
+			} else {
+				legacy[item.ID] = fingerprint
+			}
 		}
 	} else {
 		configFailures = append(configFailures, legacyErr.Error())
@@ -256,7 +278,11 @@ func executeSandboxReal(ctx context.Context, opt Options) (Result, error) {
 		result := CaseResult{ID: id, Category: item.Category, Platform: "linux", Source: item.Source, RunID: ModeSandboxReal + ":" + id, Status: statusPassed, Passed: true, Failures: []string{}}
 		missingObservation := false
 		evidence := SandboxEvidence{Version: sandboxRealVersion, Operations: []SandboxOperation{}, Observations: map[string]any{}}
-		evidence.SourceFingerprint, _ = CaseFingerprint(item, Environment{})
+		fingerprint, fingerprintErr := sandboxRealFingerprint(item)
+		evidence.SourceFingerprint = fingerprint
+		if fingerprintErr != nil {
+			result.Failures = append(result.Failures, "real source fingerprint: "+fingerprintErr.Error())
+		}
 		if i < 20 {
 			evidence.LegacyCaseID = id
 			evidence.LegacyFingerprint = legacy[id]
@@ -292,7 +318,7 @@ func executeSandboxReal(ctx context.Context, opt Options) (Result, error) {
 		if len(result.Failures) == 0 {
 			evidence = executor.Execute(ctx, item)
 			evidence.Version = sandboxRealVersion
-			evidence.SourceFingerprint, _ = CaseFingerprint(item, Environment{})
+			evidence.SourceFingerprint = fingerprint
 			if i < 20 {
 				evidence.LegacyCaseID = id
 				evidence.LegacyFingerprint = legacy[id]
@@ -372,7 +398,7 @@ func executeSandboxReal(ctx context.Context, opt Options) (Result, error) {
 		integrityFailures = 1
 	}
 	report.HardGates = append(report.HardGates, HardGate{ID: "sandbox-real-integrity", Title: "Exact run manifest and fixture cleanup", Op: "==", Threshold: 0, Value: floatPtr(integrityFailures), SampleCount: 1, Passed: integrity})
-	report.Sandbox = []SandboxPlatform{{Platform: "linux", CaseCount: 25, SampleCount: 25, FailureCount: floatPtr(float64(report.Summary.Failed)), Passed: report.Summary.HardGatesPassed}}
+	report.Sandbox = []SandboxPlatform{{Platform: "linux", CaseCount: 25, SampleCount: 25, FailureCount: floatPtr(float64(info.Original.Failed + info.Supplemental.Failed)), Passed: report.Summary.HardGatesPassed}}
 	report, err = report.withDigest()
 	if err != nil {
 		return Result{}, err

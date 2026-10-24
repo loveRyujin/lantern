@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,7 +95,7 @@ func TestSandboxRealQARealSuiteEndToEnd(t *testing.T) {
 	sandboxRealQAMutateYAML(t, filepath.Join(poisoned, "cases.yaml"), func(doc *yaml.Node) {
 		list := sandboxRealQANodeField(doc, "cases")
 		input := sandboxRealQANodeField(list.Content[0], "input")
-		input.Content = append(input.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "mock"}, &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{{Kind: yaml.ScalarNode, Tag: "!!str", Value: "sandbox_denials"}, {Kind: yaml.ScalarNode, Tag: "!!bool", Value: "false"}, {Kind: yaml.ScalarNode, Tag: "!!str", Value: "error_code"}, {Kind: yaml.ScalarNode, Tag: "!!str", Value: "forged-from-mock"}}})
+		input.Content = append(input.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "mock"}, &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{{Kind: yaml.ScalarNode, Tag: "!!str", Value: "sandbox_denials"}, {Kind: yaml.ScalarNode, Tag: "!!bool", Value: "false"}, {Kind: yaml.ScalarNode, Tag: "!!str", Value: "error_code"}, {Kind: yaml.ScalarNode, Tag: "!!str", Value: "forged-from-mock"}, {Kind: yaml.ScalarNode, Tag: "!!str", Value: "not-json"}, {Kind: yaml.ScalarNode, Tag: "!!float", Value: ".nan"}}})
 	})
 	actual, err := Execute(ctx, Options{Mode: ModeSandboxReal, Root: poisoned, OutDir: t.TempDir(), Platform: "linux", SandboxRuntime: &runtime})
 	if err != nil {
@@ -106,6 +107,37 @@ func TestSandboxRealQARealSuiteEndToEnd(t *testing.T) {
 	}
 	if actual.Report.Digest != result.Report.Digest {
 		t.Fatal("non-scoring mock changed real scoring digest")
+	}
+	for n, item := range actual.Report.Cases {
+		if item.Evidence.SourceFingerprint == "" || item.Evidence.SourceFingerprint != result.Report.Cases[n].Evidence.SourceFingerprint {
+			t.Fatalf("ignored non-JSON mock changed/erased real source fingerprint for %s", item.ID)
+		}
+	}
+}
+
+func TestSandboxRealQAFingerprintIgnoresMockWithoutMutation(t *testing.T) {
+	input := map[string]any{"fixture": "http", "fixture_version": "sandbox-real-v1"}
+	item := Case{ID: "SB-LINUX-01", Input: input, Platform: "linux"}
+	want, err := sandboxRealFingerprint(item)
+	if err != nil || len(want) != 64 {
+		t.Fatalf("valid effective manifest hash: %q %v", want, err)
+	}
+	mock := map[string]any{"not-json": math.NaN(), "safe-observation": true}
+	input["mock"] = mock
+	got, err := sandboxRealFingerprint(item)
+	if err != nil || got != want {
+		t.Fatalf("ignored mock changed/erased source hash: got=%q want=%q error=%v", got, want, err)
+	}
+	retained, ok := input["mock"].(map[string]any)
+	if !ok || !math.IsNaN(retained["not-json"].(float64)) || len(input) != 3 || input["fixture"] != "http" {
+		t.Fatal("fingerprinting modified the original source input")
+	}
+	input["real-non-json"] = math.NaN()
+	if got, err := sandboxRealFingerprint(item); err == nil || got != "" {
+		t.Fatalf("non-mock fingerprint error was hidden: fingerprint=%q error=%v", got, err)
+	}
+	if _, present := input["real-non-json"]; !present {
+		t.Fatal("fingerprinting removed a real input field")
 	}
 }
 
@@ -241,6 +273,14 @@ func TestSandboxRealQAManifestFailsClosed(t *testing.T) {
 				list := sandboxRealQANodeField(doc, "cases")
 				input := sandboxRealQANodeField(list.Content[0], "input")
 				sandboxRealQANodeField(input, "fixture_version").Value = "forged-version"
+			})
+		}},
+		{"unhashable-real-field", "real source fingerprint", func(t *testing.T, root string) {
+			sandboxRealQAMutateYAML(t, filepath.Join(root, caseFile), func(doc *yaml.Node) {
+				list := sandboxRealQANodeField(doc, "cases")
+				input := sandboxRealQANodeField(list.Content[0], "input")
+				version := sandboxRealQANodeField(input, "fixture_version")
+				version.Tag, version.Value = "!!float", ".nan"
 			})
 		}},
 		// The frozen contract ignores mock instead of rejecting its presence.
