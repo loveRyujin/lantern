@@ -3,6 +3,8 @@ module github.com/loveRyujin/lantern
 go 1.27.1
 
 require (
+	// Darwin spike libproc bindings without cgo; keep the existing version.
+	github.com/ebitengine/purego v0.11.1
 	// v0.6.0 = commit 081639f2a55d62a09aca742684827937dac6cb39。8 周内不主动升级。
 	github.com/egoist/mygo v0.6.0
 	// 工具参数的 JSON Schema 校验。
@@ -18,7 +20,6 @@ require (
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/ebitengine/purego v0.11.1 // indirect
 	github.com/go-text/typesetting v0.3.5 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
