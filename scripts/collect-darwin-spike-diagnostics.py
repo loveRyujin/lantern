@@ -23,7 +23,7 @@ if not pids:
     raise SystemExit(0)
 predicate = ' OR '.join('eventMessage CONTAINS "(%d)"' % pid for pid in sorted(pids))
 try:
-    logs = subprocess.run(['/usr/bin/log', 'show', '--style', 'json', '--last', '5m', '--predicate', predicate], capture_output=True, timeout=20, check=False)
+    logs = subprocess.run(['/usr/bin/sudo', '-n', '/usr/bin/log', 'show', '--style', 'json', '--last', '5m', '--predicate', predicate], capture_output=True, timeout=20, check=False)
     (out / 'native-log.json').write_bytes(logs.stdout[:512 * 1024])
     (out / 'native-log-status.json').write_text(json.dumps({'exit_code': logs.returncode, 'original_bytes': len(logs.stdout), 'truncated': len(logs.stdout) > 512 * 1024, 'stderr': logs.stderr.decode(errors='replace')[:4096]}))
 except (OSError, subprocess.TimeoutExpired) as exc:
@@ -47,5 +47,8 @@ for path in sorted(folder.glob('*.ips')):
         continue
     if crash.get('pid') not in pids:
         continue
-    crashes.append({key: crash[key] for key in ('pid', 'procName', 'procPath', 'captureTime', 'translated', 'exception', 'termination', 'asi', 'codeSigningID') if key in crash})
+    summary = {key: crash[key] for key in ('pid', 'procName', 'procPath', 'captureTime', 'translated', 'exception', 'termination', 'asi', 'codeSigningID') if key in crash}
+    summary['triggered_threads'] = [thread.get('frames', []) for thread in crash.get('threads', []) if thread.get('triggered')]
+    summary['images'] = [{key: image[key] for key in ('name', 'path', 'arch') if key in image} for image in crash.get('usedImages', [])]
+    crashes.append(summary)
 (out / 'owned-crash-summaries.json').write_text(json.dumps(crashes, indent=2))
