@@ -23,12 +23,13 @@ type Manifest struct {
 	Bytes int                  `json:"bytes"`
 }
 type observation struct {
-	Stdout          string        `json:"stdout"`
-	Stderr          string        `json:"stderr"`
-	StdoutTruncated bool          `json:"stdout_truncated"`
-	StderrTruncated bool          `json:"stderr_truncated"`
-	Usage           sandbox.Usage `json:"usage"`
-	Artifacts       []Manifest    `json:"artifacts"`
+	Stdout          string         `json:"stdout"`
+	Stderr          string         `json:"stderr"`
+	StdoutTruncated bool           `json:"stdout_truncated"`
+	StderrTruncated bool           `json:"stderr_truncated"`
+	Usage           sandbox.Usage  `json:"usage"`
+	Limits          sandbox.Limits `json:"limits"`
+	Artifacts       []Manifest     `json:"artifacts"`
 }
 type pythonTool struct{ session *Session }
 
@@ -87,7 +88,7 @@ func (t pythonTool) Execute(ctx context.Context, call tools.Call) (tools.Result,
 	if err != nil {
 		return tools.Result{}, err
 	}
-	body, err := json.Marshal(observation{stdout, stderr, outCut, errCut, result.Usage, manifests})
+	body, err := json.Marshal(observation{stdout, stderr, outCut, errCut, result.Usage, result.Limits, manifests})
 	if err != nil {
 		return tools.Result{}, bridge(err)
 	}

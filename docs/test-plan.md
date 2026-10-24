@@ -51,6 +51,12 @@ CI：Linux runner 跑单元 + 集成 + Mock 全量 + Linux 沙箱；macOS runner
 - CI 是否装 Ollama；不装则 RAG 和 e2e 只在本地跑，报告注明。
 - 平台无法区分 oom 时的错误类型约定，需在 W3/W4 实测后写进判定规则。
 
+### W3 真实 Linux 出口（#44，实施与验收中）
+
+独立 `sandbox-real` 模式和 `eval/sandbox-real/v1` 保留原 20 个 Linux 意图，按严格单任务 profile 版本化实际 errno/错误码与逃逸计数，另补 21–25 的累计 CPU、父应用死亡、强制不可用、生产 PNG、取消清理。旧 `eval/v1` 的 217 Linux Mock 评分和 all 指纹不改变，不能将 Mock 当实际行为。
+
+真实套件要求精确 20+5 全部评分、零 skip/missing/unknown；有宿主正控、实际 payload 观测及回收/清理证据。必需条件缺失失败关闭。只有 trusted `prepare-runtime` 显式安装，执行读取配置不自动修复。CI 必须执行并上传真实报告；全项目 live、云模型、Embedding、macOS 不在此模式验收声明中。详细归因与安全 fixture 约束见 [ADR 0009](adr/0009-real-linux-sandbox-eval.md)。
+
 ## 6. 针对技术设计 v0.3 的追加用例
 - Linux：UDP DNS 查询、AF_UNIX socket、AF_NETLINK 均失败（seccomp）；内核不支持 Landlock 时报错而非静默降级。
 - macOS：超内存由监控进程轮询杀掉，错误类型在报告注明平台差异；localhost 回环被 `deny network*` 拦截。

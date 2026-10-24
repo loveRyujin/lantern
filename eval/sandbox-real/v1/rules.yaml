@@ -1,0 +1,26 @@
+keys:
+    - file_quota_enforced
+    - artifact_rejection_observed
+    - agent_loop_completed
+    - listener_quiet
+    - cancel_observed
+    - capability_failure_closed
+    - cpu_budget_enforced
+    - created_children
+    - error_code
+    - memory_budget_enforced
+    - output_bounded
+    - parent_death_cleaned
+    - payload_entered
+    - process_reaped
+    - production_png_valid
+    - registry_rejected
+    - required_host_controls
+    - sandbox_denials
+    - sentinel_unchanged
+    - temp_clean
+    - tool_execute_count
+    - valid_schema_accepted
+    - wall_budget_enforced
+    - worker_started
+version: sandbox-real-v1

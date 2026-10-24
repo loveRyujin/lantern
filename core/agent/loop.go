@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/loveRyujin/lantern/core/approval"
 	"github.com/loveRyujin/lantern/core/audit"
@@ -778,7 +779,27 @@ func assistantMessage(resp llm.Response) llm.Message {
 }
 
 func toolMessage(id, content string) llm.Message {
-	return llm.Message{Role: llm.RoleTool, ToolCallID: id, Content: clipText(content)}
+	return llm.Message{Role: llm.RoleTool, ToolCallID: id, Content: toolFeedback(content)}
+}
+
+// Structured tool results must stay parseable: clipping a manifest can erase an
+// artifact ID or turn successful execution into malformed model feedback.
+const maxToolJSONBytes = 64 << 10
+
+func toolFeedback(content string) string {
+	if !utf8.ValidString(content) || !json.Valid([]byte(content)) {
+		return clipText(content)
+	}
+	if len(content) <= maxToolJSONBytes {
+		return content
+	}
+	feedback, _ := json.Marshal(struct {
+		Error         string `json:"error"`
+		Truncated     bool   `json:"truncated"`
+		OriginalBytes int    `json:"original_bytes"`
+		LimitBytes    int    `json:"limit_bytes"`
+	}{"tool_result_too_large", true, len(content), maxToolJSONBytes})
+	return string(feedback)
 }
 
 func feedback(code, reason string) string {
