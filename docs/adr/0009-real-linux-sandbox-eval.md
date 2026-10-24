@@ -42,6 +42,10 @@ OOM 与流输出超限除了最终错误码，还必须在固定五秒休眠结�
 
 JSON 和 Markdown 都保留证据与失败原因，CI 上传报告 artifact。真实模式来源指纹只绑定有效 manifest，先复制并剔除完全忽略的 input.mock；包括 mock 内 YAML NaN 在内的反事实值不能改变执行或有效指纹。其他来源指纹编码错误必须明确失败，不允许接受空指纹。平台失败次数按必需 20+5 统计并含缺观测，额外清单/清理错误另由完整性 gate 表达。确定性评分指纹与单次动态证据需区分，不能把 PID/采样时长差异当行为退化，也不能宣称 scoring digest 鉴证了所有运行时证据字节。
 
+## Agent 结构化观察值边界
+
+最终 CI 的生产出图验证暴露旧 Agent 对工具内容统一按 500 字符切片：新增 Limits 后合法 manifest 被截成不完整 JSON。修复保留普通文本原有边界，但合法 JSON 在 64 KiB 字节预算内完整传给模型；超预算返回可解析的 tool_result_too_large/truncated 与原始/预算字节数，不返回伪装完整的部分 manifest。该边界只控制模型观察值，独立于 SQL 的 1 MiB 结果预算：Session 保留完整 SQL 数据，后续 sql_call_id 仍读取已缓存的原始结果。它不改变实际工具产物或参数失败计数，也不把模型反馈截断宣称为工具执行失败。独立测试覆盖长 manifest、Unicode 字节边界、超额拒绝与真实 Agent 取图。
+
 ## 最终出口
 
 独立 QA 验证实际防护移除后出现真实访问/创建或预算未终止，并在行为断言失败；破坏 fixture/manifest/观测同样非零。保留 Mock Linux/all 指纹回归。最终 SHA 全量检查、真实 CI、审查正文、三角色验收、合并/main、artifact 与 lantern-notes 完成后，逐条核对 W3 历史出口再关闭 milestone。
