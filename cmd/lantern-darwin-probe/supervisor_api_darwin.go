@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -105,8 +107,19 @@ func supervisorAPICLI(args []string) int {
 			r.Fingerprints[name] = digest(b)
 		}
 	}
-	r.Source = commandText(ctx, "git", "rev-parse", "HEAD")
-	r.Dirty = commandText(ctx, "git", "status", "--porcelain") != ""
+	head, headErr := exec.CommandContext(ctx, "git", "rev-parse", "HEAD").Output()
+	dirty, dirtyErr := exec.CommandContext(ctx, "git", "status", "--porcelain").Output()
+	r.Source = strings.TrimSpace(string(head))
+	_, hashErr := hex.DecodeString(r.Source)
+	r.Dirty = len(dirty) > 0
+	if headErr != nil || dirtyErr != nil || len(r.Source) != 40 || hashErr != nil || r.Environment["macos_version"] == "" || r.Environment["macos_build"] == "" {
+		r.Error = "source or native environment metadata unavailable"
+	}
+	if r.Error != "" {
+		_ = writeJSON(filepath.Join(out, "report.json"), r)
+		_ = json.NewEncoder(os.Stdout).Encode(r)
+		return 1
+	}
 	exe, e := os.Executable()
 	if e != nil {
 		r.Error = e.Error()
@@ -304,6 +317,7 @@ func runAPICase(parent context.Context, exe, root, id string, q supervisor.Reque
 	c.Checks["fault_response"] = target == "" || c.FaultAtNS > 0 && c.AbsentAtNS >= c.FaultAtNS && c.FaultToAbsentMS <= 2000
 	c.Checks["processes_absent"] = absent
 	c.Checks["go_gate"] = (!entered || goSeen && registered && armed) && apiProtocolOrder(c)
+	c.Checks["fault_contract"] = apiFaultContract(c)
 	c.Checks["startup_no_payload"] = q.Gate == "" || !entered && !goSeen
 	c.Checks["host_result"] = target == "host" && !c.Return.Returned || target != "host" && c.Return.Returned
 	if target == "host" {

@@ -252,6 +252,34 @@ jobs:
               assert r['status'] == 'passed' and r['source_dirty'] is False, r
               assert r['source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(), r
           PYAPI
+      - name: Independently remove new API supervision and GO safeguards
+        env:
+          DARWIN_SUPERVISOR_MUTATION_QA: "1"
+          DARWIN_SUPERVISOR_PROBE: ${{ runner.temp }}/lantern-darwin-probe
+          DARWIN_SUPERVISOR_BASELINE_REPORT: ${{ runner.temp }}/darwin-supervisor-api-reports/report.json
+        run: go test ./cmd/lantern-darwin-probe -run '^TestDarwinSupervisorAPINativeIndependentQA$' -count=1 -v -timeout 6m
+      - name: Require new API mutation receipts
+        run: |
+          python3 - <<'PYAPI'
+          import hashlib, json, os, pathlib, subprocess
+          p = pathlib.Path(os.environ['RUNNER_TEMP']) / 'darwin-supervisor-api-reports' / 'independent-qa' / 'index.json'
+          r = json.loads(p.read_text())
+          assert r['status'] == 'passed' and r['baseline_status'] == 'passed', r
+          assert r['candidate_sha'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          assert r['original_no_go_passed'] is True and r['reuse_output_preserved'] is True
+          results = r['results']
+          assert len(results) == 3 and {v['name'] for v in results} == {'host-watcher-disabled','guardian-eof-disabled','launcher-go-bypass'}
+          for v in results:
+              assert v['source_file'] == 'internal/supervisor/runtime_darwin.go', v
+              assert v['target_red'] is True and v['source_restored'] is True and v['exit_code'] == 1, v
+              assert v['original_sha256'] == hashlib.sha256(pathlib.Path(v['source_file']).read_bytes()).hexdigest(), v
+              assert len(v['mutated_sha256']) == 64 and v['mutated_sha256'] != v['original_sha256'], v
+              if v['name'] == 'launcher-go-bypass':
+                  assert v['observed_exit_code'] == 0 and v['validation_exit_code'] == 1, v
+                  assert v['exit_scope'] == 'independent-go-test-assertion-process' and v['experiment'] == 'private-new-core-launcher-no-go-witness', v
+              else:
+                  assert v['observed_exit_code'] == 1 and v['exit_scope'] == 'supervision-api-cli', v
+          PYAPI
       - name: Preserve new API raw host and guardian receipts
         if: always()
         uses: actions/upload-artifact@v7.0.2

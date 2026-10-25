@@ -73,6 +73,15 @@ func TestSupervisorAPIQAValidOracleFixtures(t *testing.T) {
 			t.Fatalf("natural exit raced with actual cancellation attempt was rejected: stop=%q", stop)
 		}
 	}
+	// The caller's cancellation can win its own terminal state while the
+	// already-released fixed race worker exits naturally. Neither fact changes
+	// the other: the worker stays exit 0 and the caller stays context-cancelled.
+	c := qaAPIValidCase(supervisor.ExitRace)
+	c.Return.Result.Worker.ExitCode = 0
+	c.Return.Result.Worker.Signal = 0
+	if !apiOutcome(c, true) {
+		t.Fatal("independent supervisor cancellation and natural race worker exit were conflated")
+	}
 }
 
 func TestSupervisorAPIQARawOrderRejectsContradictions(t *testing.T) {
@@ -127,11 +136,18 @@ func TestSupervisorAPIQAWorkerOutcomesRemainDistinct(t *testing.T) {
 		{"error-exit-two", supervisor.ExpectedError, func(c *apiCase) { c.Return.Result.Worker.ExitCode = 2 }},
 		{"error-resource-stop", supervisor.ExpectedError, func(c *apiCase) { c.Return.Result.StopReason = "wall_limit" }},
 		{"cancel-worker-exit-one", supervisor.Hold, func(c *apiCase) { c.Return.Result.Worker.ExitCode = 1 }},
+		{"ordinary-cancel-worker-exit-zero", supervisor.Hold, func(c *apiCase) { c.Return.Result.Worker.ExitCode = 0; c.Return.Result.Worker.Signal = 0 }},
 		{"cancel-without-signal", supervisor.Hold, func(c *apiCase) { c.Return.Result.Worker.Signal = 0 }},
 		{"cancel-reports-protocol-error", supervisor.Hold, func(c *apiCase) { c.Return.Error = supervisor.ErrProtocol.Error() }},
+		{"cancel-masks-joined-protocol-error", supervisor.Hold, func(c *apiCase) { c.Return.Error = context.Canceled.Error() + "\n" + supervisor.ErrProtocol.Error() }},
 		{"cancel-wrong-task", supervisor.Hold, func(c *apiCase) { qaAPIEvent(c, "host", "cancel_requested").TargetPID = c.GuardianPID }},
 		{"cancel-not-attempted", supervisor.Hold, func(c *apiCase) { c.CancelAttempted = false }},
 		{"race-exit-seven-with-cancel", supervisor.ExitRace, func(c *apiCase) { c.Return.Result.Worker.ExitCode = 7 }},
+		{"race-natural-cancel-protocol-error", supervisor.ExitRace, func(c *apiCase) {
+			c.Return.Result.Worker.ExitCode = 0
+			c.Return.Result.Worker.Signal = 0
+			c.Return.Error = supervisor.ErrProtocol.Error()
+		}},
 		{"race-natural-resource-stop", supervisor.ExitRace, func(c *apiCase) {
 			c.Return.Result.State = supervisor.Completed
 			c.Return.Result.Worker.ExitCode = 0
@@ -152,6 +168,96 @@ func TestSupervisorAPIQAWorkerOutcomesRemainDistinct(t *testing.T) {
 			test.change(&c)
 			if apiOutcome(c, cancellation) {
 				t.Fatal("worker/host failure was accepted as the requested fixed outcome")
+			}
+		})
+	}
+}
+
+func qaAPIStartup(gate supervisor.Gate, target string) apiCase {
+	c := qaAPIValidCase(supervisor.Normal)
+	c.ID = "startup-" + string(gate) + "-" + target
+	c.Request = supervisor.Request{Kind: supervisor.GoLifecycle, Mode: supervisor.Hold, Gate: gate}
+	c.FaultTarget = target
+	end, actor := 2, "guardian"
+	switch gate {
+	case supervisor.BeforeSpawn:
+		c.TaskPID = 0
+	case supervisor.AfterSpawn:
+		end = 4
+	case supervisor.Registered:
+		end, actor = 6, "host"
+	case supervisor.Armed:
+		end, actor = 8, "host"
+	}
+	c.Events = c.Events[:end]
+	seq := 1
+	for _, e := range c.Events {
+		if e.Actor == actor {
+			seq = e.Seq + 1
+		}
+	}
+	pid := c.GuardianPID
+	if actor == "host" {
+		pid = c.HostPID
+	}
+	at := c.Events[len(c.Events)-1].AtNS + 1000
+	c.Events = append(c.Events, supervisor.Event{Actor: actor, Seq: seq, AtNS: at, Kind: "fault_window", PID: pid, TargetPID: c.TaskPID, Detail: string(gate)})
+	c.FaultAtNS = at + 1000
+	c.Return.Result.Worker.Entered = false
+	c.Return.Result.GoAuthorized = false
+	c.Return.Result.State = supervisor.Failed
+	c.Return.Result.StopReason = "guardian_lost"
+	c.Return.Result.HostWaitedGuardian = true
+	c.Return.Result.GuardianWaitedTask = false
+	c.Return.Result.TaskAbsent = true
+	c.Return.Result.GuardianAbsent = true
+	c.Return.Error = supervisor.ErrPeerLost.Error()
+	if target == "host" {
+		c.Return = apiHostReturn{}
+	}
+	return c
+}
+
+func TestSupervisorAPIQAStartupWindowsHaveValidControls(t *testing.T) {
+	for _, gate := range []supervisor.Gate{supervisor.BeforeSpawn, supervisor.AfterSpawn, supervisor.Registered, supervisor.Armed} {
+		for _, target := range []string{"host", "guardian"} {
+			c := qaAPIStartup(gate, target)
+			if !apiProtocolOrder(c) || !apiFaultContract(c) {
+				t.Fatalf("valid synthetic startup window rejected: %s", c.ID)
+			}
+		}
+	}
+}
+
+func TestSupervisorAPIQAFaultEvidenceRejectsFalsePhaseAndWait(t *testing.T) {
+	for name, change := range map[string]func(*apiCase){
+		"wrong-window-actor": func(c *apiCase) {
+			e := qaAPIEvent(c, "host", "fault_window")
+			e.Actor, e.PID = "guardian", c.GuardianPID
+		},
+		"wrong-window-target": func(c *apiCase) { qaAPIEvent(c, "host", "fault_window").TargetPID = c.GuardianPID },
+		"wrong-window-detail": func(c *apiCase) { qaAPIEvent(c, "host", "fault_window").Detail = "armed" },
+		"fault-before-window": func(c *apiCase) { c.FaultAtNS = qaAPIEvent(c, "host", "fault_window").AtNS - 1 },
+		"registration-not-yet-reached": func(c *apiCase) {
+			qaAPIEvent(c, "host", "registered").AtNS = qaAPIEvent(c, "host", "fault_window").AtNS + 1
+		},
+		"advanced-arm-after-window": func(c *apiCase) {
+			c.Events = append(c.Events, supervisor.Event{Actor: "guardian", Seq: 2, AtNS: c.FaultAtNS + 1000, Kind: "armed", PID: c.GuardianPID, TargetPID: c.TaskPID})
+		},
+		"fake-guardian-waited-orphan": func(c *apiCase) { c.Return.Result.GuardianWaitedTask = true },
+		"guardian-loss-no-host-wait":  func(c *apiCase) { c.Return.Result.HostWaitedGuardian = false },
+		"guardian-loss-task-remains":  func(c *apiCase) { c.Return.Result.TaskAbsent = false },
+		"unrelated-resource-stop":     func(c *apiCase) { c.Return.Result.StopReason = "resource_limit" },
+		"guardian-completed-success":  func(c *apiCase) { c.Return.Result.State = supervisor.Completed },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := qaAPIStartup(supervisor.Registered, "guardian")
+			if !apiFaultContract(c) {
+				t.Fatal("fault negative has no valid control")
+			}
+			change(&c)
+			if apiFaultContract(c) {
+				t.Fatal("false startup or phantom Wait evidence passed")
 			}
 		})
 	}

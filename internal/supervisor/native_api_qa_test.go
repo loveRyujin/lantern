@@ -220,6 +220,59 @@ func qaSupervisorLimits(t *testing.T) map[int]unix.Rlimit {
 	return out
 }
 
+func qaSupervisorAwaitHeldLauncher(t *testing.T, evidence string, done <-chan qaSupervisorAsync) (Identity, *identityMonitor) {
+	t.Helper()
+	m, err := monitor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	until := time.NewTimer(2 * time.Second)
+	defer until.Stop()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		paths, _ := filepath.Glob(filepath.Join(evidence, "supervisor-evidence-*"))
+		for _, dir := range paths {
+			pid, held := 0, false
+			for _, actor := range []string{"host", "guardian"} {
+				b, _ := os.ReadFile(filepath.Join(dir, actor+".jsonl"))
+				for _, line := range strings.Split(string(b), "\n") {
+					var event Event
+					if json.Unmarshal([]byte(line), &event) != nil {
+						continue
+					}
+					if event.Actor == "host" && event.PID == os.Getpid() && event.Kind == "launcher_observed" {
+						pid = event.TargetPID
+					}
+					held = held || event.Actor == "guardian" && event.Kind == "fault_window" && event.Detail == string(AfterSpawn)
+				}
+			}
+			if pid > 0 && held {
+				job, err := readJob(filepath.Join(dir, "job.json"))
+				if err != nil || job.Request.Gate != AfterSpawn {
+					t.Fatal("owned gate metadata was not readable for independent fault injection")
+				}
+				id, err := m.identity(pid, job.Nonce)
+				if err != nil || id.Image != canonical(exe) || id.PID == os.Getpid() {
+					t.Fatalf("held launcher was not the owned sealed child: %+v %v", id, err)
+				}
+				return id, m
+			}
+		}
+		select {
+		case early := <-done:
+			t.Fatalf("Run returned before the explicit after-spawn gate: %+v %v", early.r, early.err)
+		case <-until.C:
+			t.Fatal("held launcher checkpoint was not reached; sleep is not an injection oracle")
+		case <-tick.C:
+		}
+	}
+}
+
 func TestSupervisorQANativeResultsRecoveryAndHostInvariants(t *testing.T) {
 	p := qaSupervisorNativeProof(t)
 	s, c := qaSupervisorNative(t)
@@ -251,6 +304,29 @@ func TestSupervisorQANativeResultsRecoveryAndHostInvariants(t *testing.T) {
 	if got, err := os.ReadFile(badEvidence); err != nil || string(got) != string(prior) {
 		t.Fatalf("preparation failure damaged existing evidence path: %q %v", got, err)
 	}
+	gateCtx, gateCancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer gateCancel()
+	gateRequest := Request{Kind: GoLifecycle, Mode: Hold, Gate: AfterSpawn}
+	gateDone := qaSupervisorStart(t, s, gateCtx, gateRequest)
+	launcher, m := qaSupervisorAwaitHeldLauncher(t, c.EvidenceRoot, gateDone)
+	current, identityErr := m.identity(launcher.PID, launcher.Nonce)
+	if identityErr != nil || current != launcher {
+		t.Fatal("owned held-launcher identity changed before injected startup exit")
+	}
+	if err := unix.Kill(launcher.PID, unix.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	gateResult := <-gateDone
+	qaSupervisorRecord(p, gateRequest, gateResult.r, gateResult.err)
+	gr := gateResult.r
+	if !errors.Is(gateResult.err, ErrProtocol) || gr.State != Failed || gr.GoAuthorized || gr.Worker.Entered || !gr.HostWaitedGuardian || !gr.GuardianWaitedTask || !gr.TaskAbsent || !gr.GuardianAbsent || !gr.WorkRootClean || gr.Task.PID != launcher.PID {
+		t.Fatalf("pre-GO launcher exit was mistaken for execution success: %+v error=%v", gr, gateResult.err)
+	}
+	if _, err := os.Lstat(gr.WorkRoot); !os.IsNotExist(err) {
+		t.Fatal("failed pre-GO execution returned without actual work cleanup")
+	}
+	roots[gr.WorkRoot], roots[gr.EvidenceDir], nonces[gr.Nonce] = true, true, true
+	p.Observations["pre_go_exit_failed_without_delivery"] = true
 	for _, mode := range []Mode{Normal, ExpectedError, Normal, Hold, Normal} {
 		ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 		defer cancel()

@@ -257,8 +257,8 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 	result.WorkRoot = work
 	defer func() {
 		result.WorkRootClean = cleanRoot(work)
-		if !result.WorkRootClean && runErr == nil {
-			runErr = fmt.Errorf("work root cleanup failed")
+		if !result.WorkRootClean {
+			runErr = errors.Join(runErr, fmt.Errorf("work root cleanup failed"))
 			result.State = Failed
 		}
 	}()
@@ -528,11 +528,19 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 				result.SignalSkipped = completed.SignalSkipped
 				result.SignalSkipReason = completed.SignalSkipReason
 				result.SignalResolvedBy = completed.SignalResolvedBy
-				if !goSent && runErr == nil {
+				if !goSent && runErr == nil && ctx.Err() == nil {
 					runErr = fmt.Errorf("%w: fixed helper completed before GO", ErrProtocol)
 				}
 			} else {
 				l.event("peer_lost", p.Pid, "guardian exited without valid completion")
+				if completed != nil {
+					if completed.Error != "" {
+						runErr = errors.Join(runErr, ErrPeerLost, fmt.Errorf("guardian completion: %s", completed.Error))
+					}
+					if !completed.Clean {
+						runErr = errors.Join(runErr, ErrPeerLost, fmt.Errorf("guardian cleanup failed"))
+					}
+				}
 				if !registered && !preparedClosed && prepared != nil {
 					timer := time.NewTimer(time.Second)
 					waiting := true
@@ -574,7 +582,7 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 					result.SignalSkipReason = rr.SignalSkipReason
 					result.SignalResolvedBy = rr.SignalResolvedBy
 					if rr.Error != "" {
-						runErr = errors.New(rr.Error)
+						runErr = errors.Join(runErr, errors.New(rr.Error))
 					}
 				} else {
 					result.TaskAbsent = true
@@ -593,6 +601,9 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 			}
 			if ctx.Err() != nil {
 				result.State = Cancelled
+				if runErr != nil {
+					return result, errors.Join(ctx.Err(), runErr)
+				}
 				return result, ctx.Err()
 			}
 			if runErr != nil {

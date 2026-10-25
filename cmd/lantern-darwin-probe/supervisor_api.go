@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"strings"
 
 	"github.com/loveRyujin/lantern/internal/supervisor"
 )
@@ -130,10 +129,57 @@ func apiOutcome(c apiCase, cancellation bool) bool {
 		return false
 	}
 	if r.State == supervisor.Cancelled {
-		if !attempted || !strings.Contains(c.Return.Error, "context canceled") || r.StopReason != "cancel" {
+		if !attempted || c.Return.Error != "context canceled" || r.StopReason != "cancel" {
 			return false
 		}
 		return r.Worker.ExitCode == -1 && r.Worker.Signal == 9 || c.Request.Mode == supervisor.ExitRace && r.Worker.ExitCode == 0 && r.Worker.Signal == 0
 	}
 	return c.Request.Mode == supervisor.ExitRace && r.State == supervisor.Completed && c.Return.Error == "" && r.Worker.ExitCode == 0 && r.Worker.Signal == 0 && (r.StopReason == "" || r.StopReason == "cancel")
+}
+
+func apiFaultContract(c apiCase) bool {
+	if c.FaultTarget == "guardian" {
+		r := c.Return.Result
+		if !c.Return.Returned || r.State != supervisor.Failed || c.Return.Error == "" || r.StopReason != "guardian_lost" || r.GuardianWaitedTask || !r.HostWaitedGuardian || !r.TaskAbsent || !r.GuardianAbsent {
+			return false
+		}
+	}
+	if c.Request.Gate == supervisor.NoGate {
+		return true
+	}
+	events := map[string]supervisor.Event{}
+	var window supervisor.Event
+	for _, e := range c.Events {
+		events[e.Actor+":"+e.Kind] = e
+		if e.Kind == "fault_window" {
+			if window.AtNS != 0 || e.Detail != string(c.Request.Gate) {
+				return false
+			}
+			window = e
+		}
+	}
+	actor := "host"
+	if c.Request.Gate == supervisor.BeforeSpawn || c.Request.Gate == supervisor.AfterSpawn {
+		actor = "guardian"
+	}
+	pid := c.HostPID
+	if actor == "guardian" {
+		pid = c.GuardianPID
+	}
+	if window.Actor != actor || window.PID != pid || window.AtNS <= 0 || c.FaultAtNS < window.AtNS {
+		return false
+	}
+	has := func(key string) bool { e := events[key]; return e.AtNS > 0 && e.AtNS <= window.AtNS }
+	none := func(key string) bool { return events[key].AtNS == 0 }
+	switch c.Request.Gate {
+	case supervisor.BeforeSpawn:
+		return window.TargetPID == 0 && c.TaskPID == 0 && none("guardian:launcher_spawned") && none("launcher:prepared") && none("host:registered") && none("guardian:armed") && none("host:armed")
+	case supervisor.AfterSpawn:
+		return c.TaskPID > 0 && window.TargetPID == c.TaskPID && has("guardian:launcher_spawned") && none("launcher:prepared") && none("host:registered") && none("guardian:armed") && none("host:armed")
+	case supervisor.Registered:
+		return window.TargetPID == c.TaskPID && has("guardian:launcher_spawned") && has("host:launcher_observed") && has("launcher:prepared") && has("host:registered") && none("guardian:armed") && none("host:armed")
+	case supervisor.Armed:
+		return window.TargetPID == c.TaskPID && has("guardian:launcher_spawned") && has("host:launcher_observed") && has("launcher:prepared") && has("host:registered") && has("guardian:armed") && has("host:armed")
+	}
+	return false
 }
