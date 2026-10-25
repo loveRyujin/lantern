@@ -42,6 +42,7 @@ type receipt struct {
 	Error            string       `json:"error,omitempty"`
 }
 type message struct {
+	Version int           `json:"version"`
 	Kind    string        `json:"kind"`
 	Seq     int           `json:"seq"`
 	Nonce   string        `json:"nonce"`
@@ -55,7 +56,7 @@ func decodeMessage(b []byte, nonce string, seq int) (message, error) {
 	if e := strictJSON(b, &v, 4096); e != nil {
 		return v, e
 	}
-	if nonce == "" || seq <= 0 || v.Seq != seq || v.Nonce != nonce || v.Target.Nonce != nonce {
+	if v.Version != 1 || nonce == "" || seq <= 0 || v.Seq != seq || v.Nonce != nonce || v.Target.Nonce != nonce {
 		return v, fmt.Errorf("%w: nonce/sequence", ErrProtocol)
 	}
 	switch v.Kind {

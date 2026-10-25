@@ -80,7 +80,7 @@ func messages(f *os.File, nonce string) <-chan incoming {
 	return out
 }
 func send(f *os.File, kind string, seq int, id Identity, w *WorkerResult, r *receipt) error {
-	b, e := json.Marshal(message{kind, seq, id.Nonce, id, w, r})
+	b, e := json.Marshal(message{Version: 1, Kind: kind, Seq: seq, Nonce: id.Nonce, Target: id, Worker: w, Receipt: r})
 	if e != nil {
 		return e
 	}

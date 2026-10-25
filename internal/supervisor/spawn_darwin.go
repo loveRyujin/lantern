@@ -54,8 +54,9 @@ func loadSpawn() (*spawnAPI, error) {
 }
 
 // spawnFixed is private: all callers use the sealed role/argv/env construction.
-// Copies prevent dup2 action ordering from overwriting another source. Creating
-// new CLOEXEC descriptors is local; no existing host descriptor flags change.
+// Copies prevent dup2 action ordering from overwriting another source. Host
+// copies are CLOEXEC; SETEXEC uses private non-CLOEXEC copies only inside the
+// already-isolated launcher. No existing host descriptor flags change.
 func spawnFixed(exe string, args []string, files []*os.File, replace bool) (*os.Process, error) {
 	a, e := loadSpawn()
 	if e != nil {
@@ -63,11 +64,11 @@ func spawnFixed(exe string, args []string, files []*os.File, replace bool) (*os.
 	}
 	var actions, attr uintptr
 	if n := a.initActions(&actions); n != 0 {
-		return nil, syscall.Errno(n)
+		return nil, fmt.Errorf("file actions init: %w", syscall.Errno(n))
 	}
 	defer a.destroyActions(&actions)
 	if n := a.initAttr(&attr); n != 0 {
-		return nil, syscall.Errno(n)
+		return nil, fmt.Errorf("spawn attributes init: %w", syscall.Errno(n))
 	}
 	defer a.destroyAttr(&attr)
 	flags := int16(spawnCloseDefault)
@@ -75,7 +76,7 @@ func spawnFixed(exe string, args []string, files []*os.File, replace bool) (*os.
 		flags |= spawnSetExec
 	}
 	if n := a.flags(&attr, flags); n != 0 {
-		return nil, syscall.Errno(n)
+		return nil, fmt.Errorf("spawn flags: %w", syscall.Errno(n))
 	}
 	var copies []int
 	defer func() {
@@ -87,13 +88,23 @@ func spawnFixed(exe string, args []string, files []*os.File, replace bool) (*os.
 		if f == nil {
 			return nil, fmt.Errorf("nil whitelisted descriptor")
 		}
-		fd, e := unix.FcntlInt(f.Fd(), unix.F_DUPFD_CLOEXEC, 64)
+		dupCommand := unix.F_DUPFD_CLOEXEC
+		if replace {
+			// SETEXEC's CLONEPROC_EXEC calls fdt_fork(in_exec=true) BEFORE
+			// file actions. Apple kern_descrip.c drops FP_CLOEXEC sources at
+			// that point, so those sources would make dup2 return EBADF.
+			// Only this already-isolated launcher creates non-CLOEXEC copies.
+			// CLOEXEC_DEFAULT still closes these unselected high descriptors
+			// after the actions: only dup2 destinations receive UF_INHERIT.
+			dupCommand = unix.F_DUPFD
+		}
+		fd, e := unix.FcntlInt(f.Fd(), dupCommand, 64)
 		if e != nil {
-			return nil, e
+			return nil, fmt.Errorf("copy source FD %d for target %d: %w", f.Fd(), target, e)
 		}
 		copies = append(copies, fd)
 		if n := a.dup2(&actions, int32(fd), int32(target)); n != 0 {
-			return nil, syscall.Errno(n)
+			return nil, fmt.Errorf("dup2 action %d to %d: %w", fd, target, syscall.Errno(n))
 		}
 	}
 	path, e := syscall.BytePtrFromString(exe)
@@ -115,7 +126,7 @@ func spawnFixed(exe string, args []string, files []*os.File, replace bool) (*os.
 	runtime.KeepAlive(env)
 	runtime.KeepAlive(path)
 	if n != 0 {
-		return nil, syscall.Errno(n)
+		return nil, fmt.Errorf("posix_spawn replace=%t: %w", replace, syscall.Errno(n))
 	}
 	if replace {
 		return nil, fmt.Errorf("SETEXEC unexpectedly returned success")

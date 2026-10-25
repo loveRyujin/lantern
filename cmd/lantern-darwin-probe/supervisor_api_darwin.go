@@ -38,7 +38,7 @@ func supervisorAPIInternal(args []string) (bool, int) {
 			until := time.Now().Add(5 * time.Second)
 			for time.Now().Before(until) {
 				for _, e := range apiEvents(args[2]) {
-					if e.Kind == "payload_entered" {
+					if e.Actor == "host" && e.Kind == "payload_entered" {
 						_ = writeJSON(filepath.Join(args[2], "cancel-attempt.json"), map[string]bool{"attempted": true})
 						cancel()
 						return
@@ -217,7 +217,7 @@ func runAPICase(parent context.Context, exe, root, id string, q supervisor.Reque
 			if q.Gate != "" && v.Kind == "fault_window" && v.Detail == string(q.Gate) {
 				checkpoint = true
 			}
-			if q.Gate == "" && v.Kind == "payload_entered" {
+			if q.Gate == "" && v.Actor == "host" && v.Kind == "payload_entered" {
 				checkpoint = true
 			}
 		}

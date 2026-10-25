@@ -37,3 +37,11 @@ Go runtime 可以创建自己的 kqueue 等 FD。验收按 dev/inode/mode 检查
 - 为什么 ExtraFiles 不足？宿主可能有未设置 CLOEXEC 的第三方 FD，需要创建时默认关闭与显式继承。
 - 为什么不通过临时修改全部 FD flags 修复？这会污染并发宿主，创建前后存在竞争。
 - 为什么保留旧实验而不立即统一 Python backend？Python 的运行时读取闭包、Seatbelt 与签名是另一组责任；本轮先验证可嵌入生命周期核心，旧历史证据不冒充新路径证据。
+
+## 原生验收发现的 SETEXEC 差异
+
+首轮候选 ee3df10 的 8 个启动故障场景通过，其余 10 个场景在 worker 入场前失败。第二轮 0d4c890 加入原始错误记录，实际得到 `bad file descriptor`，不是生命周期超时。Apple `kern_exec.c` 的 SETEXEC 路径先进行 `CLONEPROC_EXEC`；`kern_descrip.c` 的 `fdt_fork(in_exec=true)` 会跳过 CLOEXEC 源，随后文件动作引用这些源会得到 EBADF。普通 spawn 不走这个源过滤，解释了 guardian 与 launcher 能启动而同 PID exec 失败。
+
+修复只在已隔离 launcher 的 SETEXEC 分支为私有高位副本使用 F_DUPFD；宿主普通 spawn 仍用 F_DUPFD_CLOEXEC，既有 FD flags 不变。CLOEXEC_DEFAULT 始终保留，内核只给 dup2 目标标记 UF_INHERIT，临时源在最终 exec 时关闭。该修复必须再次接受真实 worker FD/control 与宿主凭据正控检查，源码推导不能替代原生验收。
+
+一手依据：[kern_exec.c](https://raw.githubusercontent.com/apple-oss-distributions/xnu/xnu-11215.81.4/bsd/kern/kern_exec.c)、[kern_descrip.c](https://raw.githubusercontent.com/apple-oss-distributions/xnu/xnu-11215.81.4/bsd/kern/kern_descrip.c)。

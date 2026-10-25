@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/loveRyujin/lantern/internal/supervisor"
 )
@@ -70,7 +71,7 @@ func apiProtocolOrder(c apiCase) bool {
 		}
 		keys[key] = e.AtNS
 		switch e.Kind {
-		case "registered", "armed", "go_authorized", "go_received", "prepared", "payload_entered":
+		case "launcher_observed", "registered", "armed", "go_authorized", "go_received", "prepared", "payload_entered":
 			if e.TargetPID != c.TaskPID || c.TaskPID <= 0 {
 				return false
 			}
@@ -95,6 +96,14 @@ func apiProtocolOrder(c apiCase) bool {
 	if keys["guardian:payload_entered"] > 0 && !before("launcher:go_received", "guardian:payload_entered") {
 		return false
 	}
+	if c.Request.Gate != supervisor.NoGate && (keys["host:go_authorized"] > 0 || keys["launcher:go_received"] > 0 || keys["host:payload_entered"] > 0 || keys["guardian:payload_entered"] > 0) {
+		return false
+	}
+	if c.Request.Gate == supervisor.NoGate {
+		if keys["host:payload_entered"] == 0 || keys["launcher:go_received"] == 0 || keys["host:go_authorized"] == 0 || keys["host:armed"] == 0 || keys["guardian:armed"] == 0 || keys["host:registered"] == 0 || keys["launcher:prepared"] == 0 || keys["host:launcher_observed"] == 0 {
+			return false
+		}
+	}
 	return keys["host:host_started"] > 0 && keys["host:guardian_started"] > 0
 }
 func apiOutcome(c apiCase, cancellation bool) bool {
@@ -111,7 +120,7 @@ func apiOutcome(c apiCase, cancellation bool) bool {
 	}
 	attempted := false
 	for _, e := range c.Events {
-		if e.Actor == "host" && e.Kind == "cancel_requested" {
+		if e.Actor == "host" && e.Kind == "cancel_requested" && e.PID == c.HostPID && e.TargetPID == c.TaskPID {
 			attempted = true
 		}
 	}
@@ -121,7 +130,7 @@ func apiOutcome(c apiCase, cancellation bool) bool {
 		return false
 	}
 	if r.State == supervisor.Cancelled {
-		return attempted && c.Return.Error != "" && r.Worker.ExitCode == -1 && r.StopReason == "cancel"
+		return attempted && strings.Contains(c.Return.Error, "context canceled") && r.Worker.ExitCode == -1 && r.Worker.Signal == 9 && r.StopReason == "cancel"
 	}
 	return c.Request.Mode == supervisor.ExitRace && r.State == supervisor.Completed && c.Return.Error == "" && r.Worker.ExitCode == 0 && r.Worker.Signal == 0 && (r.StopReason == "" || r.StopReason == "cancel")
 }
