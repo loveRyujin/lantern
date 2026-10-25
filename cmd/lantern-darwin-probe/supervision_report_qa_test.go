@@ -194,6 +194,23 @@ func TestSupervisionQACompleteEvidenceValidates(t *testing.T) {
 	}
 }
 
+func TestSupervisionQAExitRaceAllowsNaturalAndCancelOutcomes(t *testing.T) {
+	for _, stop := range []string{"", "cancel"} {
+		t.Run("natural-exit-stop-"+stop, func(t *testing.T) {
+			r := qaSupervisionValidReport()
+			c := qaSupervisionCase(&r, "exit-cancel-race")
+			v := c.Receipts["guardian"]
+			v.ExitCode = 0
+			v.StopReason = stop
+			c.Receipts["guardian"] = v
+			finalizeSupervision(&r)
+			if r.Status != "passed" || !r.SingleFaultVerified {
+				t.Fatalf("natural exit raced with the recorded cancel request was rejected: stop=%q", stop)
+			}
+		})
+	}
+}
+
 func TestSupervisionQAReportFailsClosed(t *testing.T) {
 	valid := qaSupervisionValidReport()
 	finalizeSupervision(&valid)
@@ -253,11 +270,48 @@ func TestSupervisionQAReportFailsClosed(t *testing.T) {
 			v.ExitCode = 0
 			c.Receipts["guardian"] = v
 		},
+		"error-signalled-exit": func(r *SupervisionReport) {
+			c := qaSupervisionCase(r, "error")
+			v := c.Receipts["guardian"]
+			v.ExitCode = -1
+			c.Receipts["guardian"] = v
+		},
+		"error-unrelated-exit-two": func(r *SupervisionReport) {
+			c := qaSupervisionCase(r, "error")
+			v := c.Receipts["guardian"]
+			v.ExitCode = 2
+			c.Receipts["guardian"] = v
+		},
+		"error-resource-stop": func(r *SupervisionReport) {
+			c := qaSupervisionCase(r, "error")
+			v := c.Receipts["guardian"]
+			v.StopReason = "resource_limit"
+			c.Receipts["guardian"] = v
+		},
 		"cancel-unrelated-exit": func(r *SupervisionReport) {
 			c := qaSupervisionCase(r, "cancel")
 			v := c.Receipts["guardian"]
 			v.ExitCode = 1
 			v.StopReason = ""
+			c.Receipts["guardian"] = v
+		},
+		"cancel-error-exit-with-cancel-stop": func(r *SupervisionReport) {
+			c := qaSupervisionCase(r, "cancel")
+			v := c.Receipts["guardian"]
+			v.ExitCode = 1
+			c.Receipts["guardian"] = v
+		},
+		"race-error-exit-with-cancel-stop": func(r *SupervisionReport) {
+			c := qaSupervisionCase(r, "exit-cancel-race")
+			v := c.Receipts["guardian"]
+			v.ExitCode = 7
+			c.Receipts["guardian"] = v
+		},
+		"race-success-with-resource-stop": func(r *SupervisionReport) {
+			c := qaSupervisionCase(r, "exit-cancel-race")
+			v := c.Receipts["guardian"]
+			v.ExitCode = 0
+			v.StopReason = "resource_limit"
 			c.Receipts["guardian"] = v
 		},
 		"race-unrelated-error": func(r *SupervisionReport) {

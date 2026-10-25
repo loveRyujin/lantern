@@ -301,15 +301,17 @@ func validateSupervisionCase(c SupervisionCase) error {
 				return fmt.Errorf("normal did not exit normally")
 			}
 		case "error":
-			if g.ExitCode == 0 || g.StopReason != "" {
+			if g.ExitCode != 1 || g.StopReason != "" {
 				return fmt.Errorf("expected error missing")
 			}
 		case "cancel":
-			if g.ExitCode == 0 || g.StopReason != "cancel" || !kinds["cancel_requested"] {
+			if g.ExitCode != -1 || g.StopReason != "cancel" || !kinds["cancel_requested"] {
 				return fmt.Errorf("real cancellation missing")
 			}
 		case "exit-cancel-race":
-			if !kinds["cancel_requested"] || (g.ExitCode != 0 && g.StopReason != "cancel") {
+			natural := g.ExitCode == 0 && (g.StopReason == "" || g.StopReason == "cancel")
+			cancelled := g.ExitCode == -1 && g.StopReason == "cancel"
+			if !kinds["cancel_requested"] || (!natural && !cancelled) {
 				return fmt.Errorf("cancel/exit race missing")
 			}
 		}

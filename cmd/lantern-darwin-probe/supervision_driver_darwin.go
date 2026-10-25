@@ -405,11 +405,13 @@ func runSupervisionCase(ctx context.Context, c supervisionConfig, path string, m
 		case "normal":
 			responseOK = responseOK && g.ExitCode == 0 && g.StopReason == ""
 		case "error":
-			responseOK = responseOK && g.ExitCode != 0 && g.StopReason == ""
+			responseOK = responseOK && g.ExitCode == 1 && g.StopReason == ""
 		case "cancel":
-			responseOK = responseOK && g.StopReason == "cancel" && g.ExitCode != 0 && supervisionHas(result.Events, "app", "cancel_requested")
+			responseOK = responseOK && g.StopReason == "cancel" && g.ExitCode == -1 && supervisionHas(result.Events, "app", "cancel_requested")
 		case "exit-cancel-race":
-			responseOK = responseOK && supervisionHas(result.Events, "app", "cancel_requested") && (g.StopReason == "cancel" || g.ExitCode == 0)
+			natural := g.ExitCode == 0 && (g.StopReason == "" || g.StopReason == "cancel")
+			cancelled := g.ExitCode == -1 && g.StopReason == "cancel"
+			responseOK = responseOK && supervisionHas(result.Events, "app", "cancel_requested") && (natural || cancelled)
 		}
 	}
 	protocolErr := validateSupervisionCase(result)

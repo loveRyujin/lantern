@@ -54,3 +54,5 @@ PID/birth/镜像复核不是 pidfd 原子句柄。允许的镜像包含已验证
 事件目录必须排他新建。已有 out/events 时在 actor 启动、读取旧 PID 或注入之前拒绝；不覆盖旧报告/事件、不删除旧数据，结构化失败由 stdout 返回。不能先使用陈旧目标再凭最终 validator 报错补救。
 
 独立变异包括应用 peer-loss 动作、guardian peer-loss 动作及无 GO 的可信 launcher 对照。第三项必须区分真实 helper 在未授权执行后正常退出 0 与独立 oracle 拒绝该行为退出 1，不伪造被测程序错误码，也不把单 helper 对照冒成完整 18 项报告。完整原生执行、原始事件/hash/恢复记录与最终 CI 是交付门槛。
+
+固定退出合同也必须精确：normal 为 worker exit 0 且无 stop；error 为预定 RuntimeError 的 worker exit 1 且无 stop，不能把信号终止当成预期错误。独立 cancel 为 worker exit -1 且 stop=cancel；退出与取消竞态只接受自然 exit 0（可含 late cancel 记录）或 exit -1/stop=cancel，必须有实际取消尝试，不接受任意非零或资源超限替代。这些是固定实验验收语义，不把 supervisor/helper 自身完成退出码当作 worker 退出码。
