@@ -344,3 +344,51 @@ jobs:
           name: darwin-supervision-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/darwin-supervision-reports/
           if-no-files-found: error
+
+      - name: Run internal supervisor API through real native host fixtures
+        run: |
+          "${RUNNER_TEMP}/lantern-darwin-probe" supervision-api --out "${RUNNER_TEMP}/darwin-supervisor-api-reports" > "${RUNNER_TEMP}/darwin-supervisor-api-stdout.json"
+      - name: Verify new API case manifest
+        run: |
+          python3 - <<'PYAPI'
+          import json, os, pathlib, subprocess
+          p = pathlib.Path(os.environ['RUNNER_TEMP']) / 'darwin-supervisor-api-reports' / 'report.json'
+          r = json.loads(p.read_text())
+          assert r['schema'] == 'lantern.darwin-supervisor-api.v1' and r['status'] == 'passed'
+          assert r['source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          assert r['source_dirty'] is False and len(r['executable_sha256']) == 64
+          expected = {f'startup-{g}-{t}' for g in ['before-spawn','after-spawn','registered','armed'] for t in ['host','guardian']}
+          expected |= {f'{g}-{t}' for g in ['steady','setsid','setpgid'] for t in ['host','guardian']}
+          expected |= {'normal','error','cancel','exit-cancel-race'}
+          assert len(r['cases']) == 18 and {c['id'] for c in r['cases']} == expected
+          for c in r['cases']:
+              assert c['status'] == 'passed' and not c['harness_rescue'], c
+              assert len(c['checks']) >= 10 and all(c['checks'].values()), c
+              assert c['return']['returned'] == (c.get('fault_target') != 'host'), c
+          PYAPI
+      - name: Independent API recovery concurrency and inherited descriptor checks
+        env:
+          DARWIN_SUPERVISOR_REAL_QA: "1"
+          DARWIN_SUPERVISOR_QA_OUT: ${{ runner.temp }}/darwin-supervisor-api-qa
+        run: go test ./internal/supervisor -run '^TestSupervisorQANative' -count=1 -v -timeout 3m
+      - name: Require independent native API receipts
+        run: |
+          python3 - <<'PYAPI'
+          import json, os, pathlib
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'darwin-supervisor-api-qa'
+          expected = ['ResultsRecoveryAndHostInvariants', 'ConcurrentIsolationAndLateCancel', 'CredentialFDAndEnvironment']
+          for name in expected:
+              p = root / ('TestSupervisorQANative' + name + '.json')
+              r = json.loads(p.read_text())
+              assert r['status'] == 'passed', r
+          PYAPI
+      - name: Preserve new API raw host and guardian receipts
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: darwin-supervisor-api-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/darwin-supervisor-api-reports/
+            ${{ runner.temp }}/darwin-supervisor-api-qa/
+            ${{ runner.temp }}/darwin-supervisor-api-stdout.json
+          if-no-files-found: error
