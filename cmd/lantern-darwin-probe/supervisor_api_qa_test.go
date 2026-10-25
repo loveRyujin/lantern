@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/loveRyujin/lantern/internal/supervisor"
@@ -11,6 +15,8 @@ import (
 func qaAPIValidCase(mode supervisor.Mode) apiCase {
 	c := apiCase{ID: string(mode), HostPID: 1001, GuardianPID: 1002, TaskPID: 1003, Request: supervisor.Request{Kind: supervisor.GoLifecycle, Mode: mode}}
 	c.Return = apiHostReturn{Returned: true, HostPID: c.HostPID, Result: supervisor.Result{State: supervisor.Completed, HostPID: c.HostPID, GuardianPID: c.GuardianPID, Registered: true, Armed: true, GoAuthorized: true, Worker: supervisor.WorkerResult{Entered: true, PID: c.TaskPID, Mode: mode}}}
+	c.Return.Result.Nonce = strings.Repeat("a", 32)
+	c.Return.Result.Task = supervisor.Identity{PID: c.TaskPID, StartSeconds: 1700000000, StartMicroseconds: 123, Image: filepath.Join(os.TempDir(), "owned-sealed-helper"), Nonce: c.Return.Result.Nonce}
 	seq := map[string]int{}
 	stamp := int64(1700000000000000000)
 	actorPID := map[string]int{"host": c.HostPID, "guardian": c.GuardianPID, "launcher": c.TaskPID}
@@ -182,6 +188,7 @@ func qaAPIStartup(gate supervisor.Gate, target string) apiCase {
 	switch gate {
 	case supervisor.BeforeSpawn:
 		c.TaskPID = 0
+		c.Return.Result.Task = supervisor.Identity{}
 	case supervisor.AfterSpawn:
 		end = 4
 	case supervisor.Registered:
@@ -213,6 +220,11 @@ func qaAPIStartup(gate supervisor.Gate, target string) apiCase {
 	c.Return.Result.GuardianAbsent = true
 	c.Return.Error = supervisor.ErrPeerLost.Error()
 	if target == "host" {
+		id := c.Return.Result.Task
+		if id.PID == 0 {
+			id.Nonce = c.Return.Result.Nonce
+		}
+		c.GuardianReceipt, _ = json.Marshal(map[string]any{"target": id, "waited": c.TaskPID > 0, "absent": true, "clean": true})
 		c.Return = apiHostReturn{}
 	}
 	return c
@@ -244,11 +256,16 @@ func TestSupervisorAPIQAFaultEvidenceRejectsFalsePhaseAndWait(t *testing.T) {
 		"advanced-arm-after-window": func(c *apiCase) {
 			c.Events = append(c.Events, supervisor.Event{Actor: "guardian", Seq: 2, AtNS: c.FaultAtNS + 1000, Kind: "armed", PID: c.GuardianPID, TargetPID: c.TaskPID})
 		},
-		"fake-guardian-waited-orphan": func(c *apiCase) { c.Return.Result.GuardianWaitedTask = true },
-		"guardian-loss-no-host-wait":  func(c *apiCase) { c.Return.Result.HostWaitedGuardian = false },
-		"guardian-loss-task-remains":  func(c *apiCase) { c.Return.Result.TaskAbsent = false },
-		"unrelated-resource-stop":     func(c *apiCase) { c.Return.Result.StopReason = "resource_limit" },
-		"guardian-completed-success":  func(c *apiCase) { c.Return.Result.State = supervisor.Completed },
+		"fake-guardian-waited-orphan":  func(c *apiCase) { c.Return.Result.GuardianWaitedTask = true },
+		"guardian-loss-no-host-wait":   func(c *apiCase) { c.Return.Result.HostWaitedGuardian = false },
+		"guardian-loss-task-remains":   func(c *apiCase) { c.Return.Result.TaskAbsent = false },
+		"unrelated-resource-stop":      func(c *apiCase) { c.Return.Result.StopReason = "resource_limit" },
+		"guardian-completed-success":   func(c *apiCase) { c.Return.Result.State = supervisor.Completed },
+		"result-task-identity-missing": func(c *apiCase) { c.Return.Result.Task = supervisor.Identity{} },
+		"result-task-wrong-pid":        func(c *apiCase) { c.Return.Result.Task.PID = c.GuardianPID },
+		"result-task-missing-birth":    func(c *apiCase) { c.Return.Result.Task.StartSeconds = 0 },
+		"result-task-wrong-nonce":      func(c *apiCase) { c.Return.Result.Task.Nonce = "another-job" },
+		"result-task-missing-image":    func(c *apiCase) { c.Return.Result.Task.Image = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := qaAPIStartup(supervisor.Registered, "guardian")
@@ -261,4 +278,19 @@ func TestSupervisorAPIQAFaultEvidenceRejectsFalsePhaseAndWait(t *testing.T) {
 			}
 		})
 	}
+	t.Run("host-dead-receipt-other-task", func(t *testing.T) {
+		c := qaAPIStartup(supervisor.Registered, "host")
+		if !apiFaultContract(c) {
+			t.Fatal("host-death negative has no valid guardian receipt control")
+		}
+		var receipt map[string]any
+		if err := json.Unmarshal(c.GuardianReceipt, &receipt); err != nil {
+			t.Fatal(err)
+		}
+		receipt["target"].(map[string]any)["pid"] = c.GuardianPID
+		c.GuardianReceipt, _ = json.Marshal(receipt)
+		if apiFaultContract(c) {
+			t.Fatal("host-death cleanup was attributed to a different task identity")
+		}
+	})
 }

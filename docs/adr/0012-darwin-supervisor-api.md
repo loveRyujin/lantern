@@ -1,6 +1,6 @@
 # ADR 0012：将 Darwin 单故障监督收敛为内部 API
 
-状态：实现与原生验收中；关联 Issue #56，前置 ADR 0011 / Issue #54。
+状态：设计采纳；最终交付与原生验证证据以 [W4-03](https://github.com/loveRyujin/lantern-notes/blob/main/W4-03-darwin-supervisor-api.md) 为准。关联 Issue #56 / PR #57，前置 ADR 0011 / Issue #54。
 
 ## 问题与范围
 
@@ -45,3 +45,12 @@ Go runtime 可以创建自己的 kqueue 等 FD。验收按 dev/inode/mode 检查
 修复只在已隔离 launcher 的 SETEXEC 分支为私有高位副本使用 F_DUPFD；宿主普通 spawn 仍用 F_DUPFD_CLOEXEC，既有 FD flags 不变。CLOEXEC_DEFAULT 始终保留，内核只给 dup2 目标标记 UF_INHERIT，临时源在最终 exec 时关闭。该修复必须再次接受真实 worker FD/control 与宿主凭据正控检查，源码推导不能替代原生验收。
 
 一手依据：[kern_exec.c](https://raw.githubusercontent.com/apple-oss-distributions/xnu/xnu-11215.81.4/bsd/kern/kern_exec.c)、[kern_descrip.c](https://raw.githubusercontent.com/apple-oss-distributions/xnu/xnu-11215.81.4/bsd/kern/kern_descrip.c)。
+
+
+## BOOT 身份与未知状态
+
+独立 QA 复核第四轮原始事件发现：after-spawn guardian 故障时，外层已看到真实 launcher PID，而 Run 在瞬时 libproc 读取失败后丢失 BOOT 身份，却将空 Task 标为已消失。外层实际确认无泄漏不能替组件的返回语义背书；即使 CI 与变异已绿，也必须阻止合并。
+
+BOOTSTRAP 是私有协议传来的候选身份，必须保留 nonce、PID、birth 和固定启动镜像，但不等同 Registered、Armed 或 GO。读取暂不可用时不发信号；后续实时核验成功才允许登记。失联收尾必须针对该已绑定候选观察真实身份消失，僵尸不算消失。完全未知且可能已 spawn 时，不能设置 TaskAbsent=true；固定 before-spawn 窗口中已知没有任务则单独表达。真 birth 冲突不能被读取不可用或最终清理洗掉。
+
+面试追问：为何实验进程都没泄漏仍要修复？因为调用方依赖 Result 作后续决策；空身份与真实已消失是不同的知识状态，组件的证据不能由测试 harness 的额外观察代替。

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"path/filepath"
 
 	"github.com/loveRyujin/lantern/internal/supervisor"
 )
@@ -138,11 +139,30 @@ func apiOutcome(c apiCase, cancellation bool) bool {
 }
 
 func apiFaultContract(c apiCase) bool {
+	if c.FaultTarget == "host" {
+		var receipt struct {
+			Target supervisor.Identity `json:"target"`
+		}
+		if json.Unmarshal(c.GuardianReceipt, &receipt) != nil || receipt.Target.PID != c.TaskPID {
+			return false
+		}
+		if c.TaskPID > 0 && (len(receipt.Target.Nonce) != 32 || receipt.Target.StartSeconds == 0 || receipt.Target.StartMicroseconds >= 1000000 || !filepath.IsAbs(receipt.Target.Image)) {
+			return false
+		}
+	}
+
 	if c.FaultTarget == "guardian" {
 		r := c.Return.Result
 		if !c.Return.Returned || r.State != supervisor.Failed || c.Return.Error == "" || r.StopReason != "guardian_lost" || r.GuardianWaitedTask || !r.HostWaitedGuardian || !r.TaskAbsent || !r.GuardianAbsent {
 			return false
 		}
+		if r.Task.PID != c.TaskPID {
+			return false
+		}
+		if c.TaskPID > 0 && (len(r.Nonce) != 32 || r.Task.Nonce != r.Nonce || r.Task.StartSeconds == 0 || r.Task.StartMicroseconds >= 1000000 || !filepath.IsAbs(r.Task.Image)) {
+			return false
+		}
+
 	}
 	if c.Request.Gate == supervisor.NoGate {
 		return true

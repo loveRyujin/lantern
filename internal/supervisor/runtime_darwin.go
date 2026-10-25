@@ -215,7 +215,7 @@ func signalReceipt(m *identityMonitor, r *receipt, l *logger) {
 }
 func settleReceipt(m *identityMonitor, r *receipt, ownWait bool) {
 	r.Absent = waitAbsent(m, r.Target.PID, 2*time.Second)
-	if r.SignalSkipped && r.Absent {
+	if r.SignalSkipped && r.Absent && r.Error == "" {
 		r.SignalResolvedBy = "registered_absence"
 		if ownWait && r.Waited {
 			r.SignalResolvedBy = "own_wait_and_absence"
@@ -343,6 +343,8 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 	prepared := messages(regR, result.Nonce)
 	acks := messages(ackR, result.Nonce)
 	registered, armed, goSent, preparedClosed, stopped := false, false, false, false, false
+	bootstrapUnavailable := false
+	var bootstrapConflict error
 	var completed *receipt
 	deadline := time.NewTimer(7 * time.Second)
 	defer deadline.Stop()
@@ -369,19 +371,32 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 		if id.PID <= 0 || id.StartSeconds == 0 || id.StartMicroseconds >= 1000000 || id.Image != exe {
 			return ErrProtocol
 		}
-		actual, e := m.identity(id.PID, result.Nonce)
-		if e != nil {
-			if !m.absent(id.PID) {
-				return e
-			}
-		} else if classifyIdentity(id, actual, nil) != nil || actual.Image != exe {
-			return ErrProtocol
-		}
+		// Keep the valid private-pipe claim even if libproc catches the launcher
+		// in an exit transition. This is a candidate identity, never acceptance
+		// of PREPARED and never permission to signal or authorize GO.
 		result.Task = id
 		l.event("launcher_observed", id.PID, "direct bootstrap identity; GO remains gated")
+		actual, e := m.identity(id.PID, result.Nonce)
+		if e != nil {
+			bootstrapUnavailable = true
+			result.SignalSkipReason = fmt.Errorf("%w: bootstrap: %v", errIdentityUnavailable, e).Error()
+			l.event("identity_unavailable", id.PID, result.SignalSkipReason)
+			return nil
+		}
+		if e = classifyIdentity(id, actual, nil); e != nil {
+			bootstrapConflict = e
+			return e
+		}
+		if actual.Image != exe {
+			bootstrapConflict = fmt.Errorf("%w: bootstrap image mismatch; no signal sent", ErrProtocol)
+			return bootstrapConflict
+		}
 		return nil
 	}
 	accept := func(v message) error {
+		if bootstrapConflict != nil {
+			return bootstrapConflict
+		}
 		if registered || v.Kind != "PREPARED" || (result.Task.PID != 0 && result.Task != v.Target) {
 			return ErrProtocol
 		}
@@ -393,6 +408,8 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 			return ErrProtocol
 		}
 		result.Task = v.Target
+		bootstrapUnavailable = false
+		result.SignalSkipReason = ""
 		registered = true
 		result.Registered = true
 		result.State = StateRegistered
@@ -575,8 +592,23 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 				}
 				if result.Task.PID > 0 {
 					rr := receipt{Target: result.Task, StopReason: "guardian_lost"}
-					signalReceipt(m, &rr, &l)
+					switch {
+					case bootstrapConflict != nil:
+						rr.Error = bootstrapConflict.Error()
+						rr.SignalSkipped = true
+						rr.SignalSkipReason = rr.Error
+						l.event("signal_skipped", rr.Target.PID, rr.Error)
+					case bootstrapUnavailable && !registered:
+						rr.SignalSkipped = true
+						rr.SignalSkipReason = result.SignalSkipReason
+						l.event("signal_skipped", rr.Target.PID, rr.SignalSkipReason)
+					default:
+						signalReceipt(m, &rr, &l)
+					}
 					settleReceipt(m, &rr, false)
+					if rr.SignalResolvedBy != "" && !registered {
+						rr.SignalResolvedBy = "bootstrap_pid_absence"
+					}
 					result.TaskAbsent = rr.Absent
 					result.SignalSkipped = rr.SignalSkipped
 					result.SignalSkipReason = rr.SignalSkipReason
@@ -585,7 +617,10 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 						runErr = errors.Join(runErr, errors.New(rr.Error))
 					}
 				} else {
-					result.TaskAbsent = true
+					// Only the fixed pre-spawn gate proves there was no task. EOF
+					// with an unknown identity after possible spawn proves neither
+					// its PID nor disappearance.
+					result.TaskAbsent = q.Gate == BeforeSpawn
 				}
 				if runErr == nil {
 					runErr = ErrPeerLost
@@ -597,7 +632,7 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 			result.GoAuthorized = goSent
 			result.GuardianAbsent = waitAbsent(m, p.Pid, time.Second)
 			if !result.TaskAbsent || !result.GuardianAbsent {
-				runErr = fmt.Errorf("registered process remains")
+				runErr = errors.Join(runErr, fmt.Errorf("task or guardian disappearance unverified"))
 			}
 			if ctx.Err() != nil {
 				result.State = Cancelled
