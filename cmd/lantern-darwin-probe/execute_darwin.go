@@ -142,6 +142,8 @@ func internalMain(args []string) (bool, int) {
 		return true, 125
 	}
 	switch args[0] {
+	case "__supervision-app", "__supervision-guardian", "__supervision-launcher":
+		return true, supervisionHelper(args[0], args[1])
 	case "__launch":
 		return true, launch(args[1])
 	case "__guardian":

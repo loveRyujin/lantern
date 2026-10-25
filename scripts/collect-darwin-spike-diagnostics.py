@@ -21,6 +21,18 @@ for stage in report.get('stages', []):
             pid = run.get(key)
             if isinstance(pid, int) and pid > 0:
                 pids.add(pid)
+# The independent supervision schema records explicit actor identities/events.
+def case_pids(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in ('pid', 'app_pid', 'guardian_pid', 'launcher_pid', 'payload_pid', 'target_pid') and isinstance(item, int) and item > 0:
+                pids.add(item)
+            elif isinstance(item, (dict, list)):
+                case_pids(item)
+    elif isinstance(value, list):
+        for item in value:
+            case_pids(item)
+case_pids(report.get('cases', []))
 if not pids:
     raise SystemExit(0)
 predicate = ' OR '.join('eventMessage CONTAINS "(%d)"' % pid for pid in sorted(pids))
