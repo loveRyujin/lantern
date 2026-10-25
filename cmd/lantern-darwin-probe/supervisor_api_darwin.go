@@ -11,7 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -20,38 +20,6 @@ import (
 
 // The disposable acceptance host calls Run in its own process. It is the host,
 // not a subprocess invented by the production API to stand in for its caller.
-type apiHostReturn struct {
-	Returned bool              `json:"returned"`
-	HostPID  int               `json:"host_pid"`
-	Result   supervisor.Result `json:"result"`
-	Error    string            `json:"error,omitempty"`
-}
-type apiCase struct {
-	ID              string             `json:"id"`
-	Status          string             `json:"status"`
-	Request         supervisor.Request `json:"request"`
-	FaultTarget     string             `json:"fault_target,omitempty"`
-	HostPID         int                `json:"host_pid"`
-	GuardianPID     int                `json:"guardian_pid"`
-	TaskPID         int                `json:"task_pid"`
-	Return          apiHostReturn      `json:"return"`
-	Events          []supervisor.Event `json:"events"`
-	GuardianReceipt json.RawMessage    `json:"guardian_receipt,omitempty"`
-	Checks          map[string]bool    `json:"checks"`
-	HarnessRescue   bool               `json:"harness_rescue"`
-	Error           string             `json:"error,omitempty"`
-	WallMS          int64              `json:"wall_ms"`
-}
-type apiReport struct {
-	Schema        string    `json:"schema"`
-	Status        string    `json:"status"`
-	Source        string    `json:"source_commit"`
-	Dirty         bool      `json:"source_dirty"`
-	ExecutableSHA string    `json:"executable_sha256"`
-	Cases         []apiCase `json:"cases"`
-	Error         string    `json:"error,omitempty"`
-}
-
 func supervisorAPIInternal(args []string) (bool, int) {
 	if len(args) == 0 || args[0] != "__supervisor-api-host" {
 		return false, 0
@@ -71,6 +39,7 @@ func supervisorAPIInternal(args []string) (bool, int) {
 			for time.Now().Before(until) {
 				for _, e := range apiEvents(args[2]) {
 					if e.Kind == "payload_entered" {
+						_ = writeJSON(filepath.Join(args[2], "cancel-attempt.json"), map[string]bool{"attempted": true})
 						cancel()
 						return
 					}
@@ -126,6 +95,16 @@ func supervisorAPICLI(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
+	r.Environment = map[string]string{"goos": runtime.GOOS, "goarch": runtime.GOARCH, "go_version": runtime.Version(), "macos_version": commandText(ctx, "/usr/bin/sw_vers", "-productVersion"), "macos_build": commandText(ctx, "/usr/bin/sw_vers", "-buildVersion"), "helper": "sealed-go-lifecycle"}
+	r.Fingerprints = map[string]string{}
+	for _, name := range []string{"common.go", "protocol.go", "runtime_darwin.go", "spawn_darwin.go"} {
+		b, e := os.ReadFile(filepath.Join("internal", "supervisor", name))
+		if e != nil {
+			r.Error = e.Error()
+		} else {
+			r.Fingerprints[name] = digest(b)
+		}
+	}
 	r.Source = commandText(ctx, "git", "rev-parse", "HEAD")
 	r.Dirty = commandText(ctx, "git", "status", "--porcelain") != ""
 	exe, e := os.Executable()
@@ -275,6 +254,7 @@ func runAPICase(parent context.Context, exe, root, id string, q supervisor.Reque
 			}
 			faulted = true
 			faultTime = time.Now()
+			c.FaultAtNS = faultTime.UnixNano()
 		}
 		if !waited {
 			select {
@@ -284,6 +264,10 @@ func runAPICase(parent context.Context, exe, root, id string, q supervisor.Reque
 			}
 		}
 		if waited && apiAbsent(c.GuardianPID) && apiAbsent(c.TaskPID) {
+			c.AbsentAtNS = time.Now().UnixNano()
+			if faulted {
+				c.FaultToAbsentMS = float64(c.AbsentAtNS-c.FaultAtNS) / 1e6
+			}
 			break
 		}
 		if faulted && time.Since(faultTime) > 2*time.Second {
@@ -299,6 +283,8 @@ func runAPICase(parent context.Context, exe, root, id string, q supervisor.Reque
 	if len(files) == 1 {
 		c.GuardianReceipt, _ = os.ReadFile(files[0])
 	}
+	_, attemptErr := os.Stat(filepath.Join(evidence, "cancel-attempt.json"))
+	c.CancelAttempted = attemptErr == nil
 	absent := waited && apiAbsent(c.HostPID) && apiAbsent(c.GuardianPID) && apiAbsent(c.TaskPID)
 	entered, goSeen, registered, armed := false, false, false, false
 	for _, v := range c.Events {
@@ -315,8 +301,9 @@ func runAPICase(parent context.Context, exe, root, id string, q supervisor.Reque
 	}
 	c.Checks["real_host"] = !c.Return.Returned || c.Return.HostPID == c.HostPID && c.Return.Result.HostPID == c.HostPID
 	c.Checks["fault_injected"] = target == "" || faulted
+	c.Checks["fault_response"] = target == "" || c.FaultAtNS > 0 && c.AbsentAtNS >= c.FaultAtNS && c.FaultToAbsentMS <= 2000
 	c.Checks["processes_absent"] = absent
-	c.Checks["go_gate"] = !entered || goSeen && registered && armed
+	c.Checks["go_gate"] = (!entered || goSeen && registered && armed) && apiProtocolOrder(c)
 	c.Checks["startup_no_payload"] = q.Gate == "" || !entered && !goSeen
 	c.Checks["host_result"] = target == "host" && !c.Return.Returned || target != "host" && c.Return.Returned
 	if target == "host" {
@@ -333,13 +320,9 @@ func runAPICase(parent context.Context, exe, root, id string, q supervisor.Reque
 		case target == "guardian":
 			c.Checks["outcome"] = r.State == supervisor.Failed && c.Return.Error != ""
 		case cancelCase:
-			c.Checks["outcome"] = r.State == supervisor.Cancelled && strings.Contains(c.Return.Error, "canceled") || q.Mode == supervisor.ExitRace && r.State == supervisor.Completed && r.Worker.ExitCode == 0
+			c.Checks["outcome"] = apiOutcome(c, true)
 		default:
-			want := 0
-			if q.Mode == supervisor.ExpectedError {
-				want = 1
-			}
-			c.Checks["outcome"] = r.State == supervisor.Completed && c.Return.Error == "" && r.Worker.ExitCode == want && r.Worker.Entered
+			c.Checks["outcome"] = apiOutcome(c, false)
 		}
 	}
 	c.Checks["detachment"] = true
@@ -352,7 +335,7 @@ func runAPICase(parent context.Context, exe, root, id string, q supervisor.Reque
 			_ = json.Unmarshal(c.GuardianReceipt, &receipt)
 			w = receipt.Worker
 		}
-		c.Checks["detachment"] = w.Entered && w.Group == w.PID && (q.Mode != supervisor.SetSID || w.Session == w.PID)
+		c.Checks["detachment"] = w.Entered && w.PID == c.TaskPID && w.Group == w.PID && w.OriginalGroup != w.Group && (q.Mode != supervisor.SetSID || w.Session == w.PID)
 	}
 	if !absent {
 		c.HarnessRescue = true
@@ -384,6 +367,7 @@ func runAPICase(parent context.Context, exe, root, id string, q supervisor.Reque
 			}
 		}
 	}
+	c.WallMS = time.Since(started).Milliseconds()
 	_ = writeJSON(filepath.Join(dir, "case.json"), c)
 	return
 }

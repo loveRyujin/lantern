@@ -682,6 +682,7 @@ func launcherMain(c jobConfig) int {
 	}
 	_, e = spawnFixed(canonical(exe), []string{helperArgument, "worker", string(c.Request.Mode)}, []*os.File{os.Stdin, os.Stdout, os.Stderr}, true)
 	if e != nil {
+		l.event("exec_error", id.PID, e.Error())
 		fmt.Fprintln(os.Stderr, e)
 	}
 	return 125

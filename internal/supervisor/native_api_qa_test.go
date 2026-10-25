@@ -230,6 +230,27 @@ func TestSupervisorQANativeResultsRecoveryAndHostInvariants(t *testing.T) {
 	}
 	limits := qaSupervisorLimits(t)
 	nonces, roots := map[string]bool{}, map[string]bool{}
+	// Force a real preparation failure without relying on permissions or a
+	// missing platform. Work may have been allocated, but no actor may start.
+	badEvidence := filepath.Join(filepath.Dir(c.EvidenceRoot), "owned-regular-file")
+	prior := []byte("preserve this owned file on preparation failure")
+	if err := os.WriteFile(badEvidence, prior, 0600); err != nil {
+		t.Fatal(err)
+	}
+	badConfig := c
+	badConfig.EvidenceRoot = badEvidence
+	q := Request{Kind: GoLifecycle, Mode: Normal}
+	failed, failedErr := New(badConfig).Run(t.Context(), q)
+	qaSupervisorRecord(p, q, failed, failedErr)
+	if failedErr == nil || failed.State != Failed || failed.GuardianPID != 0 || failed.Task.PID != 0 || failed.Worker.Entered || failed.GoAuthorized || failed.WorkRoot == "" || !failed.WorkRootClean {
+		t.Fatalf("preparation failure was not terminal or left owned work: state=%s error=%v result=%+v", failed.State, failedErr, failed)
+	}
+	if _, err := os.Lstat(failed.WorkRoot); !os.IsNotExist(err) {
+		t.Fatalf("preparation failure did not actually remove its work directory: %v", err)
+	}
+	if got, err := os.ReadFile(badEvidence); err != nil || string(got) != string(prior) {
+		t.Fatalf("preparation failure damaged existing evidence path: %q %v", got, err)
+	}
 	for _, mode := range []Mode{Normal, ExpectedError, Normal, Hold, Normal} {
 		ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 		defer cancel()
