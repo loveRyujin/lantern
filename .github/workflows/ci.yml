@@ -206,30 +206,11 @@ jobs:
       - name: Build pure Go experiment carrier
         run: go build -o "${RUNNER_TEMP}/lantern-darwin-probe" ./cmd/lantern-darwin-probe
       - name: Test Darwin experiment contracts
-        run: go test ./cmd/lantern-darwin-probe -run '^TestDarwinProbeQA' -count=1 -v -timeout 10m
+        run: go test ./cmd/lantern-darwin-probe -run '^TestDarwin(Probe|Supervision)QA' -count=1 -v -timeout 10m
       - name: Run real isolation, lifecycle and signed bundle experiments
-        run: |
-          # Bounded diagnostic for only the fixed experiment interpreter name.
-          # Retain the original experiment exit status, never turn a failure green.
-          sudo -n /usr/bin/fs_usage -w -f filesys -t 15 python3.12 > "${RUNNER_TEMP}/darwin-bootstrap-filesys.log" 2>&1 &
-          trace_pid=$!
-          sleep 0.2
-          set +e
-          bash scripts/probe-darwin-sandbox.sh --probe "${RUNNER_TEMP}/lantern-darwin-probe" --runtime-config "${RUNNER_TEMP}/darwin-spike-runtime.json" --out "${RUNNER_TEMP}/darwin-spike-reports"
-          code=$?
-          wait "$trace_pid"
-          set -e
-          python3 - <<'PYTRACE'
-          import os, pathlib, re
-          root = pathlib.Path(os.environ['RUNNER_TEMP'])
-          raw = (root / 'darwin-bootstrap-filesys.log').read_text(errors='replace')
-          lines = [line for line in raw.splitlines() if re.search(r'python3\.12\.\d+\s*$', line)]
-          data = '\n'.join(lines).encode()
-          (root / 'darwin-spike-reports' / 'bootstrap-filesys.log').write_bytes(data[:2097152])
-          PYTRACE
-          exit "$code"
+        run: bash scripts/probe-darwin-sandbox.sh --probe "${RUNNER_TEMP}/lantern-darwin-probe" --runtime-config "${RUNNER_TEMP}/darwin-spike-runtime.json" --out "${RUNNER_TEMP}/darwin-spike-reports"
       - name: Preserve diagnostics from owned native process IDs
-        if: always()
+        if: failure()
         run: python3 scripts/collect-darwin-spike-diagnostics.py "${RUNNER_TEMP}/darwin-spike-reports"
       - name: Verify complete real experiment evidence
         run: |
@@ -278,4 +259,82 @@ jobs:
         with:
           name: darwin-sandbox-spike-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/darwin-spike-reports/
+          if-no-files-found: error
+      - name: Run bounded single-fault supervision experiments
+        run: |
+          mkdir -p "${RUNNER_TEMP}/darwin-supervision-reports"
+          "${RUNNER_TEMP}/lantern-darwin-probe" supervision --runtime-config "${RUNNER_TEMP}/darwin-spike-runtime.json" --out "${RUNNER_TEMP}/darwin-supervision-reports" > "${RUNNER_TEMP}/darwin-supervision-reports/stdout.json"
+      - name: Preserve owned supervision diagnostics on failure
+        if: failure()
+        run: python3 scripts/collect-darwin-spike-diagnostics.py "${RUNNER_TEMP}/darwin-supervision-reports"
+      - name: Verify all single-fault cases and protocol evidence
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'darwin-supervision-reports', 'report.json'), encoding='utf-8') as handle:
+              report = json.load(handle)
+          assert report['schema'] == 'lantern.darwin-supervision.v1'
+          assert report['status'] == 'passed' and report['single_fault_verified'] is True
+          assert report['production_backend_available'] is False and report['fault_model']
+          assert report['control_fixture_cleanup'] is True
+          preflight = report['preflight_checks']
+          assert len(preflight) == 5 and {c['name'] for c in preflight} == {'platform', 'runtime_prepared', 'host_fork_positive', 'policy_declared', 'source_metadata'}
+          assert all(c['passed'] is True for c in preflight)
+          expected = {f'startup-{phase}-{target}' for phase in ('before-spawn', 'after-spawn', 'registered', 'armed') for target in ('app', 'guardian')}
+          expected |= {f'{phase}-{target}' for phase in ('steady', 'setsid', 'setpgid') for target in ('app', 'guardian')}
+          expected |= {'normal', 'error', 'cancel', 'exit-cancel-race'}
+          cases = report['cases']
+          assert len(cases) == 18 and {c['id'] for c in cases} == expected
+          required_checks = {'protocol_events', 'go_gate', 'payload_contract', 'fault_response', 'processes_absent', 'mechanism_cleanup', 'no_harness_rescue', 'deadline'}
+          for case in cases:
+              assert case['status'] == 'passed' and case['events'], case
+              assert case['harness_rescue'] is False, case
+              assert all(case[k] is True for k in ('app_absent', 'guardian_absent', 'payload_absent', 'mechanism_cleanup', 'task_clean')), case
+              checks = case['checks']
+              assert len(checks) == 8 and {c['name'] for c in checks} == required_checks and all(c['passed'] is True for c in checks), case
+              assert 0 <= case['wall_ms'] <= 8000 and 0 <= case['fault_to_absent_ms'] <= 2000, case
+              if case['id'].startswith('startup-'):
+                  assert not case['go_authorized'] and not case['payload_entered'], case
+              else:
+                  assert case['registered'] and case['armed'] and case['go_authorized'] and case['payload_entered'], case
+                  assert case['payload_pid'] == case['launcher_pid'] > 0, case
+          environment = report['environment']
+          assert environment['os'] == 'darwin' and environment['arch'] == 'arm64'
+          assert environment['source_commit'] == subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert environment['source_dirty'] == 'false'
+          fingerprints = report['fingerprints']
+          assert set(fingerprints) == {'protocol_sha256', 'payload_sha256', 'policy_sha256', 'runtime_marker_sha256', 'executable_sha256'}
+          assert all(len(v) == 64 and all(c in '0123456789abcdef' for c in v) for v in fingerprints.values())
+          PY
+      - name: Independently break supervision and startup gates
+        env:
+          DARWIN_SUPERVISION_REAL_QA: "1"
+          DARWIN_SUPERVISION_PROBE: ${{ runner.temp }}/lantern-darwin-probe
+          DARWIN_SUPERVISION_RUNTIME_CONFIG: ${{ runner.temp }}/darwin-spike-runtime.json
+          DARWIN_SUPERVISION_BASELINE_REPORT: ${{ runner.temp }}/darwin-supervision-reports/report.json
+        run: go test ./cmd/lantern-darwin-probe -run '^TestDarwinSupervisionNativeIndependentQA$' -count=1 -v -timeout 18m
+      - name: Verify independent supervision mutation receipts
+        run: |
+          python3 - <<'PYQA'
+          import hashlib, json, os, pathlib, subprocess
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'darwin-supervision-reports' / 'independent-qa' / 'index.json'
+          index = json.loads(path.read_text())
+          assert index['baseline_status'] == 'passed'
+          assert index['candidate_sha'] == subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          results = index['results']
+          assert len(results) == 3 and {r['name'] for r in results} == {'app-watcher-disabled', 'guardian-eof-disabled', 'launcher-go-bypass'}
+          for result in results:
+              assert result['exit_code'] == 1 and result['target_red'] is True and result['source_restored'] is True, result
+              name = pathlib.PurePosixPath(result['source_file'])
+              assert not name.is_absolute() and '..' not in name.parts
+              source = pathlib.Path('cmd/lantern-darwin-probe') / name
+              assert hashlib.sha256(source.read_bytes()).hexdigest() == result['original_sha256'], result
+              assert result['mutated_sha256'] != result['original_sha256'] and len(result['mutated_sha256']) == 64
+          PYQA
+      - name: Preserve supervision protocol events and independent evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: darwin-supervision-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/darwin-supervision-reports/
           if-no-files-found: error
