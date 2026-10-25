@@ -69,6 +69,12 @@ func parseOptions(args []string) (options, error) {
 }
 
 func main() {
+	if handled, code := supervisorAPIInternal(os.Args[1:]); handled {
+		os.Exit(code)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "supervision-api" {
+		os.Exit(supervisorAPICLI(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "supervision" {
 		os.Exit(supervisionCLI(os.Args[2:]))
 	}
