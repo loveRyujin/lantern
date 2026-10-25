@@ -83,11 +83,17 @@ func runSupervision(ctx context.Context, o options) (r SupervisionReport) {
 		r.Error = e.Error()
 		return
 	}
-	for _, d := range []string{out, filepath.Join(out, "events"), filepath.Join(out, "policies")} {
+	for _, d := range []string{out, filepath.Join(out, "policies")} {
 		if e = os.MkdirAll(d, 0700); e != nil {
 			r.Error = e.Error()
 			return
 		}
+	}
+	if e = createSupervisionControl(filepath.Join(out, "events")); e != nil {
+		r.Status = "failed"
+		r.PreserveExistingOutput = true
+		r.Error = "refuse existing or unavailable events directory without reading prior PID/event files: " + e.Error()
+		return
 	}
 	base, e := os.MkdirTemp("", "lantern-supervision-")
 	if e != nil {
@@ -129,8 +135,9 @@ func runSupervision(ctx context.Context, o options) (r SupervisionReport) {
 		}
 		task.Budget.WallMS = 5000
 		control := filepath.Join(out, "events", id)
-		if e = os.MkdirAll(control, 0700); e != nil {
-			r.Error = e.Error()
+		if e = createSupervisionControl(control); e != nil {
+			r.PreserveExistingOutput = true
+			r.Error = "refuse existing or unavailable control directory without reading prior PID/event files: " + e.Error()
 			return
 		}
 		var nonce [16]byte
@@ -219,7 +226,7 @@ func runSupervisionCase(ctx context.Context, c supervisionConfig, path string, m
 	defer ticker.Stop()
 	deadline := time.NewTimer(8 * time.Second)
 	defer deadline.Stop()
-	var faultTime time.Time
+	var faultTime, firstAbsent time.Time
 	refresh := func() {
 		result.Events = supervisionLoadEvents(c.Control)
 		for _, e := range result.Events {
@@ -257,6 +264,9 @@ func runSupervisionCase(ctx context.Context, c supervisionConfig, path string, m
 		result.GuardianAbsent = result.GuardianPID > 0 && processAbsent(m, result.GuardianPID)
 		result.PayloadAbsent = result.LauncherPID <= 0 || processAbsent(m, result.LauncherPID)
 		result.TaskClean = supervisionTaskAbsent(c.Task.Root)
+		if !faultTime.IsZero() && firstAbsent.IsZero() && result.AppAbsent && result.GuardianAbsent && result.PayloadAbsent {
+			firstAbsent = time.Now()
+		}
 		owner := "app"
 		if c.Fault == "app" {
 			owner = "guardian"
@@ -317,11 +327,22 @@ func runSupervisionCase(ctx context.Context, c supervisionConfig, path string, m
 					}
 				}
 			}
-			if result.AppAbsent && result.GuardianAbsent && result.PayloadAbsent && result.TaskClean && result.MechanismCleanup {
+			if result.AppAbsent && result.GuardianAbsent && result.PayloadAbsent {
 				finished = true
+				if !result.TaskClean || !result.MechanismCleanup {
+					owner := "app"
+					if c.Fault == "app" {
+						owner = "guardian"
+					}
+					if receipt, ok := result.Receipts[owner]; ok && receipt.Error != "" {
+						result.Error = "mechanism receipt: " + receipt.Error
+					} else {
+						result.Error = "processes exited but mechanism completion/cleanup evidence failed"
+					}
+				}
 			}
-			if !faultTime.IsZero() && time.Since(faultTime) > 2*time.Second {
-				result.Error = "fault response exceeded 2s"
+			if !faultTime.IsZero() && firstAbsent.IsZero() && time.Since(faultTime) > 2*time.Second {
+				result.Error = "fault observation deadline exceeded without process absence"
 				finished = true
 			}
 		}
@@ -329,7 +350,10 @@ func runSupervisionCase(ctx context.Context, c supervisionConfig, path string, m
 	refresh()
 	result.WallMS = time.Since(start).Seconds() * 1000
 	if !faultTime.IsZero() {
-		result.ResponseMS = time.Since(faultTime).Seconds() * 1000
+		result.ResponseMS = -1
+		if !firstAbsent.IsZero() {
+			result.ResponseMS = firstAbsent.Sub(faultTime).Seconds() * 1000
+		}
 	}
 	// Rescue is a failure-only harness action. It never upgrades a case.
 	if !result.AppAbsent || !result.GuardianAbsent || !result.PayloadAbsent || !result.TaskClean {
@@ -373,7 +397,7 @@ func runSupervisionCase(ctx context.Context, c supervisionConfig, path string, m
 	}
 	responseOK := result.Error == ""
 	if c.Fault != "" {
-		responseOK = responseOK && !faultTime.IsZero() && result.ResponseMS <= 2000
+		responseOK = responseOK && !faultTime.IsZero() && result.ResponseMS >= 0 && result.ResponseMS <= 2000
 	} else {
 		g, ok := result.Receipts["guardian"]
 		responseOK = responseOK && ok && g.Waited && g.WaitedPID == result.LauncherPID

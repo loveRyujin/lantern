@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -12,6 +13,22 @@ import (
 )
 
 const supervisionProtocol = "v1: guardian owns launcher; launcher registers directly with app; PREPARED -> app registered -> guardian armed -> app GO -> exec; all control FDs CLOEXEC; one fault only; no harness rescue"
+
+var errSupervisionIdentityUnavailable = errors.New("registered identity unavailable; no signal sent")
+var errSupervisionBirthMismatch = errors.New("different registered birth; no signal sent")
+
+func classifySupervisionIdentity(expected, observed supervisionIdentity, readErr error) error {
+	if readErr != nil {
+		return fmt.Errorf("%w: %v", errSupervisionIdentityUnavailable, readErr)
+	}
+	if observed.PID <= 0 || observed.StartSeconds == 0 || observed.StartMicroseconds >= 1000000 {
+		return fmt.Errorf("%w: invalid or incomplete identity fields", errSupervisionIdentityUnavailable)
+	}
+	if expected.PID <= 0 || observed.PID != expected.PID || observed.StartSeconds != expected.StartSeconds || observed.StartMicroseconds != expected.StartMicroseconds {
+		return fmt.Errorf("%w: expected %d/%d.%06d observed %d/%d.%06d", errSupervisionBirthMismatch, expected.PID, expected.StartSeconds, expected.StartMicroseconds, observed.PID, observed.StartSeconds, observed.StartMicroseconds)
+	}
+	return nil
+}
 
 type supervisionFrame struct {
 	Kind              string `json:"kind"`
@@ -149,7 +166,7 @@ func validateSupervisionCase(c SupervisionCase) error {
 			return fmt.Errorf("event actor PID mismatch")
 		}
 		switch e.Kind {
-		case "app_started", "guardian_started", "launcher_spawned", "prepared", "registered", "armed", "go_authorized", "go_received", "payload_entered", "fault_window", "fault_injected", "cancel_requested", "target_kill", "target_waited", "target_absent", "cleanup", "complete", "peer_lost", "abort":
+		case "app_started", "guardian_started", "launcher_spawned", "prepared", "registered", "armed", "go_authorized", "go_received", "payload_entered", "fault_window", "fault_injected", "cancel_requested", "target_kill", "signal_skipped", "target_waited", "target_absent", "cleanup", "complete", "peer_lost", "abort":
 		default:
 			return fmt.Errorf("unknown event kind")
 		}
@@ -295,6 +312,28 @@ func validateSupervisionCase(c SupervisionCase) error {
 			if !kinds["cancel_requested"] || (g.ExitCode != 0 && g.StopReason != "cancel") {
 				return fmt.Errorf("cancel/exit race missing")
 			}
+		}
+	}
+	owner := "app"
+	ownerPID := c.AppPID
+	if c.FaultTarget == "app" {
+		owner = "guardian"
+		ownerPID = c.GuardianPID
+	}
+	r, ok := c.Receipts[owner]
+	if !ok || r.Actor != owner || r.PID != ownerPID || r.Error != "" || !r.Cleanup || !r.TargetAbsent {
+		return fmt.Errorf("mechanism receipt contradicts completion")
+	}
+	if r.SignalSkipped {
+		if r.SignalSkipReason == "" {
+			return fmt.Errorf("signal skip reason missing")
+		}
+		if owner == "guardian" {
+			if r.SignalResolvedBy != "own_wait_and_absence" || !r.Waited || r.WaitedPID != c.LauncherPID {
+				return fmt.Errorf("skipped signal not resolved by owned Wait")
+			}
+		} else if r.SignalResolvedBy != "registered_absence" || !c.Registered || !r.Registered {
+			return fmt.Errorf("skipped signal not resolved by registered absence")
 		}
 	}
 	return nil

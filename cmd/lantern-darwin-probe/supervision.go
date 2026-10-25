@@ -55,38 +55,42 @@ type SupervisionCase struct {
 	Error            string                        `json:"error,omitempty"`
 }
 type SupervisionReport struct {
-	Schema              string            `json:"schema"`
-	Status              string            `json:"status"`
-	Production          bool              `json:"production_backend_available"`
-	SingleFaultVerified bool              `json:"single_fault_verified"`
-	FaultModel          string            `json:"fault_model"`
-	Environment         map[string]string `json:"environment"`
-	Runtime             pyrt.Runtime      `json:"runtime"`
-	Fingerprints        map[string]string `json:"fingerprints"`
-	Preflight           []Check           `json:"preflight_checks"`
-	Cases               []SupervisionCase `json:"cases"`
-	Cleanup             bool              `json:"control_fixture_cleanup"`
-	Limitations         []string          `json:"limitations"`
-	Error               string            `json:"error,omitempty"`
-	Started             time.Time         `json:"started"`
-	Finished            time.Time         `json:"finished"`
+	Schema                 string            `json:"schema"`
+	Status                 string            `json:"status"`
+	Production             bool              `json:"production_backend_available"`
+	SingleFaultVerified    bool              `json:"single_fault_verified"`
+	FaultModel             string            `json:"fault_model"`
+	Environment            map[string]string `json:"environment"`
+	Runtime                pyrt.Runtime      `json:"runtime"`
+	Fingerprints           map[string]string `json:"fingerprints"`
+	Preflight              []Check           `json:"preflight_checks"`
+	Cases                  []SupervisionCase `json:"cases"`
+	Cleanup                bool              `json:"control_fixture_cleanup"`
+	PreserveExistingOutput bool              `json:"existing_output_preserved,omitempty"`
+	Limitations            []string          `json:"limitations"`
+	Error                  string            `json:"error,omitempty"`
+	Started                time.Time         `json:"started"`
+	Finished               time.Time         `json:"finished"`
 }
 
 // Receipts distinguish a real direct-child Wait from orphan disappearance.
 type supervisionReceipt struct {
-	Actor        string              `json:"actor"`
-	PID          int                 `json:"pid"`
-	Target       supervisionIdentity `json:"target"`
-	Waited       bool                `json:"waited"`
-	WaitedPID    int                 `json:"waited_pid"`
-	ExitCode     int                 `json:"exit_code"`
-	StopReason   string              `json:"stop_reason,omitempty"`
-	TargetAbsent bool                `json:"target_absent"`
-	Cleanup      bool                `json:"cleanup"`
-	Registered   bool                `json:"registered"`
-	Armed        bool                `json:"armed"`
-	Go           bool                `json:"go"`
-	Error        string              `json:"error,omitempty"`
+	Actor            string              `json:"actor"`
+	PID              int                 `json:"pid"`
+	Target           supervisionIdentity `json:"target"`
+	Waited           bool                `json:"waited"`
+	WaitedPID        int                 `json:"waited_pid"`
+	ExitCode         int                 `json:"exit_code"`
+	StopReason       string              `json:"stop_reason,omitempty"`
+	TargetAbsent     bool                `json:"target_absent"`
+	Cleanup          bool                `json:"cleanup"`
+	Registered       bool                `json:"registered"`
+	Armed            bool                `json:"armed"`
+	Go               bool                `json:"go"`
+	Error            string              `json:"error,omitempty"`
+	SignalSkipped    bool                `json:"signal_skipped,omitempty"`
+	SignalSkipReason string              `json:"signal_skip_reason,omitempty"`
+	SignalResolvedBy string              `json:"signal_resolved_by,omitempty"`
 }
 type supervisionIdentity struct {
 	PID               int    `json:"pid"`
@@ -200,6 +204,10 @@ func supervisionCLI(args []string) int {
 	defer cancel()
 	r := runSupervision(ctx, o)
 	finalizeSupervision(&r)
+	if r.PreserveExistingOutput {
+		_ = json.NewEncoder(os.Stdout).Encode(r)
+		return 1
+	}
 	if e = os.MkdirAll(o.Out, 0700); e == nil {
 		var b []byte
 		b, e = json.MarshalIndent(r, "", "  ")
@@ -229,6 +237,10 @@ func supervisionCLI(args []string) int {
 	}
 	return 0
 }
+
+// Reject stale PID-bearing directories without modifying their contents.
+func createSupervisionControl(path string) error { return os.Mkdir(path, 0700) }
+
 func writeSupervisionMarkdown(out string, r SupervisionReport) error {
 	body := fmt.Sprintf("# Darwin single-fault supervision\n\nExperiment **%s**; single-fault verified **%t**; production backend **false**.\n\n%s\n\n", r.Status, r.SingleFaultVerified, r.FaultModel)
 	for _, c := range r.Cases {

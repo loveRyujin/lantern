@@ -8,6 +8,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -92,13 +93,52 @@ func supervisionSame(m *processMonitor, id supervisionIdentity) bool {
 	return e == nil && v.StartSeconds == id.StartSeconds && v.StartMicroseconds == id.StartMicroseconds
 }
 func supervisionKill(m *processMonitor, id supervisionIdentity) error {
-	if id.PID <= 0 || processAbsent(m, id.PID) {
+	if id.PID <= 0 {
 		return nil
 	}
-	if !supervisionSame(m, id) {
-		return fmt.Errorf("registered birth mismatch; no signal sent")
+	if processAbsent(m, id.PID) {
+		return fmt.Errorf("%w: already absent", errSupervisionIdentityUnavailable)
 	}
-	return syscall.Kill(id.PID, syscall.SIGKILL)
+	actual, e := m.identity(id.PID)
+	if e = classifySupervisionIdentity(id, supervisionIdentity{PID: actual.PID, StartSeconds: actual.StartSeconds, StartMicroseconds: actual.StartMicroseconds}, e); e != nil {
+		return e
+	}
+	if e = syscall.Kill(id.PID, syscall.SIGKILL); e == syscall.ESRCH {
+		return fmt.Errorf("%w: exited before signal", errSupervisionIdentityUnavailable)
+	}
+	return e
+}
+func supervisionSignalResult(r *supervisionReceipt, log *supervisionLog, e error) {
+	if e == nil {
+		return
+	}
+	if errors.Is(e, errSupervisionIdentityUnavailable) {
+		r.SignalSkipped = true
+		r.SignalSkipReason = e.Error()
+		log.event("signal_skipped", r.Target.PID, e.Error())
+		return
+	}
+	if r.Error == "" {
+		r.Error = e.Error()
+	} else {
+		r.Error += "; " + e.Error()
+	}
+}
+func supervisionResolveSkipped(r *supervisionReceipt, log *supervisionLog, registered bool) {
+	if !r.SignalSkipped {
+		return
+	}
+	if r.TargetAbsent && ((r.Actor == "guardian" && r.Waited && r.WaitedPID == r.Target.PID) || (r.Actor == "app" && registered)) {
+		r.SignalResolvedBy = "registered_absence"
+		if r.Actor == "guardian" {
+			r.SignalResolvedBy = "own_wait_and_absence"
+		}
+		log.event("target_absent", r.Target.PID, "identity unavailable resolved only by "+r.SignalResolvedBy)
+		return
+	}
+	if r.Error == "" {
+		r.Error = "identity unavailable without verified termination"
+	}
 }
 func supervisionLife(f *os.File) <-chan struct{} {
 	done := make(chan struct{})
@@ -268,6 +308,7 @@ func supervisionGuardian(c supervisionConfig, path string) int {
 		}
 		r.Cleanup = cleanupFixtureRoot(c.Task.Root) == nil
 		r.TargetAbsent = supervisionGone(m, r.Target.PID)
+		supervisionResolveSkipped(&r, &log, r.Registered)
 		log.event("cleanup", r.Target.PID, "")
 		supervisionReceiptWrite(c, r)
 		log.event("complete", r.Target.PID, "")
@@ -344,9 +385,7 @@ func supervisionGuardian(c supervisionConfig, path string) int {
 			stopped = true
 			r.StopReason = reason
 			log.event("target_kill", r.Target.PID, reason)
-			if e := supervisionKill(m, r.Target); e != nil {
-				r.Error = e.Error()
-			}
+			supervisionSignalResult(&r, &log, supervisionKill(m, r.Target))
 		}
 	}
 	for {
@@ -466,6 +505,7 @@ func supervisionApp(c supervisionConfig, path string) int {
 		r.Armed = armed
 		r.Go = goSent
 		r.TargetAbsent = supervisionGone(m, r.Target.PID)
+		supervisionResolveSkipped(&r, &log, registered)
 		if !r.TargetAbsent {
 			r.Error = "registered target remains"
 		}
@@ -536,9 +576,7 @@ func supervisionApp(c supervisionConfig, path string) int {
 			}
 			if r.Target.PID > 0 {
 				log.event("target_kill", r.Target.PID, "guardian_lost")
-				if e = supervisionKill(m, r.Target); e != nil {
-					r.Error = e.Error()
-				}
+				supervisionSignalResult(&r, &log, supervisionKill(m, r.Target))
 			}
 			r.StopReason = "guardian_lost"
 			return finish()

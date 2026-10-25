@@ -324,7 +324,13 @@ jobs:
           results = index['results']
           assert len(results) == 3 and {r['name'] for r in results} == {'app-watcher-disabled', 'guardian-eof-disabled', 'launcher-go-bypass'}
           for result in results:
-              assert result['exit_code'] == 1 and result['target_red'] is True and result['source_restored'] is True, result
+              assert result['target_red'] is True and result['source_restored'] is True, result
+              if result['name'] == 'launcher-go-bypass':
+                  # The helper genuinely exits 0 after unauthorized execution;
+                  # the independent oracle must reject that behavior with exit 1.
+                  assert result['validation_exit_code'] == 1 and result['observed_exit_code'] == 0, result
+              else:
+                  assert result['exit_code'] == 1, result
               name = pathlib.PurePosixPath(result['source_file'])
               assert not name.is_absolute() and '..' not in name.parts
               source = pathlib.Path('cmd/lantern-darwin-probe') / name
