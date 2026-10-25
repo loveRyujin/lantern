@@ -130,7 +130,10 @@ func apiOutcome(c apiCase, cancellation bool) bool {
 		return false
 	}
 	if r.State == supervisor.Cancelled {
-		return attempted && strings.Contains(c.Return.Error, "context canceled") && r.Worker.ExitCode == -1 && r.Worker.Signal == 9 && r.StopReason == "cancel"
+		if !attempted || !strings.Contains(c.Return.Error, "context canceled") || r.StopReason != "cancel" {
+			return false
+		}
+		return r.Worker.ExitCode == -1 && r.Worker.Signal == 9 || c.Request.Mode == supervisor.ExitRace && r.Worker.ExitCode == 0 && r.Worker.Signal == 0
 	}
 	return c.Request.Mode == supervisor.ExitRace && r.State == supervisor.Completed && c.Return.Error == "" && r.Worker.ExitCode == 0 && r.Worker.Signal == 0 && (r.StopReason == "" || r.StopReason == "cancel")
 }

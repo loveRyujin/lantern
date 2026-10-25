@@ -528,6 +528,9 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 				result.SignalSkipped = completed.SignalSkipped
 				result.SignalSkipReason = completed.SignalSkipReason
 				result.SignalResolvedBy = completed.SignalResolvedBy
+				if !goSent && runErr == nil {
+					runErr = fmt.Errorf("%w: fixed helper completed before GO", ErrProtocol)
+				}
 			} else {
 				l.event("peer_lost", p.Pid, "guardian exited without valid completion")
 				if !registered && !preparedClosed && prepared != nil {
