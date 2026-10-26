@@ -2,6 +2,7 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -197,6 +198,33 @@ jobs:
         with:
           go-version: "1.27.x"
           check-latest: true
+      - name: Establish actual same-PID CPU counter behavior across SETEXEC
+        env:
+          DARWIN_RESOURCE_COUNTER_QA: "1"
+          DARWIN_RESOURCE_COUNTER_OUT: ${{ runner.temp }}/darwin-resource-counter
+        run: go test ./internal/supervisor -run '^TestResourceCounterNativeQA$' -count=1 -v -timeout 1m
+      - name: Require real native CPU counter evidence
+        run: |
+          python3 - <<'PYCOUNTER'
+          import json, os, pathlib, subprocess
+          p = pathlib.Path(os.environ['RUNNER_TEMP']) / 'darwin-resource-counter' / 'report.json'
+          r = json.loads(p.read_text())
+          assert r['schema'] == 'lantern.darwin-resource-counter.v1' and r['status'] == 'passed', r
+          assert r['source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip() and r['source_dirty'] is False
+          assert r['goos'] == 'darwin' and r['goarch'] == 'arm64' and r['macos_version'] and r['macos_build']
+          assert r['same_pid_birth_image'] is True and r['actual_child_exit_code'] == 0
+          assert r['before']['identity'] == r['after']['identity'] == r['after_hold']['identity']
+          assert r['measured_preexec_burn_cpu_ns'] >= 200000000 and r['before_cpu_ns'] >= 200000000
+          assert type(r['cpu_reset_observed']) is bool and len(r['actual_test_executable_sha256']) == 64
+
+          PYCOUNTER
+      - name: Preserve raw same-PID CPU counter experiment
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: darwin-resource-counter-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/darwin-resource-counter/
+          if-no-files-found: error
       - name: Select supported Python
         uses: actions/setup-python@v7.1.0
         with:
