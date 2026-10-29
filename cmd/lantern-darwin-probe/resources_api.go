@@ -174,7 +174,7 @@ func resourceCaseChecks(c resourceAPICase, hostPID int) map[string]bool {
 		checks["termination"] = r.State == supervisor.Completed && c.Error == "" && len(c.ErrorKinds) == 0 && r.Worker.ExitCode == 0 && r.Worker.Signal == 0 && r.StopReason == "" && u.TriggerReason == ""
 	} else {
 		checks["termination"] = r.State == supervisor.Failed && c.Error != "" && len(c.ErrorKinds) == 1 && resourceHasKind(c.ErrorKinds, c.ExpectedReason) && r.StopReason == c.ExpectedReason && u.TriggerReason == c.ExpectedReason && r.Worker.ExitCode == -1 && r.Worker.Signal == 9
-		checks["online_trigger"] = u.TriggerMonotonicNS >= u.GoMonotonicNS && u.TriggerMonotonicNS <= u.SignalAttemptMonotonicNS && u.SignalAttemptMonotonicNS <= u.SignalReturnMonotonicNS && u.SignalReturnMonotonicNS <= u.WaitMonotonicNS && u.SignalSent
+		checks["online_trigger"] = u.TriggerMonotonicNS >= u.GoMonotonicNS && u.TriggerMonotonicNS <= u.SignalAttemptMonotonicNS && u.SignalAttemptMonotonicNS <= u.SignalReturnMonotonicNS && u.SignalAttemptMonotonicNS <= u.WaitMonotonicNS && u.SignalSent
 		switch c.ExpectedReason {
 		case "cpu_limit":
 			checks["target_budget_observed"] = cpuExceeded

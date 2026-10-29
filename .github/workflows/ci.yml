@@ -111,8 +111,10 @@ jobs:
           go-version: "1.27.x"
           check-latest: true
 
-      - name: Install python3-venv
-        run: sudo apt-get update && sudo apt-get install -y python3-venv
+      - name: Select hash-lock supported Python
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.12"
 
       - name: Hash-locked install and offline prepared runtime lease
         run: PYRT_ENSURE_REAL=1 PYRT_PREPARED_REAL=1 go test ./core/pyrt/ -run 'Test(EnsureReal|PreparedReal)$' -count=1 -v -timeout 15m
@@ -265,6 +267,60 @@ jobs:
           path: |
             ${{ runner.temp }}/darwin-resource-api-reports/
             ${{ runner.temp }}/darwin-resource-api-stdout.json
+          if-no-files-found: error
+      - name: Independently verify resource recovery cancellation and telemetry failure
+        env:
+          DARWIN_RESOURCE_REAL_QA: "1"
+          DARWIN_RESOURCE_QA_OUT: ${{ runner.temp }}/darwin-resource-independent
+        run: go test ./internal/supervisor -run '^TestResourceQA' -count=1 -v -timeout 3m
+      - name: Require independent resource proof manifest
+        run: |
+          python3 - <<'PYRESOURCEQA'
+          import json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'darwin-resource-independent'
+          names = {'TestResourceQANativeRecoveryAndCancellation', 'TestResourceQANativeConcurrentIsolation', 'TestResourceQANativeMonitorReadFailure'}
+          assert {p.stem for p in root.glob('*.json')} == names
+          for name in names:
+              r = json.loads((root / (name + '.json')).read_text())
+              assert r['status'] == 'passed' and r['source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip() and r['source_dirty'] is False, r
+              assert len(r['calls']) >= 2, r
+          PYRESOURCEQA
+      - name: Preserve independent resource native observations
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: darwin-resource-independent-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/darwin-resource-independent/
+          if-no-files-found: error
+      - name: Independently remove each resource safeguard and require actual budget breach
+        env:
+          DARWIN_RESOURCE_MUTATION_QA: "1"
+          DARWIN_RESOURCE_PROBE: ${{ runner.temp }}/lantern-darwin-probe
+          DARWIN_RESOURCE_BASELINE_REPORT: ${{ runner.temp }}/darwin-resource-api-reports/report.json
+        run: go test ./cmd/lantern-darwin-probe -run '^TestDarwinResourceAPINativeIndependentQA$' -count=1 -v -timeout 8m
+      - name: Require three actual resource mutation detections and restored source
+        run: |
+          python3 - <<'PYRESOURCEMUT'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'darwin-resource-api-reports' / 'independent-qa'
+          r = json.loads((root / 'index.json').read_text())
+          assert r['schema'] == 'lantern.darwin-resource-mutations.v1' and r['status'] == 'passed', r
+          assert r['candidate_sha'] == r['baseline_source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          expected = {'cpu-monitor-disabled', 'rss-monitor-disabled', 'wall-monitor-disabled'}
+          assert len(r['results']) == 3 and {x['name'] for x in r['results']} == expected
+          for x in r['results']:
+              assert x['target_red'] is True and x['source_restored'] is True and x['exit_code'] == 1 and x['observed_worker_exit_code'] == 0, x
+              assert x['exit_scope'] == 'resources-api-cli-oracle' and x['original_sha256'] != x['mutated_sha256']
+              assert hashlib.sha256(pathlib.Path(x['source_file']).read_bytes()).hexdigest() == x['original_sha256']
+              assert hashlib.sha256(pathlib.Path(x['counter_report']).read_bytes()).hexdigest() == x['counter_report_sha256']
+          assert not subprocess.check_output(['git','status','--porcelain'], text=True).strip()
+          PYRESOURCEMUT
+      - name: Preserve actual resource mutation proof and counter provenance
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: darwin-resource-mutations-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/darwin-resource-api-reports/independent-qa/
           if-no-files-found: error
       - name: Test Darwin experiment contracts
         run: go test ./cmd/lantern-darwin-probe -run '^TestDarwin(Probe|Supervision)QA' -count=1 -v -timeout 10m
