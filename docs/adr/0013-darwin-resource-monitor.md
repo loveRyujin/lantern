@@ -1,6 +1,6 @@
 # ADR 0013：Darwin 内部 CPU/RSS/Wall 在线监测
 
-状态：合同冻结中；CPU 跨 exec 计数口径等待真实原生前检。关联 Issue #58，依赖 #56 / ADR0012 已完成的 main08a9cc5。
+状态：合同已公开冻结；实现与原生验证中，资源能力尚未验收。关联 Issue #58，依赖 #56 / ADR0012 已完成的 main08a9cc5。
 
 ## 目标与范围
 
@@ -8,7 +8,7 @@
 
 不新增 Start/Wait/Close handle、调度器、运行时框架或生产 CounterProbe。原生 CPU 前检使用测试私有 fixture，以现有 safe spawn 的 SETEXEC 验证同 PID/birth 计数边界，不改变生产 helper 枚举。
 
-## 预算提案与有界性
+## 冻结预算与有界性
 
 可信内部请求逐字段零值采用默认：CPU1s、RSS128MiB、Wall3s。请求上限分别为3s、512MiB、5s；负 duration 与超限拒绝，不能静默 clamp。这是内部固定 helper 的参数，不是未来模型或业务默认。资源 helper 只允许 NoGate，仍使用完整 BOOT/registered/armed/GO 握手。
 
@@ -22,7 +22,7 @@ Host.Run 的主 select 持有已登记身份并采样 libproc，原始样本直�
 
 ## 三种计量不得混用
 
-CPU 使用 PROC_PIDTASKINFO 的当前 Mach task 全线程累计 user+system，按实测 Mach timebase 换算，不能误用仅存活线程字段或把累计CPU称一核速率。Apple一手源码显示 SETEXEC 创建新 task，而 task recount 是否完整转移不能由注释推断；必须记录 pre-exec burn 后与同 PID/birth post-exec 暂停期间的实际原始计数。未出结果前不声称覆盖整启动链，也不实现 baseline 扣除算法。
+CPU 使用 PROC_PIDTASKINFO 的当前 Mach task 全线程绝对累计 user+system，按实际 Mach timebase 换算，从 GO 起采样并比较预算，不减启动 baseline、不计算 GO 后精确增量、不用 max 抹掉原始计数下降。计数可能包含内核实际保留的 GO 前启动成本，但不宣称精确整个 PID 启动链或所有 exec 前线程的 CPU 都被保留。固定可信 helper 仅一次受控 exec，没有任意再次 exec 入口；不增加 epoch 累加框架。不能误用仅存活线程字段或把累计CPU称一核速率。
 
 RSS 是驻留内存采样峰，Virtual 另列；未触页的大映射不能按虚拟尺寸误触发 RSS。若收集 Wait4 返回峰，须另证其作用域、单位与启动链含义，不能替代在线触发证据。本轮可不收集这项，避免无必要扩大合同。
 
@@ -35,3 +35,12 @@ Wall 从明确 GO 授权起，到 guardian 对任务实际 own Wait 返回时观
 独立移除CPU/RSS采样终止与Wall动作，目标行为必须真实违反承诺；编译错误、前检失败、外层超时或更早其他预算终止不能冒充检出。最终专项、全量、平台、真实macOS CI、review正文、合并/main与lantern-notes保持同轮闭环。
 
 面试追问：为何先做exec计数前检？因为API名字和PID连续不能证明内核计数器连续。为何不把样本放协议receipt？因为协议预算和资源观测数组的上界不同，同进程宿主持有样本能减少新协议复杂度。为何用采样仍保留不可用的业务出口？因为采样盲区和未完成的其它资源/进程合同不能靠限制披露变成任意代码安全证明。
+
+
+## CPU 前检：源推断与真实观测
+
+首轮候选 e561e44 的 [PR CI40259674538](https://github.com/loveRyujin/lantern/actions/runs/40259674538) 使用私有测试 fixture，实际 source 为 PR merge6eb69e2/sourceclean，macOS15.7.9/build24G830/arm64/Go1.27.3。锁定执行线程运行有界 burn，**当前task总CPU**实增200334250ns，这不是隔离的单线程CPU测量。实际同PID1384/birth/image，SETEXEC前203892083ns，后207836500ns，暂停100ms后208107000ns，时基125/3，子进程真实Wait0。本次没有观察到计数下降；status=passed仅说明实验有效，不表示资源限制已实现。
+
+Apple macOS15系 XNU 源码中，fill_taskprocinfo使用recount_task_times，task_create初始化task recount，exec路径还会复制thread资源字段。仅凭task初始化与条件rollup曾推测可能重置，但原生锁定执行线程路径未见重置，不能让源码片段推断覆盖真实观测；同样不能由这条路径推出所有已终结启动线程完整保留。raw live-thread字段是现存线程aggregate，不是单个调用线程。正式MultiThreadCPU负载将让一个locked线程提前退出并终结，另一继续，检查本Mach task总累计与现存线程累计的差异，不新增生产模式。
+
+一手参考（用于解释，不声称与运行内核逐字节一致）：[fill_taskprocinfo](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/osfmk/kern/bsd_kern.c#L1102)、[task_create](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/osfmk/kern/task.c#L1682)、[exec switch](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/bsd/kern/kern_exec.c#L5101)、[thread资源复制](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/osfmk/kern/thread.c#L1010)。

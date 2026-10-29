@@ -233,6 +233,39 @@ jobs:
         run: go run ./cmd/lantern-eval prepare-runtime --root "${RUNNER_TEMP}/darwin-spike-runtime" --out "${RUNNER_TEMP}/darwin-spike-runtime.json"
       - name: Build pure Go experiment carrier
         run: go build -o "${RUNNER_TEMP}/lantern-darwin-probe" ./cmd/lantern-darwin-probe
+      - name: Run fixed resource helpers through the new internal API
+        run: |
+          "${RUNNER_TEMP}/lantern-darwin-probe" resources-api --counter-report "${RUNNER_TEMP}/darwin-resource-counter/report.json" --out "${RUNNER_TEMP}/darwin-resource-api-reports" > "${RUNNER_TEMP}/darwin-resource-api-stdout.json"
+      - name: Require six actual resource workload outcomes
+        run: |
+          python3 - <<'PYRESOURCE'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          r = json.loads((root / 'darwin-resource-api-reports' / 'report.json').read_text())
+          assert r['schema'] == 'lantern.darwin-resource-api.v1' and r['status'] == 'passed', r
+          assert r['source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip() and r['source_dirty'] is False
+          assert r['counter_source_commit'] == r['source_commit']
+          assert r['counter_report_sha256'] == hashlib.sha256((root / 'darwin-resource-counter' / 'report.json').read_bytes()).hexdigest()
+          assert r['business_backend_available'] is False and r['hard_cpu_or_rss_quota'] is False
+          assert r['environment']['goos'] == 'darwin' and r['environment']['goarch'] == 'arm64'
+          expected = {'normal-defaults','cpu-limit','rss-limit','wall-limit','multithread-cpu','untouched-virtual'}
+          assert len(r['cases']) == 6 and {c['id'] for c in r['cases']} == expected
+          for c in r['cases']:
+              assert c['status'] == 'passed' and not c.get('validation_error') and all(c['checks'].values()) and len(c['checks']) >= 11, c
+          assert set(r['fingerprints']) == {'executable_sha256','common.go','protocol.go','runtime_darwin.go','spawn_darwin.go','resources.go','resources_darwin.go','resource_worker_darwin.go'}
+          for name, fingerprint in r['fingerprints'].items():
+              source = root / 'lantern-darwin-probe' if name == 'executable_sha256' else pathlib.Path('internal/supervisor', name)
+              assert hashlib.sha256(source.read_bytes()).hexdigest() == fingerprint, name
+          PYRESOURCE
+      - name: Preserve resource budgets samples and real termination evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: darwin-resource-api-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/darwin-resource-api-reports/
+            ${{ runner.temp }}/darwin-resource-api-stdout.json
+          if-no-files-found: error
       - name: Test Darwin experiment contracts
         run: go test ./cmd/lantern-darwin-probe -run '^TestDarwin(Probe|Supervision)QA' -count=1 -v -timeout 10m
       - name: Run internal supervisor API through real native host fixtures

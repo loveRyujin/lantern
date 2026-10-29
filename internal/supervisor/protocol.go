@@ -29,17 +29,23 @@ func classifyIdentity(expected, observed Identity, readErr error) error {
 }
 
 type receipt struct {
-	Target           Identity     `json:"target"`
-	Controls         []FDIdentity `json:"controls,omitempty"`
-	Worker           WorkerResult `json:"worker"`
-	StopReason       string       `json:"stop_reason,omitempty"`
-	Waited           bool         `json:"waited"`
-	Absent           bool         `json:"absent"`
-	Clean            bool         `json:"clean"`
-	SignalSkipped    bool         `json:"signal_skipped"`
-	SignalSkipReason string       `json:"signal_skip_reason,omitempty"`
-	SignalResolvedBy string       `json:"signal_resolved_by,omitempty"`
-	Error            string       `json:"error,omitempty"`
+	Target                   Identity     `json:"target"`
+	Controls                 []FDIdentity `json:"controls,omitempty"`
+	Worker                   WorkerResult `json:"worker"`
+	StopReason               string       `json:"stop_reason,omitempty"`
+	Waited                   bool         `json:"waited"`
+	Absent                   bool         `json:"absent"`
+	Clean                    bool         `json:"clean"`
+	SignalSkipped            bool         `json:"signal_skipped"`
+	SignalSkipReason         string       `json:"signal_skip_reason,omitempty"`
+	SignalResolvedBy         string       `json:"signal_resolved_by,omitempty"`
+	Error                    string       `json:"error,omitempty"`
+	WaitMonotonicNS          uint64       `json:"wait_monotonic_ns,omitempty"`
+	WaitMachTicks            uint64       `json:"wait_mach_ticks,omitempty"`
+	WaitUnixNS               int64        `json:"wait_unix_ns,omitempty"`
+	SignalAttemptMonotonicNS uint64       `json:"signal_attempt_monotonic_ns,omitempty"`
+	SignalReturnMonotonicNS  uint64       `json:"signal_return_monotonic_ns,omitempty"`
+	SignalSent               bool         `json:"signal_sent,omitempty"`
 }
 type message struct {
 	Version int           `json:"version"`
@@ -49,6 +55,7 @@ type message struct {
 	Target  Identity      `json:"target"`
 	Worker  *WorkerResult `json:"worker,omitempty"`
 	Receipt *receipt      `json:"receipt,omitempty"`
+	Reason  string        `json:"reason,omitempty"`
 }
 
 func decodeMessage(b []byte, nonce string, seq int) (message, error) {
@@ -60,7 +67,7 @@ func decodeMessage(b []byte, nonce string, seq int) (message, error) {
 		return v, fmt.Errorf("%w: nonce/sequence", ErrProtocol)
 	}
 	switch v.Kind {
-	case "BOOTSTRAP", "PREPARED", "REGISTERED", "ARMED", "GO", "CANCEL", "ENTERED", "COMPLETE":
+	case "BOOTSTRAP", "PREPARED", "REGISTERED", "ARMED", "GO", "CANCEL", "ENTERED", "PROGRESS", "STOP", "COMPLETE":
 	default:
 		return v, fmt.Errorf("%w: unknown kind", ErrProtocol)
 	}
@@ -70,7 +77,10 @@ func decodeMessage(b []byte, nonce string, seq int) (message, error) {
 			return v, fmt.Errorf("%w: invalid process identity", ErrProtocol)
 		}
 	}
-	if v.Kind == "ENTERED" && (v.Worker == nil || v.Worker.PID != id.PID || !v.Worker.Entered) {
+	if (v.Kind == "ENTERED" || v.Kind == "PROGRESS") && (v.Worker == nil || v.Worker.PID != id.PID || !v.Worker.Entered) {
+		return v, ErrProtocol
+	}
+	if (v.Kind == "STOP" && resourceCause(v.Reason) == nil) || (v.Kind != "STOP" && v.Reason != "") {
 		return v, ErrProtocol
 	}
 	if v.Kind == "COMPLETE" && (v.Receipt == nil || v.Receipt.Target != id) {
