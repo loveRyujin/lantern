@@ -2,6 +2,7 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -110,8 +111,10 @@ jobs:
           go-version: "1.27.x"
           check-latest: true
 
-      - name: Install python3-venv
-        run: sudo apt-get update && sudo apt-get install -y python3-venv
+      - name: Select hash-lock supported Python
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.12"
 
       - name: Hash-locked install and offline prepared runtime lease
         run: PYRT_ENSURE_REAL=1 PYRT_PREPARED_REAL=1 go test ./core/pyrt/ -run 'Test(EnsureReal|PreparedReal)$' -count=1 -v -timeout 15m
@@ -197,6 +200,33 @@ jobs:
         with:
           go-version: "1.27.x"
           check-latest: true
+      - name: Establish actual same-PID CPU counter behavior across SETEXEC
+        env:
+          DARWIN_RESOURCE_COUNTER_QA: "1"
+          DARWIN_RESOURCE_COUNTER_OUT: ${{ runner.temp }}/darwin-resource-counter
+        run: go test ./internal/supervisor -run '^TestResourceCounterNativeQA$' -count=1 -v -timeout 1m
+      - name: Require real native CPU counter evidence
+        run: |
+          python3 - <<'PYCOUNTER'
+          import json, os, pathlib, subprocess
+          p = pathlib.Path(os.environ['RUNNER_TEMP']) / 'darwin-resource-counter' / 'report.json'
+          r = json.loads(p.read_text())
+          assert r['schema'] == 'lantern.darwin-resource-counter.v1' and r['status'] == 'passed', r
+          assert r['source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip() and r['source_dirty'] is False
+          assert r['goos'] == 'darwin' and r['goarch'] == 'arm64' and r['macos_version'] and r['macos_build']
+          assert r['same_pid_birth_image'] is True and r['actual_child_exit_code'] == 0
+          assert r['before']['identity'] == r['after']['identity'] == r['after_hold']['identity']
+          assert r['measured_preexec_burn_cpu_ns'] >= 200000000 and r['before_cpu_ns'] >= 200000000
+          assert type(r['cpu_reset_observed']) is bool and len(r['actual_test_executable_sha256']) == 64
+
+          PYCOUNTER
+      - name: Preserve raw same-PID CPU counter experiment
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: darwin-resource-counter-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/darwin-resource-counter/
+          if-no-files-found: error
       - name: Select supported Python
         uses: actions/setup-python@v7.1.0
         with:
@@ -205,6 +235,93 @@ jobs:
         run: go run ./cmd/lantern-eval prepare-runtime --root "${RUNNER_TEMP}/darwin-spike-runtime" --out "${RUNNER_TEMP}/darwin-spike-runtime.json"
       - name: Build pure Go experiment carrier
         run: go build -o "${RUNNER_TEMP}/lantern-darwin-probe" ./cmd/lantern-darwin-probe
+      - name: Run fixed resource helpers through the new internal API
+        run: |
+          "${RUNNER_TEMP}/lantern-darwin-probe" resources-api --counter-report "${RUNNER_TEMP}/darwin-resource-counter/report.json" --out "${RUNNER_TEMP}/darwin-resource-api-reports" > "${RUNNER_TEMP}/darwin-resource-api-stdout.json"
+      - name: Require six actual resource workload outcomes
+        run: |
+          python3 - <<'PYRESOURCE'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          r = json.loads((root / 'darwin-resource-api-reports' / 'report.json').read_text())
+          assert r['schema'] == 'lantern.darwin-resource-api.v1' and r['status'] == 'passed', r
+          assert r['source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip() and r['source_dirty'] is False
+          assert r['counter_source_commit'] == r['source_commit']
+          assert r['counter_report_sha256'] == hashlib.sha256((root / 'darwin-resource-counter' / 'report.json').read_bytes()).hexdigest()
+          assert r['business_backend_available'] is False and r['hard_cpu_or_rss_quota'] is False
+          assert r['environment']['goos'] == 'darwin' and r['environment']['goarch'] == 'arm64'
+          expected = {'normal-defaults','cpu-limit','rss-limit','wall-limit','multithread-cpu','untouched-virtual'}
+          assert len(r['cases']) == 6 and {c['id'] for c in r['cases']} == expected
+          for c in r['cases']:
+              assert c['status'] == 'passed' and not c.get('validation_error') and all(c['checks'].values()) and len(c['checks']) >= 11, c
+          assert set(r['fingerprints']) == {'executable_sha256','common.go','protocol.go','runtime_darwin.go','spawn_darwin.go','resources.go','resources_darwin.go','resource_worker_darwin.go'}
+          for name, fingerprint in r['fingerprints'].items():
+              source = root / 'lantern-darwin-probe' if name == 'executable_sha256' else pathlib.Path('internal/supervisor', name)
+              assert hashlib.sha256(source.read_bytes()).hexdigest() == fingerprint, name
+          PYRESOURCE
+      - name: Preserve resource budgets samples and real termination evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: darwin-resource-api-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/darwin-resource-api-reports/
+            ${{ runner.temp }}/darwin-resource-api-stdout.json
+          if-no-files-found: error
+      - name: Independently verify resource recovery cancellation and telemetry failure
+        env:
+          DARWIN_RESOURCE_REAL_QA: "1"
+          DARWIN_RESOURCE_QA_OUT: ${{ runner.temp }}/darwin-resource-independent
+        run: go test ./internal/supervisor -run '^TestResourceQA' -count=1 -v -timeout 3m
+      - name: Require independent resource proof manifest
+        run: |
+          python3 - <<'PYRESOURCEQA'
+          import json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'darwin-resource-independent'
+          names = {'TestResourceQANativeRecoveryAndCancellation', 'TestResourceQANativeConcurrentIsolation', 'TestResourceQANativeMonitorReadFailure'}
+          assert {p.stem for p in root.glob('*.json')} == names
+          for name in names:
+              r = json.loads((root / (name + '.json')).read_text())
+              assert r['status'] == 'passed' and r['source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip() and r['source_dirty'] is False, r
+              assert len(r['calls']) >= 2, r
+          PYRESOURCEQA
+      - name: Preserve independent resource native observations
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: darwin-resource-independent-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/darwin-resource-independent/
+          if-no-files-found: error
+      - name: Independently remove each resource safeguard and require actual budget breach
+        env:
+          DARWIN_RESOURCE_MUTATION_QA: "1"
+          DARWIN_RESOURCE_PROBE: ${{ runner.temp }}/lantern-darwin-probe
+          DARWIN_RESOURCE_BASELINE_REPORT: ${{ runner.temp }}/darwin-resource-api-reports/report.json
+        run: go test ./cmd/lantern-darwin-probe -run '^TestDarwinResourceAPINativeIndependentQA$' -count=1 -v -timeout 8m
+      - name: Require three actual resource mutation detections and restored source
+        run: |
+          python3 - <<'PYRESOURCEMUT'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'darwin-resource-api-reports' / 'independent-qa'
+          r = json.loads((root / 'index.json').read_text())
+          assert r['schema'] == 'lantern.darwin-resource-mutations.v1' and r['status'] == 'passed', r
+          assert r['candidate_sha'] == r['baseline_source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          expected = {'cpu-monitor-disabled', 'rss-monitor-disabled', 'wall-monitor-disabled'}
+          assert len(r['results']) == 3 and {x['name'] for x in r['results']} == expected
+          for x in r['results']:
+              assert x['target_red'] is True and x['source_restored'] is True and x['exit_code'] == 1 and x['observed_worker_exit_code'] == 0, x
+              assert x['exit_scope'] == 'resources-api-cli-oracle' and x['original_sha256'] != x['mutated_sha256']
+              assert hashlib.sha256(pathlib.Path(x['source_file']).read_bytes()).hexdigest() == x['original_sha256']
+              assert hashlib.sha256(pathlib.Path(x['counter_report']).read_bytes()).hexdigest() == x['counter_report_sha256']
+          assert not subprocess.check_output(['git','status','--porcelain'], text=True).strip()
+          PYRESOURCEMUT
+      - name: Preserve actual resource mutation proof and counter provenance
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: darwin-resource-mutations-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/darwin-resource-api-reports/independent-qa/
+          if-no-files-found: error
       - name: Test Darwin experiment contracts
         run: go test ./cmd/lantern-darwin-probe -run '^TestDarwin(Probe|Supervision)QA' -count=1 -v -timeout 10m
       - name: Run internal supervisor API through real native host fixtures

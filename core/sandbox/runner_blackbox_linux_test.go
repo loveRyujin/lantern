@@ -106,6 +106,22 @@ func TestSandboxBlackboxFileNetworkAndEnvironment(t *testing.T) {
 	if data, err := os.ReadFile(secret); err != nil || string(data) != "host-only-fixture" {
 		t.Fatalf("host read control: %q %v", data, err)
 	}
+	// A running executable can fail a write-open with ETXTBSY before Landlock
+	// is consulted. Use an owned, non-executable dependency as the independent
+	// runtime write control so that ambient DAC/VFS denial cannot prove policy.
+	dependencyDir := t.TempDir()
+	dependency := filepath.Join(dependencyDir, "boundary_dependency.py")
+	const dependencyCode = "answer = 7\n"
+	if err := os.WriteFile(dependency, []byte(dependencyCode), 0600); err != nil {
+		t.Fatal(err)
+	}
+	control, err := os.OpenFile(dependency, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatalf("host dependency write-open control: %v", err)
+	}
+	if err := control.Close(); err != nil {
+		t.Fatal(err)
+	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -123,15 +139,27 @@ func TestSandboxBlackboxFileNetworkAndEnvironment(t *testing.T) {
 	accepted.Close()
 	t.Setenv("LANTERN_QA_SECRET", "must-not-enter-python")
 	port := listener.Addr().(*net.TCPAddr).Port
-	code := fmt.Sprintf(`import os,socket,sys
+	code := fmt.Sprintf(`import errno,importlib.util,os,socket,sys
 assert 'LANTERN_QA_SECRET' not in os.environ
 assert open(os.path.join(os.environ['INPUT_DIR'],'data.csv')).read()=='value\n7\n'
-for path in [%q, os.path.join(os.environ['INPUT_DIR'],'data.csv'), sys.executable]:
+dependency=%q
+assert open(dependency).read()==%q
+module_spec=importlib.util.spec_from_file_location('boundary_dependency',dependency)
+module=importlib.util.module_from_spec(module_spec)
+module_spec.loader.exec_module(module)
+assert module.answer==7
+for path in [%q, os.path.join(os.environ['INPUT_DIR'],'data.csv'), dependency]:
  try:
   if path==%q: open(path,'rb').read()
   else: open(path,'ab')
  except PermissionError: pass
  else: raise AssertionError('forbidden file access succeeded: '+path)
+try: open(sys.executable,'ab')
+except PermissionError: print('executable-write-denial:permission')
+except OSError as e:
+ assert e.errno==errno.ETXTBSY, e
+ print('executable-write-denial:vfs-etxtbsy')
+else: raise AssertionError('executable write-open succeeded')
 open(os.path.join(os.environ['OUTPUT_DIR'],'result.json'),'w').write('{"ok":true}')
 for family,kind in [(socket.AF_INET,socket.SOCK_STREAM),(socket.AF_INET6,socket.SOCK_STREAM),(socket.AF_UNIX,socket.SOCK_STREAM),(socket.AF_NETLINK,socket.SOCK_RAW)]:
  try: socket.socket(family,kind)
@@ -140,10 +168,14 @@ for family,kind in [(socket.AF_INET,socket.SOCK_STREAM),(socket.AF_INET6,socket.
 try: socket.create_connection(('127.0.0.1',%d),timeout=0.2)
 except PermissionError: pass
 else: raise AssertionError('host listener reached')
-print('boundaries-verified')`, secret, secret, port)
-	result, err := blackboxRun(t, runner, sandbox.Spec{Code: code, Inputs: map[string][]byte{"data.csv": []byte("value\n7\n")}})
+print('boundaries-verified')`, dependency, dependencyCode, secret, secret, port)
+	result, err := blackboxRun(t, runner, sandbox.Spec{Code: code, Inputs: map[string][]byte{"data.csv": []byte("value\n7\n")}, ExtraReadOnly: []string{dependencyDir}})
 	if err != nil || !strings.Contains(result.Stdout, "boundaries-verified") {
 		t.Fatalf("boundaries result=%+v error=%v", result, err)
+	}
+	t.Logf("runtime dependency write rejected by policy; executable denial: %s", strings.TrimSpace(result.Stdout))
+	if data, err := os.ReadFile(dependency); err != nil || string(data) != dependencyCode {
+		t.Fatalf("dependency changed after sandbox write attempt: %q %v", data, err)
 	}
 	blackboxReaped(t, result.Usage.PythonPID)
 	blackboxClean(t, root)

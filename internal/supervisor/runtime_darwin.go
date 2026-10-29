@@ -34,6 +34,10 @@ func init() {
 			if len(os.Args) == 4 {
 				code = workerMain(Mode(os.Args[3]))
 			}
+		case "resource-worker":
+			if len(os.Args) == 4 {
+				code = resourceWorkerMain(Mode(os.Args[3]))
+			}
 		case "guardian", "launcher":
 			if len(os.Args) == 4 {
 				code = helperMain(os.Args[2], os.Args[3])
@@ -80,7 +84,10 @@ func messages(f *os.File, nonce string) <-chan incoming {
 	return out
 }
 func send(f *os.File, kind string, seq int, id Identity, w *WorkerResult, r *receipt) error {
-	b, e := json.Marshal(message{Version: 1, Kind: kind, Seq: seq, Nonce: id.Nonce, Target: id, Worker: w, Receipt: r})
+	return sendMessage(f, message{Version: 1, Kind: kind, Seq: seq, Nonce: id.Nonce, Target: id, Worker: w, Receipt: r})
+}
+func sendMessage(f *os.File, v message) error {
+	b, e := json.Marshal(v)
 	if e != nil {
 		return e
 	}
@@ -202,7 +209,7 @@ func killIdentity(m *identityMonitor, id Identity) error {
 	}
 	return e
 }
-func signalReceipt(m *identityMonitor, r *receipt, l *logger) {
+func signalReceipt(m *identityMonitor, r *receipt, l *logger) error {
 	l.event("target_kill", r.Target.PID, r.StopReason)
 	e := killIdentity(m, r.Target)
 	if errors.Is(e, errIdentityUnavailable) {
@@ -212,6 +219,7 @@ func signalReceipt(m *identityMonitor, r *receipt, l *logger) {
 	} else if e != nil {
 		r.Error = e.Error()
 	}
+	return e
 }
 func settleReceipt(m *identityMonitor, r *receipt, ownWait bool) {
 	r.Absent = waitAbsent(m, r.Target.PID, 2*time.Second)
@@ -229,6 +237,9 @@ func settleReceipt(m *identityMonitor, r *receipt, ownWait bool) {
 func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr error) {
 	start := time.Now()
 	result = Result{State: Preparing, HostPID: os.Getpid(), Worker: WorkerResult{ExitCode: -1, Mode: q.Mode}}
+	if q.Kind == GoResource {
+		result.Budget = q.Budget
+	}
 	defer func() {
 		result.Wall = time.Since(start)
 		if runErr != nil {
@@ -242,6 +253,28 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 	if e != nil {
 		return result, e
 	}
+	var meter *resourceMeter
+	if q.Kind == GoResource {
+		meter, e = newResourceMeter(m, &result.Usage, q.Budget)
+		if e != nil {
+			return result, e
+		}
+	}
+	var sampling *time.Ticker
+	var sampleCh <-chan time.Time
+	var resourceWall *time.Timer
+	var resourceWallCh <-chan time.Time
+	defer func() {
+		if sampling != nil {
+			sampling.Stop()
+		}
+		if resourceWall != nil {
+			resourceWall.Stop()
+		}
+	}()
+	var primaryCause error
+	firstReason := ""
+
 	exe, e := os.Executable()
 	if e != nil {
 		return result, e
@@ -354,14 +387,40 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 		if !stopped {
 			stopped = true
 			result.StopReason = reason
-			l.event("cancel_requested", result.Task.PID, reason)
+			event := "cancel_requested"
+			if q.Kind == GoResource {
+				firstReason = reason
+				if resourceCause(reason) != nil {
+					event = "resource_stop"
+				}
+			}
+			l.event(event, result.Task.PID, reason)
 			if registered {
 				commandSeq++
-				_ = send(cmdW, "CANCEL", commandSeq, result.Task, nil, nil)
+				if q.Kind == GoResource && resourceCause(reason) != nil {
+					_ = sendMessage(cmdW, message{Version: 1, Kind: "STOP", Seq: commandSeq, Nonce: result.Nonce, Target: result.Task, Reason: reason})
+				} else {
+					_ = send(cmdW, "CANCEL", commandSeq, result.Task, nil, nil)
+				}
 			} else {
 				_ = lifeW.Close()
 			}
 		}
+	}
+	resourceStop := func(reason string, cause error) {
+		if stopped {
+			return
+		}
+		primaryCause = cause
+		if meter != nil {
+			mono, _, _, e := meter.clock.stamp()
+			if e != nil {
+				primaryCause = errors.Join(cause, ErrMonitor)
+			}
+			result.Usage.TriggerMonotonicNS = mono
+			result.Usage.TriggerReason = reason
+		}
+		stop(reason)
 	}
 	observe := func(v message) error {
 		if v.Kind != "BOOTSTRAP" || result.Task.PID != 0 {
@@ -478,6 +537,20 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 				if q.Gate == Armed {
 					l.event("fault_window", result.Task.PID, string(q.Gate))
 				} else {
+					if meter != nil {
+						if e = meter.prepare(result.Task); e != nil {
+							resourceStop("monitor_error", e)
+							continue
+						}
+						if e = meter.start(); e != nil {
+							resourceStop("monitor_error", e)
+							continue
+						}
+						sampling = time.NewTicker(ResourceSampleInterval)
+						sampleCh = sampling.C
+						resourceWall = time.NewTimer(q.Budget.Wall)
+						resourceWallCh = resourceWall.C
+					}
 					goSent = true
 					result.GoAuthorized = true
 					result.State = Running
@@ -487,14 +560,17 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 						_ = p.Kill()
 					}
 				}
-			case "ENTERED":
-				if !goSent || v.Worker == nil || v.Worker.PID != result.Task.PID {
+			case "ENTERED", "PROGRESS":
+				if !goSent || v.Worker == nil || v.Worker.PID != result.Task.PID || v.Worker.Mode != q.Mode || (v.Kind == "PROGRESS" && (q.Kind != GoResource || !result.Worker.Entered)) || (v.Kind == "ENTERED" && result.Worker.Entered) {
 					runErr = ErrProtocol
 					_ = p.Kill()
 					continue
 				}
 				result.Worker = *v.Worker
-				l.event("payload_entered", result.Task.PID, "")
+				if v.Kind == "ENTERED" {
+					l.event("payload_entered", result.Task.PID, "")
+				}
+
 			case "COMPLETE":
 				if v.Receipt == nil {
 					runErr = ErrProtocol
@@ -502,6 +578,11 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 					continue
 				}
 				completed = v.Receipt
+				if meter != nil {
+					if e = meter.finish(completed); e != nil {
+						runErr = errors.Join(runErr, e)
+					}
+				}
 				result.State = Draining
 			default:
 				runErr = ErrProtocol
@@ -522,7 +603,7 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 							break drain
 						}
 						v := msg.Message
-						if v.Kind == "ENTERED" && v.Worker != nil {
+						if (v.Kind == "ENTERED" || (v.Kind == "PROGRESS" && q.Kind == GoResource)) && v.Worker != nil {
 							result.Worker = *v.Worker
 						}
 						if v.Kind == "COMPLETE" {
@@ -545,7 +626,7 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 				result.SignalSkipped = completed.SignalSkipped
 				result.SignalSkipReason = completed.SignalSkipReason
 				result.SignalResolvedBy = completed.SignalResolvedBy
-				if !goSent && runErr == nil && ctx.Err() == nil {
+				if !goSent && runErr == nil && ctx.Err() == nil && primaryCause == nil {
 					runErr = fmt.Errorf("%w: fixed helper completed before GO", ErrProtocol)
 				}
 			} else {
@@ -627,12 +708,34 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 				}
 				result.StopReason = "guardian_lost"
 			}
+			if meter != nil && completed != nil {
+				if e = meter.finish(completed); e != nil {
+					runErr = errors.Join(runErr, e)
+				}
+				if result.Usage.LateStopReason != "" {
+					primaryCause = nil
+				}
+				// Context cancellation covers the unfinished Run, even when the
+				// worker has already been waited and COMPLETE is in flight. Only
+				// resource STOP requests require a matching guardian resource cause.
+				if resourceStopMismatch(firstReason, completed.StopReason, result.Usage.LateStopReason != "") {
+					runErr = errors.Join(runErr, fmt.Errorf("%w: guardian STOP reason differs from host", ErrProtocol))
+				}
+			}
 			result.Registered = registered
 			result.Armed = armed
 			result.GoAuthorized = goSent
 			result.GuardianAbsent = waitAbsent(m, p.Pid, time.Second)
 			if !result.TaskAbsent || !result.GuardianAbsent {
 				runErr = errors.Join(runErr, fmt.Errorf("task or guardian disappearance unverified"))
+			}
+			if q.Kind == GoResource && primaryCause != nil {
+				result.State = Failed
+				runErr = errors.Join(primaryCause, runErr)
+				if ctx.Err() != nil {
+					runErr = errors.Join(runErr, ctx.Err())
+				}
+				return result, runErr
 			}
 			if ctx.Err() != nil {
 				result.State = Cancelled
@@ -647,6 +750,22 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 			}
 			result.State = Completed
 			return result, nil
+		case <-sampleCh:
+			if meter != nil && !meter.taskGone {
+				reason, cause := meter.poll(result.Task)
+				if reason != "" && !stopped {
+					resourceStop(reason, cause)
+				}
+				if meter.taskGone {
+					sampleCh = nil
+					resourceWallCh = nil
+				}
+			}
+		case <-resourceWallCh:
+			resourceWallCh = nil
+			if meter != nil && !stopped && !m.absent(result.Task.PID) {
+				resourceStop("wall_limit", ErrWallLimit)
+			}
 		case <-ctxDone:
 			stop("cancel")
 			ctxDone = nil
@@ -729,12 +848,52 @@ func launcherMain(c jobConfig) int {
 	if e != nil {
 		return 125
 	}
-	_, e = spawnFixed(canonical(exe), []string{helperArgument, "worker", string(c.Request.Mode)}, []*os.File{os.Stdin, os.Stdout, os.Stderr}, true)
+	role := "worker"
+	if c.Request.Kind == GoResource {
+		role = "resource-worker"
+	}
+	_, e = spawnFixed(canonical(exe), []string{helperArgument, role, string(c.Request.Mode)}, []*os.File{os.Stdin, os.Stdout, os.Stderr}, true)
 	if e != nil {
 		l.event("exec_error", id.PID, e.Error())
 		fmt.Fprintln(os.Stderr, e)
 	}
 	return 125
+}
+
+type workerMarker struct {
+	v   WorkerResult
+	err error
+}
+
+func workerMarkers(f *os.File, kind Kind) <-chan workerMarker {
+	out := make(chan workerMarker, 8)
+	go func() {
+		defer close(out)
+		s := bufio.NewScanner(f)
+		s.Buffer(make([]byte, 512), 4097)
+		count := 0
+		max := 1
+		if kind == GoResource {
+			max = 5
+		}
+		for s.Scan() {
+			count++
+			if count > max {
+				out <- workerMarker{err: fmt.Errorf("unexpected extra worker marker")}
+				return
+			}
+			var v WorkerResult
+			e := strictJSON(s.Bytes(), &v, 4096)
+			out <- workerMarker{v, e}
+			if e != nil {
+				return
+			}
+		}
+		if e := s.Err(); e != nil {
+			out <- workerMarker{err: e}
+		}
+	}()
+	return out
 }
 
 func guardianMain(c jobConfig, path string) int {
@@ -766,6 +925,14 @@ func guardianMain(c jobConfig, path string) int {
 			return 1
 		}
 		return 0
+	}
+	var resourceTime *resourceClock
+	if c.Request.Kind == GoResource {
+		resourceTime, e = loadResourceClock()
+		if e != nil {
+			r.Error = e.Error()
+			return finish()
+		}
 	}
 	if c.Request.Gate == BeforeSpawn {
 		l.event("fault_window", 0, string(BeforeSpawn))
@@ -832,11 +999,21 @@ func guardianMain(c jobConfig, path string) int {
 	}
 	l.event("launcher_spawned", p.Pid, "")
 	type waited struct {
-		state *os.ProcessState
-		err   error
+		state       *os.ProcessState
+		err         error
+		mono, ticks uint64
+		unixNS      int64
+		clockErr    error
 	}
 	done := make(chan waited, 1)
-	go func() { s, e := p.Wait(); done <- waited{s, e} }()
+	go func() {
+		state, e := p.Wait()
+		v := waited{state: state, err: e}
+		if resourceTime != nil {
+			v.mono, v.ticks, v.unixNS, v.clockErr = resourceTime.stamp()
+		}
+		done <- v
+	}()
 	if c.Request.Gate == AfterSpawn {
 		l.event("fault_window", p.Pid, string(AfterSpawn))
 	} else {
@@ -844,33 +1021,12 @@ func guardianMain(c jobConfig, path string) int {
 		_ = permitW.Close()
 	}
 	commands := messages(cmdR, c.Nonce)
-	markers := make(chan struct {
-		v   WorkerResult
-		err error
-	}, 1)
-	go func() {
-		var v WorkerResult
-		s := bufio.NewScanner(outR)
-		s.Buffer(make([]byte, 512), 4097)
-		var e error
-		if !s.Scan() {
-			e = s.Err()
-			if e == nil {
-				e = io.EOF
-			}
-		} else {
-			e = strictJSON(s.Bytes(), &v, 4096)
-		}
-		markers <- struct {
-			v   WorkerResult
-			err error
-		}{v, e}
-	}()
-	// Worker announces entry immediately; use a scanner, not EOF, so a held
-	// worker can be observed before cancellation or a peer fault is injected.
-	// The single marker is bounded; further stdout is not a command channel.
-	_ = markers
-	wall := time.NewTimer(5 * time.Second)
+	markers := workerMarkers(outR, c.Request.Kind)
+	guardBound := 5 * time.Second
+	if c.Request.Kind == GoResource {
+		guardBound = 7 * time.Second
+	}
+	wall := time.NewTimer(guardBound)
 	defer wall.Stop()
 	stopped, armed := false, false
 	stop := func(reason string) {
@@ -880,7 +1036,14 @@ func guardianMain(c jobConfig, path string) int {
 			if c.Request.Mode == ExitRace {
 				_, _ = inW.Write([]byte{1})
 			}
-			signalReceipt(m, &r, &l)
+			if resourceTime != nil {
+				r.SignalAttemptMonotonicNS, _, _, _ = resourceTime.stamp()
+			}
+			sigErr := signalReceipt(m, &r, &l)
+			if resourceTime != nil {
+				r.SignalReturnMonotonicNS, _, _, _ = resourceTime.stamp()
+				r.SignalSent = sigErr == nil
+			}
 		}
 	}
 	markerSeen := false
@@ -889,6 +1052,38 @@ func guardianMain(c jobConfig, path string) int {
 			r.Error = "invalid worker marker"
 			stop("protocol_error")
 			return
+		}
+		if !markerSeen && c.Request.Kind == GoResource {
+			var mapped uint64
+			if c.Request.Mode == TouchMemory {
+				mapped = 96 << 20
+			}
+			if c.Request.Mode == UntouchedMemory {
+				mapped = 256 << 20
+			}
+			if v.MappedBytes != mapped || v.TouchedBytes != 0 {
+				r.Error = "invalid resource entry metadata"
+				stop("protocol_error")
+				return
+			}
+		}
+		if markerSeen {
+			expected := uint64(16 << 20)
+			switch r.Worker.TouchedBytes {
+			case 16 << 20:
+				expected = 32 << 20
+			case 32 << 20:
+				expected = 64 << 20
+			case 64 << 20:
+				expected = 96 << 20
+			case 96 << 20:
+				expected = 0
+			}
+			if c.Request.Kind != GoResource || c.Request.Mode != TouchMemory || v.MappedBytes != r.Worker.MappedBytes || v.TouchedBytes != expected || expected == 0 {
+				r.Error = "unexpected, repeated or decreasing worker progress"
+				stop("protocol_error")
+				return
+			}
 		}
 		for _, actual := range v.OpenFDs {
 			for _, control := range r.Controls {
@@ -901,30 +1096,60 @@ func guardianMain(c jobConfig, path string) int {
 			r.Error = "worker inherited supervision control endpoint"
 			stop("protocol_error")
 		}
+		kind := "ENTERED"
+		if markerSeen {
+			kind = "PROGRESS"
+		}
 		r.Worker = v
 		markerSeen = true
 		ackSeq++
-		_ = send(ackW, "ENTERED", ackSeq, r.Target, &r.Worker, nil)
-		l.event("payload_entered", p.Pid, "")
+		_ = send(ackW, kind, ackSeq, r.Target, &r.Worker, nil)
+		if kind == "ENTERED" {
+			l.event("payload_entered", p.Pid, "")
+		}
 	}
 	for {
 		select {
-		case marker := <-markers:
-			markers = nil
+		case marker, ok := <-markers:
+			if !ok {
+				markers = nil
+				continue
+			}
 			if marker.err == nil {
 				acceptMarker(marker.v)
+			} else {
+				r.Error = marker.err.Error()
+				stop("protocol_error")
 			}
 		case wr := <-done:
 			r.Waited = wr.err == nil && wr.state != nil
-			if !markerSeen && markers != nil {
-				select {
-				case marker := <-markers:
-					markers = nil
-					if marker.err == nil {
-						acceptMarker(marker.v)
-					}
-				case <-time.After(100 * time.Millisecond):
+			if resourceTime != nil {
+				r.WaitMonotonicNS, r.WaitMachTicks, r.WaitUnixNS = wr.mono, wr.ticks, wr.unixNS
+				if wr.clockErr != nil {
+					r.Error = wr.clockErr.Error()
 				}
+			}
+			if markers != nil {
+				timer := time.NewTimer(100 * time.Millisecond)
+			drainMarkers:
+				for {
+					select {
+					case marker, ok := <-markers:
+						if !ok {
+							markers = nil
+							break drainMarkers
+						}
+						if marker.err == nil {
+							acceptMarker(marker.v)
+						} else {
+							r.Error = marker.err.Error()
+						}
+					case <-timer.C:
+						r.Error = "worker marker drain deadline"
+						break drainMarkers
+					}
+				}
+				timer.Stop()
 			}
 			if wr.state != nil {
 				r.Worker.ExitCode = wr.state.ExitCode()
@@ -965,31 +1190,29 @@ func guardianMain(c jobConfig, path string) int {
 				_ = send(ackW, "ARMED", ackSeq, r.Target, nil, nil)
 			case "CANCEL":
 				stop("cancel")
+			case "STOP":
+				if c.Request.Kind != GoResource || resourceCause(v.Message.Reason) == nil {
+					r.Error = "unexpected resource STOP"
+					stop("protocol_error")
+					continue
+				}
+				stop(v.Message.Reason)
 			default:
 				r.Error = "unknown command"
 				stop("protocol_error")
 			}
 		case <-wall.C:
-			stop("wall_limit")
+			reason := "wall_limit"
+			if c.Request.Kind == GoResource {
+				reason = "supervision_deadline"
+			}
+			stop(reason)
 		}
 	}
 }
 
-func workerMain(mode Mode) int {
-	if validateRequest(Config{TempRoot: "/tmp"}, Request{Kind: GoLifecycle, Mode: mode}) != nil {
-		return 125
-	}
+func workerMetadata(mode Mode) WorkerResult {
 	r := WorkerResult{Entered: true, PID: os.Getpid(), Mode: mode, ExitCode: -1, OriginalGroup: syscall.Getpgrp()}
-	if mode == SetSID {
-		if _, e := syscall.Setsid(); e != nil {
-			return 125
-		}
-	}
-	if mode == SetPGID {
-		if e := syscall.Setpgid(0, 0); e != nil {
-			return 125
-		}
-	}
 	r.Group = syscall.Getpgrp()
 	r.Session, _ = unix.Getsid(0)
 	if names, e := os.ReadDir("/dev/fd"); e == nil {
@@ -1008,6 +1231,26 @@ func workerMain(mode Mode) int {
 		key, _, _ := strings.Cut(entry, "=")
 		r.EnvKeys = append(r.EnvKeys, key)
 	}
+	return r
+}
+
+func workerMain(mode Mode) int {
+	if validateRequest(Config{TempRoot: "/tmp"}, Request{Kind: GoLifecycle, Mode: mode}) != nil {
+		return 125
+	}
+	r := workerMetadata(mode)
+	if mode == SetSID {
+		if _, e := syscall.Setsid(); e != nil {
+			return 125
+		}
+	}
+	if mode == SetPGID {
+		if e := syscall.Setpgid(0, 0); e != nil {
+			return 125
+		}
+	}
+	r.Group = syscall.Getpgrp()
+	r.Session, _ = unix.Getsid(0)
 	if e := json.NewEncoder(os.Stdout).Encode(r); e != nil {
 		return 125
 	}
