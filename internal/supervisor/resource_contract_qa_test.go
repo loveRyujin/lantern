@@ -111,3 +111,31 @@ func TestResourceQAStopCausesAreStableAndDistinct(t *testing.T) {
 		t.Fatal("declared sampling/read-failure/evidence bounds differ from the frozen contract")
 	}
 }
+
+// Exercise the real production decision. These receipt-race fixtures are
+// semantic regression evidence, not a claim of native race reproduction.
+func TestResourceQAStopReceiptRaceDecision(t *testing.T) {
+	for _, test := range []struct {
+		name, host, receipt string
+		late, mismatch      bool
+	}{
+		{"normal-natural-exit", "", "", false, false},
+		{"late-cancel-natural-exit", "cancel", "", false, false},
+		{"cancel-observed-by-guardian", "cancel", "cancel", false, false},
+		{"cpu-stop-confirmed", "cpu_limit", "cpu_limit", false, false},
+		{"rss-stop-confirmed", "rss_limit", "rss_limit", false, false},
+		{"wall-stop-confirmed", "wall_limit", "wall_limit", false, false},
+		{"monitor-stop-confirmed", "monitor_error", "monitor_error", false, false},
+		{"resource-stop-not-received", "cpu_limit", "", false, true},
+		{"resource-code-changed", "cpu_limit", "rss_limit", false, true},
+		{"unrequested-guardian-resource-stop", "", "rss_limit", false, true},
+		{"cancel-cannot-hide-guardian-resource-stop", "cancel", "cpu_limit", false, true},
+		{"post-wait-resource-stop-is-not-primary", "cpu_limit", "", true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := resourceStopMismatch(test.host, test.receipt, test.late); got != test.mismatch {
+				t.Fatalf("actual receipt decision conflates cancellation/natural exit with a resource protocol mismatch: got=%v want=%v", got, test.mismatch)
+			}
+		})
+	}
+}

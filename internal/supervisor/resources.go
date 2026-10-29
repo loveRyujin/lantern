@@ -108,3 +108,13 @@ func resourceCause(reason string) error {
 	}
 	return nil
 }
+
+func resourceStopMismatch(firstReason, receiptReason string, late bool) bool {
+	if late {
+		return false
+	}
+	if resourceCause(firstReason) != nil {
+		return receiptReason != firstReason
+	}
+	return resourceCause(receiptReason) != nil
+}

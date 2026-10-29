@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -59,8 +60,29 @@ func qaResourceTerminal(t *testing.T, cfg Config, r Result) {
 	t.Helper()
 	qaSupervisorTerminal(t, cfg, r)
 	u := r.Usage
-	if !u.MonitoringReady || !u.MonitoringStarted || len(u.Samples) < 2 || len(u.Samples) > MaxResourceSamples || u.GoMonotonicNS == 0 || u.WaitMonotonicNS < u.GoMonotonicNS || u.ReceiptMonotonicNS < u.WaitMonotonicNS || u.Wall != time.Duration(u.WaitMonotonicNS-u.GoMonotonicNS) {
+	// A live cancellation can complete before the first 10ms target tick.
+	// Preserve that blind window rather than fabricating a running sample or
+	// delaying cancellation merely to satisfy a test.
+	minimum := 2
+	if r.State == Cancelled && r.StopReason == "cancel" {
+		minimum = 1
+	}
+	if !u.MonitoringReady || !u.MonitoringStarted || len(u.Samples) < minimum || len(u.Samples) > MaxResourceSamples || u.GoMonotonicNS == 0 || u.WaitMonotonicNS < u.GoMonotonicNS || u.ReceiptMonotonicNS < u.WaitMonotonicNS || u.Wall != time.Duration(u.WaitMonotonicNS-u.GoMonotonicNS) {
 		t.Fatalf("actual resource monitoring or guardian own-Wait interval absent: %+v", u)
+	}
+	if len(u.Samples) == 1 && (u.Samples[0].Phase != "pre-go" || !u.Samples[0].Valid || u.SuccessfulSamples != 0 || u.CPU != 0 || u.PeakRSSBytes != 0 || u.FirstSampleMonotonicNS != 0 || u.LastSampleMonotonicNS != 0) {
+		t.Fatal("cancellation without a running sample fabricated active usage")
+	}
+	if r.StopReason == "cpu_limit" || r.StopReason == "rss_limit" {
+		observed := false
+		for _, sample := range u.Samples {
+			if sample.Valid && sample.Phase == "running" && sample.MonotonicNS >= u.GoMonotonicNS && sample.MonotonicNS <= u.TriggerMonotonicNS {
+				observed = observed || r.StopReason == "cpu_limit" && sample.CPU > r.Budget.CPU || r.StopReason == "rss_limit" && sample.RSSBytes > r.Budget.RSSBytes
+			}
+		}
+		if !observed {
+			t.Fatal("resource stop has no real running threshold observation")
+		}
 	}
 	for _, sample := range u.Samples {
 		if sample.PID != r.Task.PID {
@@ -71,6 +93,11 @@ func qaResourceTerminal(t *testing.T, cfg Config, r Result) {
 
 func TestResourceQANativeRecoveryAndCancellation(t *testing.T) {
 	p := qaResourceNativeProof(t)
+	limits, environment := qaSupervisorLimits(t), os.Environ()
+	cwd, cwdErr := os.Getwd()
+	if cwdErr != nil {
+		t.Fatal(cwdErr)
+	}
 	s, cfg := qaSupervisorNative(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -118,6 +145,11 @@ func TestResourceQANativeRecoveryAndCancellation(t *testing.T) {
 		t.Fatal("late cancellation mutated a returned value")
 	}
 	p.Observations["live_entry_before_cancel"] = true
+	afterCWD, err := os.Getwd()
+	if err != nil || afterCWD != cwd || !reflect.DeepEqual(environment, os.Environ()) || !reflect.DeepEqual(limits, qaSupervisorLimits(t)) {
+		t.Fatal("resource Run polluted the real host cwd/environment/rlimits")
+	}
+	p.Observations["host_cwd_environment_rlimits_unchanged"] = true
 }
 
 func TestResourceQANativeConcurrentIsolation(t *testing.T) {
@@ -156,11 +188,18 @@ func TestResourceQANativeMonitorReadFailure(t *testing.T) {
 	}
 	original := m.info
 	var inject atomic.Bool
+	var injectedReads atomic.Int32
 	// Test-owned telemetry fault only: real PID/birth/path checks and actual
 	// processes remain live. This is not evidence of an actual kernel outage.
 	m.info = func(pid, flavor int32, arg uint64, ptr unsafe.Pointer, n int32) int32 {
 		if flavor == 4 && inject.Load() {
-			return 0
+			// Two isolated failures recover on the next actual kernel read,
+			// followed by a continuous failure. A stale failureStart must not
+			// let the earlier transient bursts shorten the final 50ms window.
+			attempt := injectedReads.Add(1)
+			if attempt != 2 && attempt != 4 {
+				return 0
+			}
 		}
 		return original(pid, flavor, arg, ptr, n)
 	}
@@ -181,7 +220,12 @@ func TestResourceQANativeMonitorReadFailure(t *testing.T) {
 		t.Fatalf("continuous unavailable telemetry did not fail closed: %v %+v", err, r)
 	}
 	var first, last uint64
+	recoveries := 0
 	for _, sample := range r.Usage.Samples {
+		if sample.Phase == "running" && sample.Valid && first != 0 {
+			recoveries++
+			first, last = 0, 0
+		}
 		if sample.Phase == "running" && !sample.Valid {
 			if sample.Error == "" {
 				t.Fatal("failed telemetry masqueraded as valid zero")
@@ -192,10 +236,11 @@ func TestResourceQANativeMonitorReadFailure(t *testing.T) {
 			last = sample.MonotonicNS
 		}
 	}
-	if first == 0 || last-first < uint64(ResourceReadFailureWindow) || r.Usage.TriggerMonotonicNS < first+uint64(ResourceReadFailureWindow) {
+	if recoveries != 2 || first == 0 || last-first < uint64(ResourceReadFailureWindow) || r.Usage.TriggerMonotonicNS < first+uint64(ResourceReadFailureWindow) {
 		t.Fatal("monitor failure was not measured from the first continuous failed read")
 	}
-	p.Observations["injected_fault"] = "PROC_PIDTASKINFO short read after actual payload_entered; identity probes unmodified"
+	p.Observations["injected_fault"] = "PROC_PIDTASKINFO short read after actual payload_entered: fail/success/fail/success/continuous fail; identity probes unmodified"
+	p.Observations["same_run_recoveries"] = recoveries
 	p.Observations["real_run_wait_cleanup_after_injection"] = true
 	m.info = original
 	q = Request{Kind: GoResource, Mode: Normal}

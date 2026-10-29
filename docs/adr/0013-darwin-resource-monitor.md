@@ -44,3 +44,13 @@ Wall 从明确 GO 授权起，到 guardian 对任务实际 own Wait 返回时观
 Apple macOS15系 XNU 源码中，fill_taskprocinfo使用recount_task_times，task_create初始化task recount，exec路径还会复制thread资源字段。仅凭task初始化与条件rollup曾推测可能重置，但原生锁定执行线程路径未见重置，不能让源码片段推断覆盖真实观测；同样不能由这条路径推出所有已终结启动线程完整保留。raw live-thread字段是现存线程aggregate，不是单个调用线程。正式MultiThreadCPU负载将让一个locked线程提前退出并终结，另一继续，检查本Mach task总累计与现存线程累计的差异，不新增生产模式。
 
 一手参考（用于解释，不声称与运行内核逐字节一致）：[fill_taskprocinfo](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/osfmk/kern/bsd_kern.c#L1102)、[task_create](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/osfmk/kern/task.c#L1682)、[exec switch](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/bsd/kern/kern_exec.c#L5101)、[thread资源复制](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/osfmk/kern/thread.c#L1010)。
+
+## 首次资源原生结果与失败修正（尚未终验）
+
+候选0a10048的[CI40910456980](https://github.com/loveRyujin/lantern/actions/runs/40910456980)实际运行source为PR merge `ce53b2d22df4aeffec9061f384979e329d2d21f3`，source clean，macOS15.8.2/24H232/arm64/Go1.27.3。六个固定负载均通过，原始报告保存实际预算、逐样本counter/RSS/virtual与signal/Wait。CPU负载在256107166ns累计CPU时触发250ms预算，RSS触页在78512128bytes时触发64MiB预算，低CPU sleep的GO→Wait为254294208ns并由250ms Wall触发；这些是一次观测，不是最坏延迟保证。MultiThreadCPU的task累计超过2s，并观测已退休线程与live线程累计的差异；untouched实映射256MiB，RSS约10.6MB，不按Go天然巨大虚拟保留尺寸判超限。
+
+该次CI仍失败，不能作为完整验收：并发隔离、持续短读失败与跨Run恢复通过；立即取消的GO→Wait只有7.058917ms，早于10ms首tick，合法只有pre-GO样本。QA曾错误要求每次至少两条样本；修为仅明确取消可无running样本，且对应active Usage必须为零，不能延迟取消来制造采样。资源超限仍需触发前真实running阈值样本。后续增加同Run两次短读恢复再持续失败，核最后连续失败窗而非首个历史失败。
+
+Linux runner默认Python3.14.4超出哈希锁支持的>=3.10,<3.14，被正确拒绝。CI显式选择3.12而不放宽依赖锁。随后旧文件边界测试在正在执行的解释器上得到ETXTBSY，而非PermissionError；VFS自身拒写不能冒充Landlock证据，需用非busy运行时文件的宿主正控与沙箱拒绝作独立证明。修复和最终候选结果仍待确认。三项新资源变异在此失败作业中尚未执行，旧18项及其补充/变异也未运行，不能用之前提交的绿灯补足。
+
+独立代码审查补充修复：任务已自然ownWait、COMPLETE仍在途而Host先选ctxDone时，cancel与空guardian停止原因可以合法并存，不能追加ErrProtocol。实际生产私有决策函数只对资源首因要求matching receipt，并继续拒绝无Host资源首因却出现guardian资源原因；12个语义正反例验证该决策，不称为原生竞态重现。Linux测试修复使用owned、非执行的已批准只读依赖：宿主append-open可用，沙箱read/import成功，write必须PermissionError；解释器的ETXTBSY仅单列VFS拒写。本地真实黑盒通过，CI环境分支仍待新候选。

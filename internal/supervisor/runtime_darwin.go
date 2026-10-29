@@ -715,7 +715,10 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 				if result.Usage.LateStopReason != "" {
 					primaryCause = nil
 				}
-				if result.Usage.LateStopReason == "" && (firstReason != "" && completed.StopReason != firstReason || firstReason == "" && resourceCause(completed.StopReason) != nil) {
+				// Context cancellation covers the unfinished Run, even when the
+				// worker has already been waited and COMPLETE is in flight. Only
+				// resource STOP requests require a matching guardian resource cause.
+				if resourceStopMismatch(firstReason, completed.StopReason, result.Usage.LateStopReason != "") {
 					runErr = errors.Join(runErr, fmt.Errorf("%w: guardian STOP reason differs from host", ErrProtocol))
 				}
 			}
