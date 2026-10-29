@@ -1,6 +1,6 @@
 # ADR 0013：Darwin 内部 CPU/RSS/Wall 在线监测
 
-状态：合同已公开冻结；实现与原生验证中，资源能力尚未验收。关联 Issue #58，依赖 #56 / ADR0012 已完成的 main08a9cc5。
+状态：已采用。关联 Issue #58 / [PR59](https://github.com/loveRyujin/lantern/pull/59)，依赖 #56 / ADR0012 的 main08a9cc5。逐候选验收、变异检查及合并后 main 证据以 PR59 和 [W4-04 笔记](https://github.com/loveRyujin/lantern-notes/blob/main/W4-04-darwin-resource-monitor.md) 的最终记录为准。
 
 ## 目标与范围
 
@@ -54,3 +54,9 @@ Apple macOS15系 XNU 源码中，fill_taskprocinfo使用recount_task_times，tas
 Linux runner默认Python3.14.4超出哈希锁支持的>=3.10,<3.14，被正确拒绝。CI显式选择3.12而不放宽依赖锁。随后旧文件边界测试在正在执行的解释器上得到ETXTBSY，而非PermissionError；VFS自身拒写不能冒充Landlock证据，需用非busy运行时文件的宿主正控与沙箱拒绝作独立证明。修复和最终候选结果仍待确认。三项新资源变异在此失败作业中尚未执行，旧18项及其补充/变异也未运行，不能用之前提交的绿灯补足。
 
 独立代码审查补充修复：任务已自然ownWait、COMPLETE仍在途而Host先选ctxDone时，cancel与空guardian停止原因可以合法并存，不能追加ErrProtocol。实际生产私有决策函数只对资源首因要求matching receipt，并继续拒绝无Host资源首因却出现guardian资源原因；12个语义正反例验证该决策，不称为原生竞态重现。Linux测试修复使用owned、非执行的已批准只读依赖：宿主append-open可用，沙箱read/import成功，write必须PermissionError；解释器的ETXTBSY仅单列VFS拒写。本地真实黑盒通过，CI环境分支仍待新候选。
+
+## 后续候选与证据解释
+
+候选2291880重新通过六负载和三个独立原生用例：同Run短读恢复两次后再持续失读，触发窗从最后一段连续失败计；超限及取消后可恢复调用；并发取消与CPU超限保持身份、目录和原因隔离；宿主cwd/env/rlimit保持不变。CPU/RSS/Wall三项实际动作移除均由真实负载越界检出，worker实际自然退出0而CLI oracle退出1，未借编译失败、CPU前检失败、其它预算或外层超时造红，且快照源恢复。
+
+这些是该候选的证据，不自动代表后续提交或main已经验收。私有collector容量/计数下降/Wait窗口与STOP决策测试属于合成或语义验证；短读为在真实进程中注入遥测失效，不能声称观测到内核实际故障。目标10ms采样间隔的实际gap、触发overshoot与虚拟保留量都应读取raw而非替换成配置值。该实现仍不能作为任意SQL/Python代码的Darwin业务沙箱。
