@@ -1,19 +1,32 @@
 // Package sqlx 提供当前工作区 analytics.db 的只读查询。
 //
-// NewTool 是模型 SQL 的执行入口。Linux 下每次查询启动独立 worker，在第二次 exec
-// 之前设定 RLIMIT_AS=1 GiB；这包括 Go 运行时的虚拟地址预留，不是 RSS 或 SQLite 堆配额。
-// 超限导致 SQLite NOMEM 或明确的 Go 运行时 OOM 时，返回 sql_result_too_large，不返回部分结果。
-// timeout、sql_worker_failed（崩溃/协议损坏）和 sql_worker_unavailable（启动失败）分别处理。
-// 不支持隔离的平台失败关闭，不退回父进程查询；macOS 实现在 W4 处理。
+// NewTool 是模型 SQL 的执行入口。Linux 与 Darwin 每次查询都启动独立 worker，
+// 数值上限都是 1 GiB，但机制不同。Linux 在第二次 exec 之前设定 RLIMIT_AS=1 GiB，
+// 覆盖 Go 运行时的虚拟地址预留，不是 RSS 或 SQLite 堆配额。Darwin 不使用 RLIMIT_AS：
+// 它和 RLIMIT_RSS 是同一个资源号，setrlimit 返回 EINVAL，内核不拿它限制 mmap。
+// memorystatus_control 还要求私有 entitlement，普通进程拿不到 jetsam 致命上限。
+// Darwin 的停止线是 proc_pid_rusage 的物理足迹（ri_phys_footprint，字节）。worker 和
+// 父进程大约每 2ms 采样一次，大于 1 GiB 就结束进程。采样有一个间隔的超调，不是虚拟地址硬顶。
+// 发 ready 前读不到自己的足迹，或看见 worker 后持续读失败，都以 125 失败关闭，
+// 不退回父进程查询，也不把上限放大。
+// 超限（SQLite NOMEM、明确的 Go 运行时 OOM、Darwin NOTE_EXIT_MEMORY、worker 自己的足迹停止
+// 或父进程的足迹停止）返回 sql_result_too_large，不返回部分结果。timeout、
+// sql_worker_failed（崩溃/协议损坏）和 sql_worker_unavailable（启动失败，或 Darwin 上
+// 看见 worker 后无法继续读取足迹）分开处理。Windows 等其余平台仍然失败关闭。
 //
-// 父进程解析结构化 ready/done 协议，核对 PID、内存上限和错误码；从 /proc 和 wait4
-// 收集实际峰值。取消时杀整个进程组并 Wait，设置父进程退出时杀 worker，不遗留僵尸。
-// worker 的环境不继承 API Key。第二次 exec 前关闭除 stdin/stdout/stderr 以外的
-// 文件描述符；只设置 CLOEXEC 不足以挡住父进程已经打开且未设该标志的 fd。
+// 父进程解析结构化 ready/done 协议，核对 PID、内存上限和错误码。Linux 从 /proc 和 wait4
+// 收集峰值；Darwin 把采样到的物理足迹放进同一峰值字段，wait4 的 ru_maxrss 在 Darwin 上是字节，
+// 而且只是驻留峰值，不能乘 1024，也不能代替足迹停止线。
+// 取消时杀整个进程组并 Wait。Linux 用 Pdeathsig 在父进程死亡时杀 worker；Darwin 没有该调用，
+// worker 在第二次 exec 之后用 kqueue 监视父进程退出并杀掉自己的进程组。两种路径都不留僵尸。
+// worker 的环境不继承 API Key。Linux 在第二次 exec 前用 close_range 关闭除 stdin/stdout/stderr
+// 以外的文件描述符；Darwin 不重复这条路径。
 // 此处是 SQL 资源隔离，不替代后续 Python 沙箱的文件系统和网络隔离。
 //
 // 语句扫描只是提前报错。真正的只读边界为 mode=ro、每条连接 query_only、拒绝 ATTACH，
-// 业务库路径白名单和文件身份校验。构造工具后文件被替换会返回 data_busy，需重新打开工具。
+// 业务库路径白名单和文件身份校验。worker 按 EvalSymlinks 之后的路径比较 Path 与 Allowed，
+// 所以 macOS 上 /var 与 /private/var 指向同一文件时不会被当成替换。
+// 构造工具后文件被替换会返回 data_busy，需重新打开工具。
 // worker 在查询前后核对主库和 -wal 哈希；变化时丢弃结果。-shm 只是索引，不参与哈希。
 // 父进程不为核对哈希而打开并关闭业务库，避免释放同进程写连接的 POSIX 锁。
 // 哈希流式读取，不把整个数据库拷入父进程内存。

@@ -79,7 +79,8 @@ lantern/
 2. 连接层：用 `file:analytics.db?mode=ro` 打开，并设置 `PRAGMA query_only=ON`；`sensitive.db` 从不 ATTACH 到这个连接上。
 3. authorizer 回调：如果 modernc 暴露了 `sqlite3_set_authorizer`，就只放行 SQLITE_READ 和 SQLITE_SELECT 这类操作；W2 先确认这个 API 能不能用，用不了就只靠前两层，并在报告中注明。
 - **Linux 查询资源隔离（#38）**：`NewTool` 每次启动自身可执行文件的 SQL worker。shim 先设置 `RLIMIT_AS` 软/硬上限均为 **1 GiB（1,073,741,824 字节）**，禁用 core dump，再 exec worker，让 Go 运行时在上限内启动。上限覆盖整个虚拟地址空间，包括运行时预留，不能当作 1 GiB RSS/SQLite 堆配额。`GOMEMLIMIT=64MiB` 只降低 Go 堆压力，不充当硬限制。SQLite NOMEM 或明确的 Go runtime OOM 映射为 `sql_result_too_large`；分配失败后 worker 结束，不要求内核必须发 OOM kill。普通崩溃或协议损坏是 `sql_worker_failed`，启动失败是 `sql_worker_unavailable`。所有错误均不返回部分结果，资源错误仍不计入也不清零 Agent 连续参数失败计数。
-- **进程生命周期与观测**：父进程核对 `ready`/`done` 的版本、PID、上限和错误码，并采集 `/proc` 的 VmPeak/VmHWM 与 wait4 的峰值 RSS；正常与异常路径均 Wait。context 到期杀整个进程组，父进程死亡时内核杀 worker。环境只传运行时参数及临时目录，不继承 API Key。stderr 和协议输出有固定长度上限。此机制只交付 Linux；其他平台返回明确不可用，macOS 隔离在 W4 实现，不能无声回退到主进程。
+- **进程生命周期与观测**：父进程核对 `ready`/`done` 的版本、PID、上限和错误码；正常与异常路径均 Wait。context 到期杀整个进程组。环境只传运行时参数及临时目录，不继承 API Key。stderr 和协议输出有固定长度上限。Linux 从 `/proc` 和 wait4 采集峰值，并用 `Pdeathsig` 在父进程死亡时杀 worker。Darwin 的对应机制见下一条。Windows 等其余平台返回 `sql_worker_unavailable`，不能无声回退到主进程。
+- **Darwin 查询资源隔离（#65）**：`NewTool` 走与 Linux 同构的第二次 exec。**不设置 `RLIMIT_AS`**：在 Darwin 上它和 `RLIMIT_RSS` 是同一个资源号，`setrlimit` 返回 `EINVAL`，内核不拿它限制 mmap。也不调用 `memorystatus_control`：该调用在分派命令前就要求 root 或 `com.apple.private.memorystatus`，普通 macOS 进程得到 `EPERM`；把它的失败当成“已设限”或因此让每条查询都 `sql_worker_unavailable`，都不是可用的硬上限。`task_set_phys_footprint_limit` 同样不是普通进程的缺页配额。停止线是 `proc_pid_rusage(RUSAGE_INFO_V2)` 的 **`ri_phys_footprint`，阈值仍是 1 GiB（1,073,741,824 字节）**。这是物理足迹，含压缩和换出的匿名页，不含未触页的地址预留。worker 在发 ready 前必须读到自己的非零足迹，之后约每 2ms 再读；父进程只在看见 worker 映像后做同样的采样。大于 1 GiB 就结束进程。这是带一个采样间隔超调的停止线，不是虚拟地址硬顶，也不是把 1 GiB 放大。看见 worker 后足迹持续读失败则杀进程并返回 `sql_worker_unavailable`。`NOTE_EXIT_MEMORY`、父进程或 worker 自己的足迹停止，以及已确认上限后的 Go runtime OOM 文本，才是 `sql_result_too_large`；外部 SIGKILL 仍是 `sql_worker_failed`。Darwin 没有 `Pdeathsig`，worker 在第二次 exec 之后用 kqueue 监视父进程退出。`close_range` 仍只属于 Linux（#64）。不把 SQL worker 接进 Python `Sandbox.Run`。详见 [ADR 0015](../adr/0015-darwin-sql-worker.md)。
 - **查询与结果预算**：不改写 SQL。默认 200 行、最多 1000 行，结果列在 prepare 后、step 前限制为 32 列，保留单值 `SQLITE_LIMIT_LENGTH=4 MiB`，不使用会误伤宽表的 `SQLITE_LIMIT_COLUMN`。最终 **完整 JSON 不超过 1 MiB**，包括列名、元数据、JSON 转义与 base64；预留少量截断元数据。单行超限整次返回 `sql_result_too_large`；多行累计超限保留完整行并标记字节截断。JSON 关闭 HTML 转义；合法 TEXT 保持字符串，非法 UTF-8 TEXT 以 `{encoding:"base64",data:"..."}` 对象无损表示，BLOB 保持 base64 字符串。worker 协议解码使用 `json.Number`，不丢失 int64 精度。
 - **只读与文件身份**：工具构造时冻结解析后的登记路径与文件身份；查询前父进程及 worker 校验设备号/inode，worker 在查询后再次校验。文件被替换或重定向时返回 `data_busy`，调用方重新打开并构造工具。完整文件哈希改为流式读取并在 worker 内计算，父进程只观察 WAL 是否出现，避免为算哈希而关闭额外 fd、释放同进程写连接的 POSIX 锁。模型 SQL 只走 `NewTool`；公开的低层 `Query` 是当前进程读取器，本身不限制中间值总内存。
 - **回归与边界**：六类真实 B6 查询（物化 CTE、子查询、GROUP BY、UNION、IN 列表、ORDER BY random()）各用独立 worker 验证错误与系统峰值，不只检查退出码。原先 1.2–2.75 GB 的中间值风险由 Linux worker 的地址空间硬限制覆盖。`temp_store=FILE` 和 256 KiB 页缓存仍只帮助排序，不替代硬限制；不使用会影响主进程审计/工作区写入的进程共享 SQLite hard heap limit。一般 SIGSEGV/SIGKILL 不会当作 OOM；只有确认限额生效且有明确 runtime OOM 诊断的异常退出才映射为结果过大。文件系统/网络级的 Python Sandbox 仍属于 W3 后续任务。
@@ -95,6 +96,7 @@ lantern/
 - 路径两侧校验尚未绑定 SQLite 实际持有的文件描述符，不能抵御具有工作区写权限的同用户进程在检查间隙来回替换路径。工作区目录仍属于应用信任边界，后续 Python 沙箱不得写入这些目录。
 - Linux shim 在第二次 `Exec`（`--lantern-sql-worker-v1`）之前调用 `close_range(3, ~0U, 0)`，只保留 stdin/stdout/stderr。`FD_CLOEXEC` 挡不住父进程已经打开且未设该标志的描述符：Go 的 Linux fork/exec 不关闭 fd≥3，`syscall.Exec` 会原样继承它们。`close_range` 失败（含内核不支持）时 shim 以 125 退出，不进入 worker，也不把扫描 `/proc/self/fd` 当作默认路径。这不改变只读 SQL、RLIMIT 或非 Linux 行为。
 - Linux `Pdeathsig` 实际绑定发起创建的 OS 线程，线程退出也可能使 worker 异常退出；此时按 `sql_worker_failed` 处理，不伪装成 OOM。临时文件尚无磁盘配额，墙钟超时不是磁盘硬上限；当前 Agent 串行调用工具，尚未提供全局 worker 并发预算。它们是后续资源隔离工作需要继续覆盖的边界。
+- Darwin SQL worker（#65）的停止线是物理足迹采样，不是 Linux `RLIMIT_AS`，也不是 entitlement 门后的 jetsam。采样大约每 2ms 一次，连续约 50 次读不到已出现 worker 的足迹就失败关闭。父死监视在第二次 exec 之后才武装。未实现 #64 的 `close_range`，也未实现 W4-05 的 unlink-open `proc_pidfdinfo` 观察。这些缺口不改变只读 SQL 语义。
 
 ## 7. 沙箱
 统一接口 `Sandbox.Run(ctx, Spec) (Result, error)`，错误类型分为 `timeout | oom | killed | error | runtime_unavailable`。
@@ -153,7 +155,7 @@ lantern/
 
 ## 14. v0.3.1 补丁（采纳测试搭子的意见）
 - **Linux 网络**：Landlock 新 ABI 含部分网络权限；本项目仍一律用 seccomp 拒绝 `socket()`（AF_INET、AF_INET6、AF_UNIX、AF_NETLINK、RAW 全部拦截）。内核不支持 Landlock 时直接返回 `sandbox_unavailable`，不静默降级。
-- **macOS 内存**：不依赖 RLIMIT_AS，改由父进程按 100ms 间隔轮询整个进程组的 RSS，超限就 kill 并返回 `oom`，报告里注明这是平台差异。
+- **macOS 内存**：不依赖 RLIMIT_AS，也不依赖 `memorystatus_control`。SQL worker 的具体机制以 #65 / ADR 0015 为准：父进程和 worker 按约 2ms 采样 `ri_phys_footprint`，大于 1 GiB 返回 `sql_result_too_large`。这不是 Python 沙箱的 RSS 契约，也不把 Linux 的虚拟地址上限说成已在 Darwin 上生效。
 - **ATTACH**：除了词法校验，还对 analytics 连接设置 `SQLITE_LIMIT_ATTACHED=0`（如果 modernc 暴露了 limit 接口），并启用 authorizer 拒绝 SQLITE_ATTACH。另外的兜底：`run_sql` 放进 shim 子进程执行，套用和沙箱同样的文件系统策略（只能读 analytics.db），所以即使 ATTACH 成功也打不开 sensitive.db。W2 确认哪几层能用。
 
 ## 15. 可插拔 Embedder（v0.3.2，ryujin 已确认）

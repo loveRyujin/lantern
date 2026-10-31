@@ -147,6 +147,9 @@ func firstCellRaw(t *testing.T, content string) string {
 }
 
 func TestWideRowMemoryBound(t *testing.T) {
+	if _, err := os.Stat("/proc/self/status"); err != nil {
+		t.Skip("这个回归读 Linux VmHWM，不覆盖 Darwin SQL worker")
+	}
 	const id = "wide-row"
 	if os.Getenv("LANTERN_SQL_MEM_CHILD") != id {
 		if os.Getenv("LANTERN_SQL_MEM_CHILD") != "" {

@@ -32,7 +32,7 @@ const (
 	// 不设置 sqlite3_hard_heap_limit64：那个上限是进程级的，工作区、审计和敏感库也会被卡住。
 	CacheKiB = 256
 	// SortMemBytes 是排序这类查询在 SQLite 堆上的大约上限，只给回归测试用。
-	// 这里只量低层排序器；产品工具另外受 Linux worker 的 RLIMIT_AS 约束。
+	// 这里只量低层排序器；产品工具另外受 Linux RLIMIT_AS 或 Darwin phys_footprint 采样停止约束。
 	SortMemBytes  int64 = 256 << 20
 	TruncateBytes       = "bytes"
 )
@@ -55,7 +55,7 @@ type EncodedText struct {
 }
 
 // Query 是受信任调用方使用的低层读取器，直接使用当前进程的 SQLite 连接。
-// 模型工具必须经 NewTool，不能直接调用本函数；Linux Tool 在设有 RLIMIT_AS 的 worker 内使用它。
+// 模型工具必须经 NewTool，不能直接调用本函数；Linux 与 Darwin 的 Tool 在隔离 worker 内使用它。
 // limit 必须在 1 和 MaxLimit 之间；多读一行判断是否截断。结果列在 prepare 后最多 32 列。
 // 每列先拒绝明显超限的原始数据，再按实际 JSON 长度累计，包含字符串转义和 base64。
 // 单行超限或 SQLite TOOBIG/NOMEM 时整次失败；多行累计超限时只保留完整行并标截断。
