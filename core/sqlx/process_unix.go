@@ -128,7 +128,13 @@ func fileIdentity(info os.FileInfo) (uint64, uint64) {
 
 func sameProcessFile(req processRequest) bool {
 	resolved, err := Resolve(req.Path)
-	if err != nil || resolved != req.Allowed || req.Path != req.Allowed {
+	if err != nil {
+		return false
+	}
+	allowed, err := Resolve(req.Allowed)
+	// macOS 的临时目录在 /var → /private/var 后面。比较解析后的路径，
+	// 同一文件的两种写法不会被当成替换。解析结果不同或 inode 变了仍是 data_busy。
+	if err != nil || resolved != allowed {
 		return false
 	}
 	info, err := os.Stat(resolved)

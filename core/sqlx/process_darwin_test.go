@@ -266,6 +266,9 @@ func TestDarwinSQLProcessOverLimitFailClosed(t *testing.T) {
 	res, stats, err := runSQLProcess(ctx, processRequest{Path: path, Allowed: path, SQL: query, Limit: 1})
 	t.Logf("pid=%d rss=%d virtual=%d limit=%d error=%v", stats.PID, stats.PeakRSS, stats.PeakVirtual, stats.MemoryLimit, err)
 	assertDarwinCode(t, err, CodeResultTooLarge)
+	if stats.PeakRSS <= 64<<20 {
+		t.Fatalf("footprint stop stayed within GOMEMLIMIT, so this was not the phys_footprint cap: %+v", stats)
+	}
 	if res.RowCount != 0 || len(res.Rows) != 0 {
 		t.Fatalf("over-limit worker returned rows: %+v", res)
 	}
@@ -358,8 +361,12 @@ func TestDarwinSQLProcessFailureClassification(t *testing.T) {
 	}
 }
 
+// workerObserve 不含前导 "--"。macOS 的 pgrep 会把以 "--" 开头的 pattern 当成选项，
+// 于是扫不到正在跑的 worker。
+const workerObserve = "lantern-sql-worker-v1"
+
 func darwinWorkerPIDs() []int {
-	out, err := exec.Command("pgrep", "-f", workerArg).Output()
+	out, err := exec.Command("pgrep", "-f", workerObserve).Output()
 	if err != nil {
 		return nil
 	}
@@ -370,7 +377,7 @@ func darwinChildWorkers(parent int) []int {
 	if parent <= 0 {
 		return nil
 	}
-	out, err := exec.Command("pgrep", "-P", strconv.Itoa(parent), "-f", workerArg).Output()
+	out, err := exec.Command("pgrep", "-P", strconv.Itoa(parent), "-f", workerObserve).Output()
 	if err != nil {
 		return nil
 	}
