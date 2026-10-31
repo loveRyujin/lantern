@@ -191,7 +191,10 @@ jobs:
   # not claim a production Darwin Runner. The legacy diagnostic remains above.
   macos-sandbox-spike:
     runs-on: macos-15
-    timeout-minutes: 25
+    timeout-minutes: 40
+    env:
+      # pull_request checkouts are merge commits. Keep the PR head beside that SHA.
+      LANTERN_PR_HEAD: ${{ github.event.pull_request.head.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -321,6 +324,108 @@ jobs:
         with:
           name: darwin-resource-mutations-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/darwin-resource-api-reports/independent-qa/
+          if-no-files-found: error
+      - name: Run fixed private-tree file budgets through the sealed helper
+        run: |
+          "${RUNNER_TEMP}/lantern-darwin-probe" files-api --out "${RUNNER_TEMP}/darwin-file-budget-reports" > "${RUNNER_TEMP}/darwin-file-budget-stdout.json"
+      - name: Require six actual file-budget outcomes and an unresolved unlink-open gap
+        run: |
+          python3 - <<'PYFILE'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          r = json.loads((root / 'darwin-file-budget-reports' / 'report.json').read_text())
+          assert r['schema'] == 'lantern.darwin-file-budget.v1' and r['status'] == 'passed', r
+          assert r['source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip() and r['source_dirty'] is False
+          pr_head = os.environ.get('LANTERN_PR_HEAD', '')
+          assert len(r['pr_head']) == 40 and r['pr_head'] == (pr_head if pr_head else r['source_commit'])
+          assert r['environment']['goos'] == 'darwin' and r['environment']['goarch'] == 'arm64'
+          assert r['environment']['macos_version'] and r['environment']['macos_build'] and r['environment']['go_version']
+          assert r['candidate'] == 'unique-inode-allocated-bytes'
+          assert r['unlinked_open'] == 'unresolved-unlinked-open' and r['candidate_meters_unlinked_open'] is False
+          assert r['cleanup_is_budget_protection'] is False and r['hard_disk_quota'] is False and r['business_backend_available'] is False
+          assert r['cleanup_actor'] == 'guardian' and r['harness_rescue'] is False
+          expected = {'file-small','file-multi','file-entries','file-grow','file-unlink','file-edges'}
+          assert len(r['cases']) == 6 and {c['id'] for c in r['cases']} == expected
+          for c in r['cases']:
+              assert c['status'] == 'passed' and not c.get('validation_error') and not c['harness_rescue'] and c['budget_protected_during_run'] is False, c
+              assert c['conclusion'] == c['expected_conclusion'] and c['conclusion'] != 'observation-incomplete', c
+              assert all(c['checks'].values()) and len(c['checks']) >= 8, c
+          names = {'executable_sha256','algorithm_sha256','common.go','protocol.go','runtime_darwin.go','spawn_darwin.go','resources.go','resources_darwin.go','resource_worker_darwin.go','filebudget.go','filebudget_unix.go','filebudget_darwin.go','file_worker_darwin.go'}
+          assert set(r['fingerprints']) == names
+          assert hashlib.sha256(r['algorithm'].encode()).hexdigest() == r['fingerprints']['algorithm_sha256']
+          assert hashlib.sha256((root / 'lantern-darwin-probe').read_bytes()).hexdigest() == r['fingerprints']['executable_sha256']
+          for name, fingerprint in r['fingerprints'].items():
+              if name in ('executable_sha256', 'algorithm_sha256'):
+                  continue
+              assert hashlib.sha256(pathlib.Path('internal/supervisor', name).read_bytes()).hexdigest() == fingerprint, name
+          PYFILE
+      - name: Preserve private-tree file budget samples and unlink observations
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: darwin-file-budget-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/darwin-file-budget-reports/
+            ${{ runner.temp }}/darwin-file-budget-stdout.json
+          if-no-files-found: error
+      - name: Independently verify file-budget recovery cancellation and isolation
+        env:
+          DARWIN_FILE_REAL_QA: "1"
+          DARWIN_FILE_QA_OUT: ${{ runner.temp }}/darwin-file-independent
+        run: go test ./internal/supervisor -run '^TestFileQANative' -count=1 -v -timeout 2m
+      - name: Require independent file-budget proof manifest
+        run: |
+          python3 - <<'PYFILEQA'
+          import json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'darwin-file-independent'
+          names = {'TestFileQANativeRecoveryAndCancellation', 'TestFileQANativeConcurrentIsolation'}
+          assert {p.stem for p in root.glob('*.json')} == names
+          pr_head = os.environ.get('LANTERN_PR_HEAD', '')
+          for name in names:
+              r = json.loads((root / (name + '.json')).read_text())
+              assert r['status'] == 'passed' and r['source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip() and r['source_dirty'] is False, r
+              assert len(r['calls']) >= 2, r
+              if pr_head:
+                  assert r['observations']['pr_head'] == pr_head, r
+          PYFILEQA
+      - name: Preserve independent file-budget native observations
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: darwin-file-independent-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/darwin-file-independent/
+          if-no-files-found: error
+      - name: Independently remove the candidate byte stop and require a real allocated breach
+        env:
+          DARWIN_FILE_MUTATION_QA: "1"
+          DARWIN_FILE_PROBE: ${{ runner.temp }}/lantern-darwin-probe
+          DARWIN_FILE_BASELINE_REPORT: ${{ runner.temp }}/darwin-file-budget-reports/report.json
+        run: go test ./cmd/lantern-darwin-probe -run '^TestDarwinFileBudgetNativeIndependentQA$' -count=1 -v -timeout 4m
+      - name: Require the allocated-stop mutation and restored source
+        run: |
+          python3 - <<'PYFILEMUT'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'darwin-file-budget-reports' / 'independent-qa'
+          r = json.loads((root / 'index.json').read_text())
+          assert r['schema'] == 'lantern.darwin-file-budget-mutations.v1' and r['status'] == 'passed', r
+          assert r['candidate_sha'] == r['baseline_source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          pr_head = os.environ.get('LANTERN_PR_HEAD', '')
+          if pr_head:
+              assert r['pr_head'] == pr_head, r
+          assert len(r['results']) == 1 and r['results'][0]['name'] == 'allocated-stop-disabled', r
+          x = r['results'][0]
+          assert x['target_red'] is True and x['source_restored'] is True and x['exit_code'] == 1 and x['observed_worker_exit_code'] == 0, x
+          assert x['exit_scope'] == 'files-api-cli-oracle' and x['target_case'] == 'file-grow'
+          assert x['original_sha256'] != x['mutated_sha256']
+          assert hashlib.sha256(pathlib.Path(x['source_file']).read_bytes()).hexdigest() == x['original_sha256']
+          assert not subprocess.check_output(['git','status','--porcelain'], text=True).strip()
+          PYFILEMUT
+      - name: Preserve actual file-budget mutation proof
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: darwin-file-mutations-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/darwin-file-budget-reports/independent-qa/
           if-no-files-found: error
       - name: Test Darwin experiment contracts
         run: go test ./cmd/lantern-darwin-probe -run '^TestDarwin(Probe|Supervision)QA' -count=1 -v -timeout 10m

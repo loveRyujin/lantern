@@ -4,7 +4,7 @@
 
 ## 目标与范围
 
-在现有 `Supervisor.Run` 增加一个 sealed Go 资源 helper 与值类型预算。只验证 CPU/RSS 在线采样与独立 Wall，不接任意代码、SQL、Python Runner、Sandbox.Run 或 Session；磁盘、已 unlink 文件、NPROC、进程 profile、stdout 总量和全局并发仍是业务出口前的后续依赖。旧 GoLifecycle 的18项不启用本轮计量，继续回归。
+在现有 `Supervisor.Run` 增加一个 sealed Go 资源 helper 与值类型预算。只验证 CPU/RSS 在线采样与独立 Wall，不接任意代码、SQL、Python Runner、Sandbox.Run 或 Session。私有 out/tmp 的候选字节预算和 unlink-open 盲区由 [ADR 0014](0014-darwin-file-budget.md) 单独冻结；NPROC、进程 profile、stdout 总量和全局并发仍是业务出口前的后续依赖。旧 GoLifecycle 的18项不启用本轮计量，继续回归。
 
 不新增 Start/Wait/Close handle、调度器、运行时框架或生产 CounterProbe。原生 CPU 前检使用测试私有 fixture，以现有 safe spawn 的 SETEXEC 验证同 PID/birth 计数边界，不改变生产 helper 枚举。
 

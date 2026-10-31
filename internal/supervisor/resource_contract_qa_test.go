@@ -20,6 +20,7 @@ func TestResourceQABudgetDefaultsArePerFieldAndNeverClamp(t *testing.T) {
 		{"wall-only", ResourceBudget{Wall: 250 * time.Millisecond}, ResourceBudget{CPU: time.Second, RSSBytes: 128 << 20, Wall: 250 * time.Millisecond}},
 		{"exact-hard-ceilings", ResourceBudget{CPU: 3 * time.Second, RSSBytes: 512 << 20, Wall: 5 * time.Second}, ResourceBudget{CPU: 3 * time.Second, RSSBytes: 512 << 20, Wall: 5 * time.Second}},
 		{"small-positive-is-not-default", ResourceBudget{CPU: time.Nanosecond, RSSBytes: 1, Wall: time.Nanosecond}, ResourceBudget{CPU: time.Nanosecond, RSSBytes: 1, Wall: time.Nanosecond}},
+		{"file-axes-are-not-defaulted", ResourceBudget{FileBytes: 4096, FileEntries: 2}, ResourceBudget{CPU: time.Second, RSSBytes: 128 << 20, Wall: 3 * time.Second, FileBytes: 4096, FileEntries: 2}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			input := test.in
@@ -33,14 +34,16 @@ func TestResourceQABudgetDefaultsArePerFieldAndNeverClamp(t *testing.T) {
 
 func TestResourceQAInvalidBudgetsRejectBeforeAnyActorOrFiles(t *testing.T) {
 	for name, b := range map[string]ResourceBudget{
-		"negative-cpu":      {CPU: -time.Nanosecond},
-		"negative-wall":     {Wall: -time.Nanosecond},
-		"cpu-over-ceiling":  {CPU: 3*time.Second + time.Nanosecond},
-		"wall-over-ceiling": {Wall: 5*time.Second + time.Nanosecond},
-		"rss-over-ceiling":  {RSSBytes: (512 << 20) + 1},
-		"cpu-max-int64":     {CPU: time.Duration(math.MaxInt64)},
-		"wall-min-int64":    {Wall: time.Duration(math.MinInt64)},
-		"rss-max-uint64":    {RSSBytes: math.MaxUint64},
+		"negative-cpu":              {CPU: -time.Nanosecond},
+		"negative-wall":             {Wall: -time.Nanosecond},
+		"cpu-over-ceiling":          {CPU: 3*time.Second + time.Nanosecond},
+		"wall-over-ceiling":         {Wall: 5*time.Second + time.Nanosecond},
+		"rss-over-ceiling":          {RSSBytes: (512 << 20) + 1},
+		"cpu-max-int64":             {CPU: time.Duration(math.MaxInt64)},
+		"wall-min-int64":            {Wall: time.Duration(math.MinInt64)},
+		"rss-max-uint64":            {RSSBytes: math.MaxUint64},
+		"file-bytes-over-ceiling":   {FileBytes: MaxFileBudgetBytes + 1},
+		"file-entries-over-ceiling": {FileEntries: MaxFileBudgetEntries + 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := normalizeBudget(b); !errors.Is(err, ErrInvalidRequest) {
@@ -85,20 +88,34 @@ func TestResourceQASealedProfileCannotEnableMeterOnLifecycleOrUseGates(t *testin
 			t.Fatalf("caller budget was silently ignored on the unmetered lifecycle profile: %+v %v", b, err)
 		}
 	}
-	for _, mode := range []Mode{CPUBusy, LowCPUSleep, TouchMemory, UntouchedMemory, MultiThreadCPU} {
+	for _, mode := range []Mode{CPUBusy, LowCPUSleep, TouchMemory, UntouchedMemory, MultiThreadCPU, FileSmall, FileMulti, FileEntries, FileGrow, FileUnlink, FileEdges, FileHold} {
 		if err := validateRequest(c, Request{Kind: GoLifecycle, Mode: mode}); !errors.Is(err, ErrInvalidRequest) {
 			t.Fatalf("resource load leaked into old lifecycle profile: %q %v", mode, err)
+		}
+	}
+	if err := validateRequest(c, Request{Kind: GoResource, Mode: FileGrow, Budget: ResourceBudget{FileBytes: 48 << 10}}); err != nil {
+		t.Fatal("explicit file byte budget was rejected: ", err)
+	}
+	for _, q := range []Request{
+		{Kind: GoResource, Mode: FileGrow},
+		{Kind: GoResource, Mode: FileEntries, Budget: ResourceBudget{FileBytes: 1024}},
+		{Kind: GoResource, Mode: FileGrow, Budget: ResourceBudget{FileBytes: 1024, FileEntries: 1}},
+		{Kind: GoResource, Mode: Normal, Budget: ResourceBudget{FileBytes: 1}},
+		{Kind: GoResource, Mode: CPUBusy, Budget: ResourceBudget{FileEntries: 1}},
+	} {
+		if err := validateRequest(c, q); !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("file budget pairing was accepted: %+v %v", q, err)
 		}
 	}
 }
 
 func TestResourceQAStopCausesAreStableAndDistinct(t *testing.T) {
-	for reason, want := range map[string]error{"cpu_limit": ErrCPULimit, "rss_limit": ErrRSSLimit, "wall_limit": ErrWallLimit, "monitor_error": ErrMonitor} {
+	for reason, want := range map[string]error{"cpu_limit": ErrCPULimit, "rss_limit": ErrRSSLimit, "wall_limit": ErrWallLimit, "file_limit": ErrFileLimit, "monitor_error": ErrMonitor} {
 		got := resourceCause(reason)
 		if !errors.Is(got, want) {
 			t.Fatalf("typed resource cause lost: reason=%s error=%v", reason, got)
 		}
-		for _, other := range []error{ErrCPULimit, ErrRSSLimit, ErrWallLimit, ErrMonitor, ErrPeerLost, ErrProtocol} {
+		for _, other := range []error{ErrCPULimit, ErrRSSLimit, ErrWallLimit, ErrFileLimit, ErrMonitor, ErrPeerLost, ErrProtocol} {
 			if other != want && errors.Is(got, other) {
 				t.Fatalf("resource cause conflated %s with %v", reason, other)
 			}
