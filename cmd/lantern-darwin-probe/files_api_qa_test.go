@@ -140,6 +140,25 @@ func TestFileAPIOracleRejectsCleanupAsUnlinkProtection(t *testing.T) {
 	}
 }
 
+func TestFileAPIRecordsPRHeadSeparatelyFromCheckout(t *testing.T) {
+	checkout := strings.Repeat("ab", 20)
+	t.Setenv("LANTERN_PR_HEAD", "")
+	got, err := notePRHead(checkout)
+	if err != nil || got != checkout {
+		t.Fatalf("missing PR head should keep the checkout SHA: %s %v", got, err)
+	}
+	want := strings.Repeat("cd", 20)
+	t.Setenv("LANTERN_PR_HEAD", want)
+	got, err = notePRHead(checkout)
+	if err != nil || got != want {
+		t.Fatalf("PR head was not kept beside the checkout: %s %v", got, err)
+	}
+	t.Setenv("LANTERN_PR_HEAD", "not-a-sha")
+	if _, err = notePRHead(checkout); err == nil {
+		t.Fatal("a non-sha PR head was accepted")
+	}
+}
+
 func TestFileAPIOracleRejectsNaturalCompletionOverCandidateBudget(t *testing.T) {
 	var spec fileAPISpec
 	for _, s := range fileAPISpecs() {

@@ -192,6 +192,9 @@ jobs:
   macos-sandbox-spike:
     runs-on: macos-15
     timeout-minutes: 40
+    env:
+      # pull_request checkouts are merge commits. Keep the PR head beside that SHA.
+      LANTERN_PR_HEAD: ${{ github.event.pull_request.head.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -333,6 +336,8 @@ jobs:
           r = json.loads((root / 'darwin-file-budget-reports' / 'report.json').read_text())
           assert r['schema'] == 'lantern.darwin-file-budget.v1' and r['status'] == 'passed', r
           assert r['source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip() and r['source_dirty'] is False
+          pr_head = os.environ.get('LANTERN_PR_HEAD', '')
+          assert len(r['pr_head']) == 40 and r['pr_head'] == (pr_head if pr_head else r['source_commit'])
           assert r['environment']['goos'] == 'darwin' and r['environment']['goarch'] == 'arm64'
           assert r['environment']['macos_version'] and r['environment']['macos_build'] and r['environment']['go_version']
           assert r['candidate'] == 'unique-inode-allocated-bytes'
@@ -375,10 +380,13 @@ jobs:
           root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'darwin-file-independent'
           names = {'TestFileQANativeRecoveryAndCancellation', 'TestFileQANativeConcurrentIsolation'}
           assert {p.stem for p in root.glob('*.json')} == names
+          pr_head = os.environ.get('LANTERN_PR_HEAD', '')
           for name in names:
               r = json.loads((root / (name + '.json')).read_text())
               assert r['status'] == 'passed' and r['source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip() and r['source_dirty'] is False, r
               assert len(r['calls']) >= 2, r
+              if pr_head:
+                  assert r['observations']['pr_head'] == pr_head, r
           PYFILEQA
       - name: Preserve independent file-budget native observations
         if: always()
@@ -401,6 +409,9 @@ jobs:
           r = json.loads((root / 'index.json').read_text())
           assert r['schema'] == 'lantern.darwin-file-budget-mutations.v1' and r['status'] == 'passed', r
           assert r['candidate_sha'] == r['baseline_source_commit'] == subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          pr_head = os.environ.get('LANTERN_PR_HEAD', '')
+          if pr_head:
+              assert r['pr_head'] == pr_head, r
           assert len(r['results']) == 1 and r['results'][0]['name'] == 'allocated-stop-disabled', r
           x = r['results'][0]
           assert x['target_red'] is True and x['source_restored'] is True and x['exit_code'] == 1 and x['observed_worker_exit_code'] == 0, x

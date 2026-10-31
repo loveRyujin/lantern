@@ -39,6 +39,9 @@ func qaFileNativeProof(t *testing.T) *qaSupervisorProof {
 		return strings.TrimSpace(string(b))
 	}
 	p := &qaSupervisorProof{Name: t.Name(), Source: git("rev-parse", "HEAD"), Dirty: git("status", "--porcelain") != "", HostPID: os.Getpid(), Observations: map[string]any{}}
+	if head := strings.TrimSpace(os.Getenv("LANTERN_PR_HEAD")); len(head) == 40 {
+		p.Observations["pr_head"] = head
+	}
 	t.Cleanup(func() {
 		p.Status = "passed"
 		if t.Failed() {

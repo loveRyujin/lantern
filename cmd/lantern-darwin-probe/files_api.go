@@ -1,6 +1,10 @@
 package main
 
 import (
+	"encoding/hex"
+	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/loveRyujin/lantern/internal/supervisor"
@@ -32,27 +36,30 @@ func fileAPISpecs() []fileAPISpec {
 }
 
 type fileAPICase struct {
-	ValidationError          string             `json:"validation_error,omitempty"`
-	ID                       string             `json:"id"`
-	Status                   string             `json:"status"`
-	Request                  supervisor.Request `json:"request"`
-	ExpectedReason           string             `json:"expected_reason,omitempty"`
-	ExpectedAxis             string             `json:"expected_axis,omitempty"`
-	ExpectedConclusion       string             `json:"expected_conclusion"`
-	Conclusion               string             `json:"conclusion"`
-	BudgetProtectedDuringRun bool               `json:"budget_protected_during_run"`
-	HarnessRescue            bool               `json:"harness_rescue"`
-	Result                   supervisor.Result  `json:"result"`
-	ErrorKinds               []string           `json:"error_kinds"`
-	Error                    string             `json:"error,omitempty"`
-	Checks                   map[string]bool    `json:"checks"`
-	WallMS                   int64              `json:"wall_ms"`
+	ValidationError    string             `json:"validation_error,omitempty"`
+	ID                 string             `json:"id"`
+	Status             string             `json:"status"`
+	Request            supervisor.Request `json:"request"`
+	ExpectedReason     string             `json:"expected_reason,omitempty"`
+	ExpectedAxis       string             `json:"expected_axis,omitempty"`
+	ExpectedConclusion string             `json:"expected_conclusion"`
+	Conclusion         string             `json:"conclusion"`
+	// BudgetProtectedDuringRun stays false for every conclusion. Cleanup and an
+	// observed unlink gap must not be reported as protection during the run.
+	BudgetProtectedDuringRun bool              `json:"budget_protected_during_run"`
+	HarnessRescue            bool              `json:"harness_rescue"`
+	Result                   supervisor.Result `json:"result"`
+	ErrorKinds               []string          `json:"error_kinds"`
+	Error                    string            `json:"error,omitempty"`
+	Checks                   map[string]bool   `json:"checks"`
+	WallMS                   int64             `json:"wall_ms"`
 }
 
 type fileAPIReport struct {
 	Schema                      string            `json:"schema"`
 	Status                      string            `json:"status"`
 	Source                      string            `json:"source_commit"`
+	PRHead                      string            `json:"pr_head"`
 	Dirty                       bool              `json:"source_dirty"`
 	Environment                 map[string]string `json:"environment"`
 	Fingerprints                map[string]string `json:"fingerprints"`
@@ -72,6 +79,20 @@ type fileAPIReport struct {
 
 func fileErrorKinds(err error) []string {
 	return resourceErrorKinds(err)
+}
+
+// notePRHead keeps the pull-request head beside the checkout SHA. Actions
+// pull_request checkouts are merge commits, so git HEAD is not the PR head.
+func notePRHead(source string) (string, error) {
+	head := strings.TrimSpace(os.Getenv("LANTERN_PR_HEAD"))
+	if head == "" {
+		return source, nil
+	}
+	raw, err := hex.DecodeString(head)
+	if err != nil || len(raw) != 20 || len(head) != 40 {
+		return "", fmt.Errorf("LANTERN_PR_HEAD is not a 40-character commit sha")
+	}
+	return head, nil
 }
 
 func fileRunning(c fileAPICase) []supervisor.ResourceSample {
@@ -188,8 +209,9 @@ func fileAxisHit(c fileAPICase) bool {
 	return false
 }
 
-// fileConclusion is derived from the result. Cleanup success never produces a
-// protected conclusion: an unlinked-open gap stays unresolved.
+// fileConclusion is derived from the result. The bool is
+// budget_protected_during_run and is false for every conclusion: a fired
+// limit, a clean directory, and an observed unlink gap are not in-run protection.
 func fileConclusion(r supervisor.Result) (string, bool) {
 	switch {
 	case fileUnlinkResolved(r):

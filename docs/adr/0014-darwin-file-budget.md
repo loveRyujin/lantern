@@ -24,7 +24,9 @@
 
 符号链接只计目录项，不 `stat` 目标，不走出去。硬链接共享一个 inode，不能当成两份字节。rename 后仍是同一 inode 的新名字，本轮是时点快照，不是累计路径账本。
 
-目录扫描看见的体积 **不是** 全部打开文件的磁盘消耗。`open → write → unlink → 继续 write → close` 必须单独记录：写出的字节、fd 的 dev/ino 与 nlink、扫描可见量、关闭前和关闭后。候选扫描看不见已 unlink 但仍打开的部分时，结论固定为 `unresolved-unlinked-open`。清理成功只说明 guardian 在结束后删掉了私有根，不能写成运行中预算已被保护。`budget_protected_during_run` 在这条结论上保持 false。
+目录扫描看见的体积 **不是** 全部打开文件的磁盘消耗。`open → write → unlink → 继续 write → close` 必须单独记录：写出的字节、fd 的 dev/ino 与 nlink、扫描可见量、关闭前和关闭后。候选扫描看不见已 unlink 但仍打开的部分时，结论固定为 `unresolved-unlinked-open`。清理成功只说明 guardian 在结束后删掉了私有根，不能写成运行中预算已被保护。
+
+`budget_protected_during_run` 对每一种结论都是 false，包括字节或名字上限已经触发、目录最终已清空、以及观察到 unlink 缺口。这个字段用来挡住“清理成功”或“unlink 之后扫描变为 0”被写成运行中已经保护；它不会因为停止原因成立而变成 true。
 
 ## 为什么不是另外两条轴
 

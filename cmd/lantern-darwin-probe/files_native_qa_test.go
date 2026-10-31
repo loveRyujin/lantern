@@ -44,6 +44,9 @@ func TestDarwinFileBudgetNativeIndependentQA(t *testing.T) {
 	}
 	results := []record{}
 	index := map[string]any{"schema": "lantern.darwin-file-budget-mutations.v1", "candidate_sha": head, "baseline_status": baseline.Status, "baseline_report": baselinePath, "baseline_source_commit": baseline.Source}
+	if prHead := strings.TrimSpace(os.Getenv("LANTERN_PR_HEAD")); len(prHead) == 40 {
+		index["pr_head"] = prHead
+	}
 	defer func() {
 		index["status"] = "passed"
 		if t.Failed() {

@@ -63,16 +63,22 @@ func fileAPICLI(args []string) int {
 	r.Source = strings.TrimSpace(string(head))
 	_, e3 := hex.DecodeString(r.Source)
 	r.Dirty = len(dirty) > 0
+	prHead, e4 := notePRHead(r.Source)
 	r.Environment = map[string]string{
 		"goos": runtime.GOOS, "goarch": runtime.GOARCH, "go_version": runtime.Version(),
 		"macos_version": commandText(ctx, "/usr/bin/sw_vers", "-productVersion"),
 		"macos_build":   commandText(ctx, "/usr/bin/sw_vers", "-buildVersion"),
 		"scope":         "sealed Go helper; private work root; lstat allocated-byte candidate; unlink-open unresolved",
 	}
-	if e1 != nil || e2 != nil || e3 != nil || len(r.Source) != 40 || r.Environment["macos_version"] == "" || r.Environment["macos_build"] == "" {
-		r.Error = "native environment or source metadata unavailable"
+	if e1 != nil || e2 != nil || e3 != nil || e4 != nil || len(r.Source) != 40 || r.Environment["macos_version"] == "" || r.Environment["macos_build"] == "" {
+		if e4 != nil {
+			r.Error = e4.Error()
+		} else {
+			r.Error = "native environment or source metadata unavailable"
+		}
 		return emit()
 	}
+	r.PRHead = prHead
 	exe, e := os.Executable()
 	if e != nil {
 		r.Error = e.Error()
