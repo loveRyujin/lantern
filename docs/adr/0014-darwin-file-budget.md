@@ -50,7 +50,9 @@ Linux 上的 `scanPrivateTree` 测试使用真实临时目录：指向目录外�
 
 [CI 41195197677](https://github.com/loveRyujin/lantern/actions/runs/41195197677) 的 macOS 15.8.2 / build 24H232 / arm64 / Go 1.27.3 跑完了六个负载。`file-small`、`file-multi`、`file-entries`、`file-grow`、`file-unlink` 通过。unlink 的结论是 `unresolved-unlinked-open`，清理执行者是 guardian，`candidate_meters_unlinked_open` 为 false。`file-edges` 的硬链接、rename 和两个符号链接计数正确（entries 8、inodes 3、symlinks 2，`logical_named` 比 `logical_unique` 多 16KiB），但 `ftruncate` 到 1MiB 再在末尾写 1 字节后，`st_blocks * 512` 与逻辑长度同为 1081344。APFS 把这段跨度实际分配了，候选预算因此以 `allocated_bytes` 触发 `file_limit`。这不是“逻辑长度被误当成预算”的成功证明，而是这个构造在 APFS 上并不稀疏。
 
-随后的构造在扫描可见之前对未写的 4KiB 对齐区间调用 `F_PUNCHHOLE`，Darwin 候选改读 `ATTR_FILE_DATAALLOCSIZE`。这一改动是否让 `file-edges` 在逻辑长度超过 256KiB 的同时保持实际分配低于预算，要等下一次 macOS 报告。已 unlink fd 的 `st_nlink == 0` 已在上述通过的 `file-unlink` 里观察到。
+随后的构造先在偏移 0 写 1 字节，把逻辑长度伸到 1MiB，再对未写的 4KiB 对齐区间调用 `F_PUNCHHOLE`。Darwin 候选读 `ATTR_FILE_DATAALLOCSIZE`。
+
+[CI 41195976487](https://github.com/loveRyujin/lantern/actions/runs/41195976487) 在同一台 macOS 15.8.2 / 24H232 / arm64 / Go 1.27.3 上通过。checkout 是 merge `20a202c6bfc1ae6773090a42e94578b48d88dbb0`，PR head 是 `9b2d1899dc863e1a83239cffb8db5334f8d93c05`，source clean。六个负载都通过。`file-edges` 结论是 `axes-distinguished`：`logical_unique` 1081344，`logical_named` 1097728，`allocated` 与 `stat_blocks` 都是 36864，低于 256KiB 预算；entries 8、inodes 3、symlinks 2、同一 inode 两个名字、rename 仍是同一 inode。`file-unlink` 仍是 `unresolved-unlinked-open`，`budget_protected_during_run` 为 false。拿掉 allocated 比较之后，`file-grow` 与 `file-multi` 自然退出 0，峰值分别是 131072 和 196608，都越过各自预算；`file-entries` 仍以 `entries` 轴触发 `file_limit`。超限和取消之后的下一次调用没有留下工作根。这些是这一次运行的原始报告，不是配额上界。
 
 ## 不支持的路径
 
@@ -66,4 +68,4 @@ Linux 上的 `scanPrivateTree` 测试使用真实临时目录：指向目录外�
 
 ## 面试追问
 
-为什么候选是 `st_blocks` 而不是 `st_size`？因为稀疏文件的逻辑长度会把空洞算进预算，硬链接的逻辑长度还会按名字重复；分配块按 inode 计一次，更接近这次私有树实际占用。为什么清理成功仍叫未决？因为预算要在运行中起作用，扫描在 unlink 之后已经是 0，而 fd 仍能继续写；结束时删目录不能补上这段盲区。为什么变异必须让 helper 自然退出 0？因为编译失败、前检失败、外层超时或 CPU/RSS/Wall 先触发都不能证明被拿掉的是字节比较这一条。
+为什么候选按实际分配而不是逻辑长度？稀疏文件的逻辑长度会把空洞算进预算，硬链接的逻辑长度还会按名字重复。Darwin 上这次 punch 之后，`ATTR_FILE_DATAALLOCSIZE` 与 `st_blocks * 512` 都是 36864，逻辑唯一长度是 1081344。为什么清理成功仍叫未决？预算要在运行中起作用，扫描在 unlink 之后已经是 0，而 fd 仍能继续写；结束时删目录补不上这段盲区。为什么变异必须让 helper 自然退出 0？编译失败、前检失败、外层超时或 CPU/RSS/Wall 先触发，都不能证明被拿掉的是字节比较这一条。
