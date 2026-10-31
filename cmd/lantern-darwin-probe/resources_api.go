@@ -64,7 +64,7 @@ func resourceErrorKinds(err error) []string {
 		name string
 		err  error
 	}{
-		{"cpu_limit", supervisor.ErrCPULimit}, {"rss_limit", supervisor.ErrRSSLimit}, {"wall_limit", supervisor.ErrWallLimit}, {"monitor_error", supervisor.ErrMonitor},
+		{"cpu_limit", supervisor.ErrCPULimit}, {"rss_limit", supervisor.ErrRSSLimit}, {"wall_limit", supervisor.ErrWallLimit}, {"file_limit", supervisor.ErrFileLimit}, {"monitor_error", supervisor.ErrMonitor},
 		{"cancelled", context.Canceled}, {"deadline", context.DeadlineExceeded}, {"protocol", supervisor.ErrProtocol}, {"peer_lost", supervisor.ErrPeerLost},
 	} {
 		if errors.Is(err, v.err) {

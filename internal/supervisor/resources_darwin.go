@@ -70,6 +70,7 @@ type resourceMeter struct {
 	clock        *resourceClock
 	u            *ResourceUsage
 	budget       ResourceBudget
+	fileRoot     string
 	failureStart uint64
 	lastSuccess  uint64
 	firstSuccess uint64
@@ -83,6 +84,11 @@ func newResourceMeter(m *identityMonitor, u *ResourceUsage, b ResourceBudget) (*
 	}
 	u.TimebaseNumer, u.TimebaseDenom = c.numer, c.denom
 	return &resourceMeter{m: m, clock: c, u: u, budget: b}, nil
+}
+func (r *resourceMeter) armFileScan(root string) {
+	r.fileRoot = root
+	r.u.FileAlgorithm = FileBudgetAlgorithm
+	r.u.FileCandidate = FileBudgetCandidate
 }
 func (r *resourceMeter) read(id Identity, phase string) ResourceSample {
 	mono, ticks, wall, e := r.clock.stamp()
@@ -128,6 +134,15 @@ func (r *resourceMeter) read(id Identity, phase string) ResourceSample {
 	}
 	s.CPU = time.Duration(cpu)
 	s.Valid = true
+	if r.fileRoot != "" {
+		scan, e := scanPrivateTree(r.fileRoot)
+		if e != nil {
+			s.Valid = false
+			s.Error = "file scan: " + e.Error()
+			return s
+		}
+		s.Files = scan
+	}
 	return s
 }
 func (r *resourceMeter) record(s ResourceSample) error {
@@ -202,6 +217,20 @@ func (r *resourceMeter) poll(id Identity) (string, error) {
 		return "", nil
 	}
 	r.failureStart = 0
+	if r.fileRoot != "" {
+		// This comparison is the candidate named-file stop. Independent QA
+		// removes this one action and expects the fixed helper to finish.
+		if s.Files.Allocated > r.budget.FileBytes {
+			r.u.FileOvershootBytes = s.Files.Allocated - r.budget.FileBytes
+			r.u.FileTriggerAxis = "allocated_bytes"
+			return "file_limit", ErrFileLimit
+		}
+		if r.budget.FileEntries > 0 && s.Files.Entries > r.budget.FileEntries {
+			r.u.FileOvershootEntries = s.Files.Entries - r.budget.FileEntries
+			r.u.FileTriggerAxis = "entries"
+			return "file_limit", ErrFileLimit
+		}
+	}
 	if s.CPU > r.budget.CPU {
 		r.u.CPUOvershoot = s.CPU - r.budget.CPU
 		return "cpu_limit", ErrCPULimit
@@ -244,6 +273,12 @@ func (r *resourceMeter) finish(v *receipt) error {
 	r.u.LastSampleToWait = 0
 	r.u.CPUOvershoot = 0
 	r.u.RSSOvershootBytes = 0
+	r.u.PeakFileAllocated = 0
+	r.u.PeakFileLogicalNamed = 0
+	r.u.PeakFileLogicalUnique = 0
+	r.u.PeakFileEntries = 0
+	r.u.FileOvershootBytes = 0
+	r.u.FileOvershootEntries = 0
 	r.u.SuccessfulSamples = 0
 	r.u.FirstSampleMonotonicNS = 0
 	r.u.LastSampleMonotonicNS = 0
@@ -273,6 +308,7 @@ func (r *resourceMeter) finish(v *receipt) error {
 		if s.CPU > r.budget.CPU && s.CPU-r.budget.CPU > r.u.CPUOvershoot {
 			r.u.CPUOvershoot = s.CPU - r.budget.CPU
 		}
+		noteFilePeak(r.u, s, r.budget)
 	}
 	if r.u.LastSampleMonotonicNS != 0 {
 		r.u.LastSampleToWait = time.Duration(v.WaitMonotonicNS - r.u.LastSampleMonotonicNS)
@@ -284,6 +320,28 @@ func (r *resourceMeter) finish(v *receipt) error {
 		r.u.LateStopReason, r.u.LateStopMonotonicNS = r.u.TriggerReason, r.u.TriggerMonotonicNS
 		r.u.TriggerReason = ""
 		r.u.TriggerMonotonicNS = 0
+		r.u.FileTriggerAxis = ""
 	}
 	return nil
+}
+
+func noteFilePeak(u *ResourceUsage, s ResourceSample, b ResourceBudget) {
+	if s.Files.Allocated > u.PeakFileAllocated {
+		u.PeakFileAllocated = s.Files.Allocated
+	}
+	if s.Files.LogicalNamed > u.PeakFileLogicalNamed {
+		u.PeakFileLogicalNamed = s.Files.LogicalNamed
+	}
+	if s.Files.LogicalUnique > u.PeakFileLogicalUnique {
+		u.PeakFileLogicalUnique = s.Files.LogicalUnique
+	}
+	if s.Files.Entries > u.PeakFileEntries {
+		u.PeakFileEntries = s.Files.Entries
+	}
+	if b.FileBytes > 0 && s.Files.Allocated > b.FileBytes && s.Files.Allocated-b.FileBytes > u.FileOvershootBytes {
+		u.FileOvershootBytes = s.Files.Allocated - b.FileBytes
+	}
+	if b.FileEntries > 0 && s.Files.Entries > b.FileEntries && s.Files.Entries-b.FileEntries > u.FileOvershootEntries {
+		u.FileOvershootEntries = s.Files.Entries - b.FileEntries
+	}
 }

@@ -38,6 +38,15 @@ const (
 	TouchMemory     Mode = "touch-memory"
 	UntouchedMemory Mode = "untouched-memory"
 	MultiThreadCPU  Mode = "multi-thread-cpu"
+	// File loads write only inside the supervisor-created work root. They are
+	// fixed helpers, not a caller-supplied path or a general disk quota.
+	FileSmall   Mode = "file-small"
+	FileMulti   Mode = "file-multi"
+	FileEntries Mode = "file-entries"
+	FileGrow    Mode = "file-grow"
+	FileUnlink  Mode = "file-unlink"
+	FileEdges   Mode = "file-edges"
+	FileHold    Mode = "file-hold"
 )
 
 // Gate pauses a fixed lifecycle checkpoint for the trusted acceptance harness.
@@ -109,6 +118,9 @@ type WorkerResult struct {
 	OriginalGroup int    `json:"original_group,omitempty"`
 	MappedBytes   uint64 `json:"mapped_bytes,omitempty"`
 	TouchedBytes  uint64 `json:"touched_bytes,omitempty"`
+	// File is the latest sealed checkpoint from a file load. The host appends
+	// each one to Usage.FileTrace; this field is only the newest marker.
+	File *FileCheckpoint `json:"file,omitempty"`
 	// Go may create its own poller descriptors. These are actual fstat identities,
 	// so inherited credentials/control endpoints cannot hide behind FD reuse.
 	EnvKeys             []string     `json:"env_keys,omitempty"`
@@ -176,13 +188,32 @@ func validateRequest(c Config, q Request) error {
 		if q.Gate != NoGate {
 			return fmt.Errorf("%w: resource helper requires NoGate", ErrInvalidRequest)
 		}
-		switch q.Mode {
-		case Normal, CPUBusy, LowCPUSleep, TouchMemory, UntouchedMemory, MultiThreadCPU:
-		default:
+		if !knownResourceMode(q.Mode) {
 			return fmt.Errorf("%w: unknown resource load", ErrInvalidRequest)
 		}
-		_, err := normalizeBudget(q.Budget)
-		return err
+		b, err := normalizeBudget(q.Budget)
+		if err != nil {
+			return err
+		}
+		if fileMode(q.Mode) {
+			// No silent default: a file load must name its candidate byte budget.
+			// Only the entry-ceiling load arms the separate name bound.
+			if b.FileBytes == 0 {
+				return fmt.Errorf("%w: file load requires an explicit byte budget", ErrInvalidRequest)
+			}
+			if q.Mode == FileEntries {
+				if b.FileEntries == 0 {
+					return fmt.Errorf("%w: entry load requires an explicit name ceiling", ErrInvalidRequest)
+				}
+			} else if b.FileEntries != 0 {
+				return fmt.Errorf("%w: name ceiling is only valid on the entry load", ErrInvalidRequest)
+			}
+			return nil
+		}
+		if b.FileBytes != 0 || b.FileEntries != 0 {
+			return fmt.Errorf("%w: file budget is not armed on this load", ErrInvalidRequest)
+		}
+		return nil
 	}
 	if q.Budget != (ResourceBudget{}) {
 		return fmt.Errorf("%w: lifecycle helper has no resource budget", ErrInvalidRequest)

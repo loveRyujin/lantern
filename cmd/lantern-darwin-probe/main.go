@@ -72,6 +72,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "resources-api" {
 		os.Exit(resourceAPICLI(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "files-api" {
+		os.Exit(fileAPICLI(os.Args[2:]))
+	}
 	if handled, code := supervisorAPIInternal(os.Args[1:]); handled {
 		os.Exit(code)
 	}

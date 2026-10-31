@@ -25,8 +25,17 @@ func resourceBusy(d time.Duration) {
 		resourceWorkSink.Store(x)
 	}
 }
-func resourceWorkerMain(mode Mode) int {
-	if validateRequest(Config{TempRoot: "/tmp"}, Request{Kind: GoResource, Mode: mode}) != nil {
+func resourceWorkerMain(mode Mode, work string) int {
+	if !knownResourceMode(mode) {
+		return 125
+	}
+	if fileMode(mode) {
+		if work == "" {
+			return 125
+		}
+		return runFileWorkload(mode, work)
+	}
+	if work != "" {
 		return 125
 	}
 	r := workerMetadata(mode)

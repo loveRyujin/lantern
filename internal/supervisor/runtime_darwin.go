@@ -35,8 +35,11 @@ func init() {
 				code = workerMain(Mode(os.Args[3]))
 			}
 		case "resource-worker":
-			if len(os.Args) == 4 {
-				code = resourceWorkerMain(Mode(os.Args[3]))
+			switch len(os.Args) {
+			case 4:
+				code = resourceWorkerMain(Mode(os.Args[3]), "")
+			case 5:
+				code = resourceWorkerMain(Mode(os.Args[3]), os.Args[4])
 			}
 		case "guardian", "launcher":
 			if len(os.Args) == 4 {
@@ -288,6 +291,9 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 		return result, e
 	}
 	result.WorkRoot = work
+	if meter != nil && (q.Budget.FileBytes > 0 || q.Budget.FileEntries > 0) {
+		meter.armFileScan(work)
+	}
 	defer func() {
 		result.WorkRootClean = cleanRoot(work)
 		if !result.WorkRootClean {
@@ -566,7 +572,7 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 					_ = p.Kill()
 					continue
 				}
-				result.Worker = *v.Worker
+				observeWorker(&result, *v.Worker)
 				if v.Kind == "ENTERED" {
 					l.event("payload_entered", result.Task.PID, "")
 				}
@@ -604,7 +610,7 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 						}
 						v := msg.Message
 						if (v.Kind == "ENTERED" || (v.Kind == "PROGRESS" && q.Kind == GoResource)) && v.Worker != nil {
-							result.Worker = *v.Worker
+							observeWorker(&result, *v.Worker)
 						}
 						if v.Kind == "COMPLETE" {
 							completed = v.Receipt
@@ -618,6 +624,7 @@ func (s *Supervisor) run(ctx context.Context, q Request) (result Result, runErr 
 			}
 			if completed != nil && completed.Error == "" && completed.Waited && completed.Absent && completed.Clean && wr.state != nil && wr.state.Success() {
 				result.Task = completed.Target
+				mergeFileReceipt(&result, completed.Worker)
 				result.Worker = completed.Worker
 				result.ControlFDs = append(result.ControlFDs, completed.Controls...)
 				result.GuardianWaitedTask = true
@@ -852,7 +859,11 @@ func launcherMain(c jobConfig) int {
 	if c.Request.Kind == GoResource {
 		role = "resource-worker"
 	}
-	_, e = spawnFixed(canonical(exe), []string{helperArgument, role, string(c.Request.Mode)}, []*os.File{os.Stdin, os.Stdout, os.Stderr}, true)
+	args := []string{helperArgument, role, string(c.Request.Mode)}
+	if fileMode(c.Request.Mode) {
+		args = append(args, c.Work)
+	}
+	_, e = spawnFixed(canonical(exe), args, []*os.File{os.Stdin, os.Stdout, os.Stderr}, true)
 	if e != nil {
 		l.event("exec_error", id.PID, e.Error())
 		fmt.Fprintln(os.Stderr, e)
@@ -1054,35 +1065,51 @@ func guardianMain(c jobConfig, path string) int {
 			return
 		}
 		if !markerSeen && c.Request.Kind == GoResource {
-			var mapped uint64
-			if c.Request.Mode == TouchMemory {
-				mapped = 96 << 20
-			}
-			if c.Request.Mode == UntouchedMemory {
-				mapped = 256 << 20
-			}
-			if v.MappedBytes != mapped || v.TouchedBytes != 0 {
-				r.Error = "invalid resource entry metadata"
-				stop("protocol_error")
-				return
+			if fileMode(c.Request.Mode) {
+				if v.MappedBytes != 0 || v.TouchedBytes != 0 || !fileEntryOK(v.File) {
+					r.Error = "invalid file entry metadata"
+					stop("protocol_error")
+					return
+				}
+			} else {
+				var mapped uint64
+				if c.Request.Mode == TouchMemory {
+					mapped = 96 << 20
+				}
+				if c.Request.Mode == UntouchedMemory {
+					mapped = 256 << 20
+				}
+				if v.File != nil || v.MappedBytes != mapped || v.TouchedBytes != 0 {
+					r.Error = "invalid resource entry metadata"
+					stop("protocol_error")
+					return
+				}
 			}
 		}
 		if markerSeen {
-			expected := uint64(16 << 20)
-			switch r.Worker.TouchedBytes {
-			case 16 << 20:
-				expected = 32 << 20
-			case 32 << 20:
-				expected = 64 << 20
-			case 64 << 20:
-				expected = 96 << 20
-			case 96 << 20:
-				expected = 0
-			}
-			if c.Request.Kind != GoResource || c.Request.Mode != TouchMemory || v.MappedBytes != r.Worker.MappedBytes || v.TouchedBytes != expected || expected == 0 {
-				r.Error = "unexpected, repeated or decreasing worker progress"
-				stop("protocol_error")
-				return
+			if fileMode(c.Request.Mode) {
+				if v.MappedBytes != 0 || v.TouchedBytes != 0 || !acceptFileProgress(c.Request.Mode, r.Worker.File, v.File) {
+					r.Error = "unexpected file progress"
+					stop("protocol_error")
+					return
+				}
+			} else {
+				expected := uint64(16 << 20)
+				switch r.Worker.TouchedBytes {
+				case 16 << 20:
+					expected = 32 << 20
+				case 32 << 20:
+					expected = 64 << 20
+				case 64 << 20:
+					expected = 96 << 20
+				case 96 << 20:
+					expected = 0
+				}
+				if c.Request.Kind != GoResource || c.Request.Mode != TouchMemory || v.File != nil || v.MappedBytes != r.Worker.MappedBytes || v.TouchedBytes != expected || expected == 0 {
+					r.Error = "unexpected, repeated or decreasing worker progress"
+					stop("protocol_error")
+					return
+				}
 			}
 		}
 		for _, actual := range v.OpenFDs {
@@ -1268,4 +1295,47 @@ func workerMain(mode Mode) int {
 		time.Sleep(4 * time.Second)
 		return 0
 	}
+}
+
+func observeWorker(result *Result, w WorkerResult) {
+	if w.File != nil {
+		cp := *w.File
+		result.Usage.FileTrace = append(result.Usage.FileTrace, cp)
+	}
+	result.Worker = w
+}
+
+func mergeFileReceipt(result *Result, w WorkerResult) {
+	if w.File == nil {
+		return
+	}
+	if n := len(result.Usage.FileTrace); n == 0 || result.Usage.FileTrace[n-1].Phase != w.File.Phase {
+		cp := *w.File
+		result.Usage.FileTrace = append(result.Usage.FileTrace, cp)
+	}
+}
+
+func fileEntryOK(cp *FileCheckpoint) bool {
+	return cp != nil && cp.Phase == "entered" && cp.Written == 0 && !cp.Live && !cp.Unlinked && !cp.Closed
+}
+
+func acceptFileProgress(mode Mode, prev, next *FileCheckpoint) bool {
+	if prev == nil || next == nil || next.Written < prev.Written {
+		return false
+	}
+	if mode == FileUnlink {
+		switch prev.Phase {
+		case "entered":
+			return next.Phase == "named" && next.Written > 0 && next.Live && !next.Unlinked && !next.Closed && next.Ino != 0 && next.NLink >= 1
+		case "named":
+			return next.Phase == "unlinked" && next.Live && next.Unlinked && next.NLink == 0 && !next.Closed && next.Written == prev.Written && next.Dev == prev.Dev && next.Ino == prev.Ino
+		case "unlinked":
+			return next.Phase == "grew" && next.Live && next.Unlinked && next.NLink == 0 && next.Written > prev.Written && next.Dev == prev.Dev && next.Ino == prev.Ino
+		case "grew":
+			return next.Phase == "closed" && !next.Live && next.Closed && next.Unlinked && next.Written == prev.Written && next.Dev == prev.Dev && next.Ino == prev.Ino
+		default:
+			return false
+		}
+	}
+	return prev.Phase == "entered" && next.Phase == "steady" && !next.Unlinked && !next.Closed
 }

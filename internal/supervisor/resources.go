@@ -10,6 +10,7 @@ var (
 	ErrCPULimit  = errors.New("supervisor CPU budget exceeded")
 	ErrRSSLimit  = errors.New("supervisor sampled RSS budget exceeded")
 	ErrWallLimit = errors.New("supervisor wall budget exceeded")
+	ErrFileLimit = errors.New("supervisor sampled file budget exceeded")
 	ErrMonitor   = errors.New("supervisor resource monitor failed")
 )
 
@@ -25,10 +26,15 @@ type ResourceBudget struct {
 	CPU      time.Duration `json:"cpu_ns"`
 	RSSBytes uint64        `json:"rss_bytes"`
 	Wall     time.Duration `json:"wall_ns"`
+	// FileBytes is the candidate named-file budget: unique-inode allocated
+	// bytes. FileEntries is a separate live-name ceiling, not that budget.
+	// Zero leaves the axis disarmed. Neither field is defaulted.
+	FileBytes   uint64 `json:"file_bytes,omitempty"`
+	FileEntries uint64 `json:"file_entries,omitempty"`
 }
 
 func normalizeBudget(b ResourceBudget) (ResourceBudget, error) {
-	if b.CPU < 0 || b.Wall < 0 || b.CPU > 3*time.Second || b.RSSBytes > 512<<20 || b.Wall > 5*time.Second {
+	if b.CPU < 0 || b.Wall < 0 || b.CPU > 3*time.Second || b.RSSBytes > 512<<20 || b.Wall > 5*time.Second || b.FileBytes > MaxFileBudgetBytes || b.FileEntries > MaxFileBudgetEntries {
 		return ResourceBudget{}, fmt.Errorf("%w: resource request exceeds sealed helper bounds", ErrInvalidRequest)
 	}
 	if b.CPU == 0 {
@@ -59,6 +65,7 @@ type ResourceSample struct {
 	RSSBytes                 uint64        `json:"rss_bytes"`
 	VirtualBytes             uint64        `json:"virtual_bytes"`
 	Threads                  int32         `json:"threads"`
+	Files                    FileScan      `json:"files,omitempty"`
 }
 type ResourceUsage struct {
 	MonitoringReady          bool             `json:"monitoring_ready"`
@@ -89,6 +96,16 @@ type ResourceUsage struct {
 	LateStopMonotonicNS      uint64           `json:"late_stop_monotonic_ns,omitempty"`
 	CPUOvershoot             time.Duration    `json:"cpu_overshoot_ns"`
 	RSSOvershootBytes        uint64           `json:"rss_overshoot_bytes"`
+	PeakFileAllocated        uint64           `json:"peak_file_allocated_bytes,omitempty"`
+	PeakFileLogicalNamed     uint64           `json:"peak_file_logical_named_bytes,omitempty"`
+	PeakFileLogicalUnique    uint64           `json:"peak_file_logical_unique_bytes,omitempty"`
+	PeakFileEntries          uint64           `json:"peak_file_entries,omitempty"`
+	FileOvershootBytes       uint64           `json:"file_overshoot_bytes,omitempty"`
+	FileOvershootEntries     uint64           `json:"file_overshoot_entries,omitempty"`
+	FileTriggerAxis          string           `json:"file_trigger_axis,omitempty"`
+	FileAlgorithm            string           `json:"file_algorithm,omitempty"`
+	FileCandidate            string           `json:"file_candidate,omitempty"`
+	FileTrace                []FileCheckpoint `json:"file_trace,omitempty"`
 	SignalAttemptMonotonicNS uint64           `json:"signal_attempt_monotonic_ns"`
 	SignalReturnMonotonicNS  uint64           `json:"signal_return_monotonic_ns"`
 	SignalSent               bool             `json:"signal_sent"`
@@ -103,6 +120,8 @@ func resourceCause(reason string) error {
 		return ErrRSSLimit
 	case "wall_limit":
 		return ErrWallLimit
+	case "file_limit":
+		return ErrFileLimit
 	case "monitor_error":
 		return ErrMonitor
 	}
