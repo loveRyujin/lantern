@@ -93,6 +93,7 @@ lantern/
 
 - 文件哈希与身份检查的测试必须实际到达 worker 的查询后校验：同 inode 内容改变与内容相同但 inode 改变分别验证；临时禁用对应检查后，测试必须失败。父进程的测试钩子和启动前替换测试不能代替这两项。
 - 路径两侧校验尚未绑定 SQLite 实际持有的文件描述符，不能抵御具有工作区写权限的同用户进程在检查间隙来回替换路径。工作区目录仍属于应用信任边界，后续 Python 沙箱不得写入这些目录。
+- Linux shim 在第二次 `Exec`（`--lantern-sql-worker-v1`）之前调用 `close_range(3, ~0U, 0)`，只保留 stdin/stdout/stderr。`FD_CLOEXEC` 挡不住父进程已经打开且未设该标志的描述符：Go 的 Linux fork/exec 不关闭 fd≥3，`syscall.Exec` 会原样继承它们。`close_range` 失败（含内核不支持）时 shim 以 125 退出，不进入 worker，也不把扫描 `/proc/self/fd` 当作默认路径。这不改变只读 SQL、RLIMIT 或非 Linux 行为。
 - Linux `Pdeathsig` 实际绑定发起创建的 OS 线程，线程退出也可能使 worker 异常退出；此时按 `sql_worker_failed` 处理，不伪装成 OOM。临时文件尚无磁盘配额，墙钟超时不是磁盘硬上限；当前 Agent 串行调用工具，尚未提供全局 worker 并发预算。它们是后续资源隔离工作需要继续覆盖的边界。
 
 ## 7. 沙箱

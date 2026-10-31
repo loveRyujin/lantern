@@ -8,7 +8,9 @@
 //
 // 父进程解析结构化 ready/done 协议，核对 PID、内存上限和错误码；从 /proc 和 wait4
 // 收集实际峰值。取消时杀整个进程组并 Wait，设置父进程退出时杀 worker，不遗留僵尸。
-// worker 的环境不继承 API Key。此处是 SQL 资源隔离，不替代后续 Python 沙箱的文件系统和网络隔离。
+// worker 的环境不继承 API Key。第二次 exec 前关闭除 stdin/stdout/stderr 以外的
+// 文件描述符；只设置 CLOEXEC 不足以挡住父进程已经打开且未设该标志的 fd。
+// 此处是 SQL 资源隔离，不替代后续 Python 沙箱的文件系统和网络隔离。
 //
 // 语句扫描只是提前报错。真正的只读边界为 mode=ro、每条连接 query_only、拒绝 ATTACH，
 // 业务库路径白名单和文件身份校验。构造工具后文件被替换会返回 data_busy，需重新打开工具。

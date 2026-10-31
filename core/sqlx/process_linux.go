@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/loveRyujin/lantern/core/tools"
+	"golang.org/x/sys/unix"
 )
 
 const limitArg = "--lantern-sql-limit-v1"
@@ -40,12 +41,41 @@ func init() {
 		if syscall.Setrlimit(syscall.RLIMIT_AS, &syscall.Rlimit{Cur: ProcessMemoryBytes, Max: ProcessMemoryBytes}) != nil {
 			os.Exit(125)
 		}
-		if syscall.Exec(exe, []string{exe, workerArg}, os.Environ()) != nil {
+		// 参数和 rlimit 都准备好之后再关 fd，紧挨着第二次 Exec。
+		// Exec 本身不再打开描述符；失败则 125，不能带着未关闭的 fd 进入 worker。
+		env := os.Environ()
+		argv := []string{exe, workerArg}
+		if closeInheritedDescriptors() != nil {
+			os.Exit(125)
+		}
+		if syscall.Exec(exe, argv, env) != nil {
 			os.Exit(125)
 		}
 	case workerArg:
 		os.Exit(sqlWorker(os.Stdin, os.Stdout))
 	}
+}
+
+// closeInheritedDescriptors 关掉除 stdin/stdout/stderr 以外的全部 fd。
+//
+// 不能依赖 FD_CLOEXEC。syscall.Exec 会保留每一个没有该标志的描述符；Go 在 Linux
+// 上的 fork/exec 只把 stdio 安到 0、1、2，并不关闭 ≥3 的 fd。父进程用普通 open
+// 打开、或事后清掉 CLOEXEC 的描述符，会穿过第一次 exec 留在这个 limit shim 里，
+// 再被第二次 Exec 带进 worker，出现在 /proc/<pid>/fd。只在自己打开文件时加
+// CLOEXEC 盖不住这些已经存在的描述符；临近 Exec 再逐个打标志也会漏掉间隙里新
+// 开的 fd。close_range(3, ^uint(0), 0) 一次关掉整个范围，与标志无关。flags 必须
+// 是 0：要关掉，而不是只标 CLOEXEC 或 unshare。任何错误（含内核不支持）都交给
+// 调用方以 125 退出，不进入 worker。这条路径没有 /proc/self/fd 回退，避免扫不全
+// 或扫描期间新开的 fd 被当成默认成功路径。
+func closeInheritedDescriptors() error {
+	var err error
+	for range 16 {
+		err = unix.CloseRange(3, ^uint(0), 0)
+		if !errors.Is(err, unix.EINTR) {
+			return err
+		}
+	}
+	return err
 }
 
 func sqlWorker(in io.Reader, out io.Writer) int {
