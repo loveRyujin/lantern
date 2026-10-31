@@ -33,7 +33,13 @@ func darwinProcessPath(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "analytics.db")
 	createEmptyDB(t, path)
-	return path
+	// macOS 的临时目录在 /var → /private/var 后面。worker 要求路径和 EvalSymlinks 的结果一致，
+	// 否则会把同一文件当成被替换，返回 data_busy。
+	resolved, err := Resolve(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }
 
 func assertDarwinReaped(t *testing.T, stats processStats) {
