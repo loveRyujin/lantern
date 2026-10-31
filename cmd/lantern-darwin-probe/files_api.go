@@ -277,7 +277,7 @@ func fileAxesSplit(r supervisor.Result) bool {
 		return false
 	}
 	wantUnique := uint64(supervisor.FileSparseLogical + 2*supervisor.FileEdgeEach)
-	if steady.LogicalUnique != wantUnique || steady.LogicalNamed != wantUnique+supervisor.FileEdgeEach || steady.Allocated >= r.Budget.FileBytes || steady.LogicalUnique <= r.Budget.FileBytes {
+	if steady.LogicalUnique != wantUnique || steady.LogicalNamed != wantUnique+supervisor.FileEdgeEach || steady.LogicalUnique <= r.Budget.FileBytes || steady.Allocated >= r.Budget.FileBytes || steady.Allocated >= steady.LogicalUnique/8 {
 		return false
 	}
 	running := runningOf(r)
@@ -286,7 +286,7 @@ func fileAxesSplit(r supervisor.Result) bool {
 		return false
 	}
 	peakAlloc, peakNamed, _, _, _, _ := filePeaks(running)
-	return last.Files.Entries == 8 && last.Files.Symlinks == 2 && last.Files.UniqueInodes == 3 && last.Files.LogicalUnique == wantUnique && last.Files.LogicalNamed == steady.LogicalNamed && last.Files.Allocated == steady.Allocated && peakNamed > r.Budget.FileBytes && peakAlloc < r.Budget.FileBytes && !last.Files.Followed
+	return last.Files.Entries == 8 && last.Files.Symlinks == 2 && last.Files.UniqueInodes == 3 && last.Files.LogicalUnique == wantUnique && last.Files.LogicalNamed == steady.LogicalNamed && last.Files.Allocated == steady.Allocated && peakNamed > r.Budget.FileBytes && peakAlloc < r.Budget.FileBytes && peakAlloc < wantUnique/8 && !last.Files.Followed
 }
 
 func fileWithin(r supervisor.Result) bool {

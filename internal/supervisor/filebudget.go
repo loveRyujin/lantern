@@ -7,7 +7,7 @@ const (
 	FileScanScope       = "lstat-nofollow-private-tree"
 	// FileBudgetAlgorithm is the policy fingerprint. Directory entry order is
 	// the contract: logical length, allocated space, then live name count.
-	FileBudgetAlgorithm = "filebudget.v1 lstat-nofollow; candidate=sum(st_blocks*512) over unique (dev,inode) of regular files; logical_named=sum(st_size) per regular directory entry and is not the budget; logical_unique=sum(st_size) once per regular inode; entries=live directory entries excluding the scan root; symlinks are entries and are never followed; hard links share one inode; a rename is the same inode under the new live name; unlinked open files are outside this scan"
+	FileBudgetAlgorithm = "filebudget.v1 lstat-nofollow; candidate=sum of actual allocated bytes once per regular (dev,inode): Darwin ATTR_FILE_DATAALLOCSIZE via getattrlist(FSOPT_NOFOLLOW), otherwise st_blocks*512; stat_blocks=sum(st_blocks*512) once per regular inode and is not the Darwin budget; logical_named=sum(st_size) per regular directory entry and is not the budget; logical_unique=sum(st_size) once per regular inode; entries=live directory entries excluding the scan root; symlinks are entries and are never followed; hard links share one inode; a rename is the same inode under the new live name; unlinked open files are outside this scan"
 
 	MaxFileBudgetBytes   = 256 << 10
 	MaxFileBudgetEntries = 64
@@ -33,6 +33,7 @@ type FileScan struct {
 	LogicalNamed  uint64 `json:"logical_named_bytes,omitempty"`
 	LogicalUnique uint64 `json:"logical_unique_bytes,omitempty"`
 	Allocated     uint64 `json:"allocated_bytes,omitempty"`
+	StatBlocks    uint64 `json:"stat_blocks_bytes,omitempty"`
 	Entries       uint64 `json:"entries,omitempty"`
 	UniqueInodes  uint64 `json:"unique_inodes,omitempty"`
 	Symlinks      uint64 `json:"symlinks,omitempty"`
@@ -53,6 +54,7 @@ type FileCheckpoint struct {
 	LogicalNamed    uint64 `json:"logical_named"`
 	LogicalUnique   uint64 `json:"logical_unique"`
 	Allocated       uint64 `json:"allocated"`
+	StatBlocks      uint64 `json:"stat_blocks,omitempty"`
 	Entries         uint64 `json:"entries"`
 	UniqueInodes    uint64 `json:"inodes"`
 	Symlinks        uint64 `json:"symlinks"`

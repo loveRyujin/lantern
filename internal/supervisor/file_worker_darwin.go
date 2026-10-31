@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -127,6 +128,25 @@ func fileComponent(i int) string {
 	return "f" + string(rune('a'+i))
 }
 
+// punchUnwrittenSpan deallocates a 4KiB-aligned range and leaves the logical
+// size unchanged. APFS otherwise keeps the span physically allocated.
+func punchUnwrittenSpan(fd int, offset, length int64) error {
+	if offset <= 0 || length <= 0 || offset%4096 != 0 || length%4096 != 0 {
+		return unix.EINVAL
+	}
+	hole := struct {
+		flags    uint32
+		reserved uint32
+		offset   int64
+		length   int64
+	}{offset: offset, length: length}
+	_, _, errno := unix.Syscall(unix.SYS_FCNTL, uintptr(fd), uintptr(unix.F_PUNCHHOLE), uintptr(unsafe.Pointer(&hole)))
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
 func writeNamed(dir int, name string, n int) error {
 	fd, e := unix.Openat(dir, name, fileCreateFlags, 0600)
 	if e != nil {
@@ -177,6 +197,7 @@ func (cp *FileCheckpoint) fillScan(root string) error {
 	cp.LogicalNamed = s.LogicalNamed
 	cp.LogicalUnique = s.LogicalUnique
 	cp.Allocated = s.Allocated
+	cp.StatBlocks = s.StatBlocks
 	cp.Entries = s.Entries
 	cp.UniqueInodes = s.UniqueInodes
 	cp.Symlinks = s.Symlinks
@@ -201,11 +222,18 @@ func buildEdgeFixture(out int) (FileCheckpoint, error) {
 	if e != nil {
 		return cp, e
 	}
+	// One byte at the start, then extend. APFS allocates the whole span of a
+	// tail write into a large file (measured on macOS 15.8.2). Punch that
+	// unwritten span before any later sample can bill it as payload.
+	if _, e = unix.Pwrite(fd, []byte{0xA5}, 0); e != nil {
+		unix.Close(fd)
+		return cp, e
+	}
 	if e = unix.Ftruncate(fd, FileSparseLogical); e != nil {
 		unix.Close(fd)
 		return cp, e
 	}
-	if _, e = unix.Pwrite(fd, []byte{0xA5}, FileSparseLogical-1); e != nil {
+	if e = punchUnwrittenSpan(fd, 4096, FileSparseLogical-4096); e != nil {
 		unix.Close(fd)
 		return cp, e
 	}

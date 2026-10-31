@@ -158,7 +158,7 @@ func qaFileNativeBaseline(t *testing.T, r fileAPIReport, head, repo, probe strin
 	if err != nil || digest(b) != r.Fingerprints["executable_sha256"] {
 		t.Fatal("native binary provenance mismatch")
 	}
-	for _, file := range []string{"common.go", "protocol.go", "runtime_darwin.go", "spawn_darwin.go", "resources.go", "resources_darwin.go", "resource_worker_darwin.go", "filebudget.go", "filebudget_unix.go", "file_worker_darwin.go"} {
+	for _, file := range []string{"common.go", "protocol.go", "runtime_darwin.go", "spawn_darwin.go", "resources.go", "resources_darwin.go", "resource_worker_darwin.go", "filebudget.go", "filebudget_unix.go", "filebudget_darwin.go", "file_worker_darwin.go"} {
 		b, err := os.ReadFile(filepath.Join(repo, "internal", "supervisor", file))
 		if err != nil || digest(b) != r.Fingerprints[file] {
 			t.Fatal("file source fingerprint mismatch: ", file)

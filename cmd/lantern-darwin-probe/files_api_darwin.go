@@ -35,7 +35,7 @@ func fileAPICLI(args []string) int {
 		Axes: map[string]string{
 			"logical_named_bytes":  "sum of st_size for every regular directory entry; a hard link is counted again and this is not the budget",
 			"logical_unique_bytes": "sum of st_size once per regular inode",
-			"allocated_bytes":      "candidate budget: sum of st_blocks*512 once per regular inode, lstat only",
+			"allocated_bytes":      "candidate budget: Darwin ATTR_FILE_DATAALLOCSIZE once per regular inode, lstat and no follow; st_blocks is recorded separately",
 			"entries":              "live directory entries under the private root, excluding the root; a separate name ceiling, not the byte budget",
 		},
 		CleanupIsBudgetProtection: false, HardQuota: false, BusinessBackend: false, HarnessRescue: false,
@@ -86,7 +86,7 @@ func fileAPICLI(args []string) int {
 	r.Fingerprints["executable_sha256"] = digest(b)
 	sum := sha256.Sum256([]byte(supervisor.FileBudgetAlgorithm))
 	r.Fingerprints["algorithm_sha256"] = hex.EncodeToString(sum[:])
-	for _, name := range []string{"common.go", "protocol.go", "runtime_darwin.go", "spawn_darwin.go", "resources.go", "resources_darwin.go", "resource_worker_darwin.go", "filebudget.go", "filebudget_unix.go", "file_worker_darwin.go"} {
+	for _, name := range []string{"common.go", "protocol.go", "runtime_darwin.go", "spawn_darwin.go", "resources.go", "resources_darwin.go", "resource_worker_darwin.go", "filebudget.go", "filebudget_unix.go", "filebudget_darwin.go", "file_worker_darwin.go"} {
 		b, e := os.ReadFile(filepath.Join("internal", "supervisor", name))
 		if e != nil {
 			r.Error = e.Error()

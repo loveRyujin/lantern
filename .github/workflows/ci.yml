@@ -345,7 +345,7 @@ jobs:
               assert c['status'] == 'passed' and not c.get('validation_error') and not c['harness_rescue'] and c['budget_protected_during_run'] is False, c
               assert c['conclusion'] == c['expected_conclusion'] and c['conclusion'] != 'observation-incomplete', c
               assert all(c['checks'].values()) and len(c['checks']) >= 8, c
-          names = {'executable_sha256','algorithm_sha256','common.go','protocol.go','runtime_darwin.go','spawn_darwin.go','resources.go','resources_darwin.go','resource_worker_darwin.go','filebudget.go','filebudget_unix.go','file_worker_darwin.go'}
+          names = {'executable_sha256','algorithm_sha256','common.go','protocol.go','runtime_darwin.go','spawn_darwin.go','resources.go','resources_darwin.go','resource_worker_darwin.go','filebudget.go','filebudget_unix.go','filebudget_darwin.go','file_worker_darwin.go'}
           assert set(r['fingerprints']) == names
           assert hashlib.sha256(r['algorithm'].encode()).hexdigest() == r['fingerprints']['algorithm_sha256']
           assert hashlib.sha256((root / 'lantern-darwin-probe').read_bytes()).hexdigest() == r['fingerprints']['executable_sha256']

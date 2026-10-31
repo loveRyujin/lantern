@@ -10,7 +10,7 @@
 
 ## 决策
 
-候选字节预算是 **unique-inode allocated bytes**：对私有根做 `lstat` / `WalkDir`，不跟随符号链接，对普通文件的每个 `(dev, inode)` 只计一次 `st_blocks * 512`。
+候选字节预算是 **unique-inode 的实际分配字节**：对私有根做 `lstat` / `WalkDir`，不跟随符号链接，每个普通文件 `(dev, inode)` 只计一次。Darwin 上这个数是 `getattrlist(FSOPT_NOFOLLOW)` 的 `ATTR_FILE_DATAALLOCSIZE`。其它 Unix 上是 `st_blocks * 512`。`st_blocks * 512` 在 Darwin 报告里另记为 `stat_blocks`，不是 Darwin 的预算。
 
 三条轴分开记录，不能互相代替：
 
@@ -18,7 +18,8 @@
 | --- | --- | --- |
 | `logical_named` | 每个普通文件目录项的 `st_size` 之和 | 不是预算。硬链接按名字再计一次 |
 | `logical_unique` | 每个普通 inode 的 `st_size` 只计一次 | 不是预算。稀疏文件会远大于实际占用 |
-| `allocated_bytes` | 每个普通 inode 的 `st_blocks * 512` 只计一次 | **候选字节预算** |
+| `allocated_bytes` | Darwin：`ATTR_FILE_DATAALLOCSIZE`；其它 Unix：`st_blocks * 512`。每个普通 inode 一次 | **候选字节预算** |
+| `stat_blocks` | 每个普通 inode 的 `st_blocks * 512` | 对照，不是 Darwin 预算 |
 | `entries` | 扫描根以外的现存目录项，含目录和符号链接 | 独立名字上限，不是字节预算 |
 
 符号链接只计目录项，不 `stat` 目标，不走出去。硬链接共享一个 inode，不能当成两份字节。rename 后仍是同一 inode 的新名字，本轮是时点快照，不是累计路径账本。
@@ -43,11 +44,11 @@
 
 ## 已观察与尚未观察
 
-Linux/Unix 上的 `scanPrivateTree` 测试使用真实临时目录，不是预设的扫描结果：指向目录外文件和子目录的符号链接不计入字节；硬链接只增加 `logical_named`；rename 保持同一 inode 和同一 allocated；稀疏文件的逻辑长度大于 allocated；unlink 后目录扫描回到 unlink 前的占用，fd 仍可读到更大的 `st_size`，关闭后 `Fstat` 失败。这证明扫描器的轴，不证明 Darwin 监督循环。
+Linux 上的 `scanPrivateTree` 测试使用真实临时目录：指向目录外文件和子目录的符号链接不计入字节；硬链接只增加 `logical_named`；rename 保持同一 inode 和同一 allocated；稀疏文件的逻辑长度大于 allocated；unlink 后目录扫描回到 unlink 前的占用，fd 仍可读到更大的 `st_size`，关闭后 `Fstat` 失败。
 
-Darwin 上要由 `files-api` 跑六个固定负载：预算内小文件、多文件字节停止、名字上限、生长字节停止、unlink-open 未决、稀疏/硬链接/rename/不跟随符号链接。报告绑定 `GOOS`/`GOARCH`/Go 版本、`sw_vers` 产品版本与 build、源 SHA 与 clean、helper 与算法指纹。组件清理和测试补救分开记。
+[CI 41195197677](https://github.com/loveRyujin/lantern/actions/runs/41195197677) 的 macOS 15.8.2 / build 24H232 / arm64 / Go 1.27.3 跑完了六个负载。`file-small`、`file-multi`、`file-entries`、`file-grow`、`file-unlink` 通过。unlink 的结论是 `unresolved-unlinked-open`，清理执行者是 guardian，`candidate_meters_unlinked_open` 为 false。`file-edges` 的硬链接、rename 和两个符号链接计数正确（entries 8、inodes 3、symlinks 2，`logical_named` 比 `logical_unique` 多 16KiB），但 `ftruncate` 到 1MiB 再在末尾写 1 字节后，`st_blocks * 512` 与逻辑长度同为 1081344。APFS 把这段跨度实际分配了，候选预算因此以 `allocated_bytes` 触发 `file_limit`。这不是“逻辑长度被误当成预算”的成功证明，而是这个构造在 APFS 上并不稀疏。
 
-在 macOS CI 跑完之前，不声称 APFS 上 `st_blocks` 一定把 1MiB 空洞保持在 256KiB 以下，也不声称已 unlink fd 的 `st_nlink` 一定为 0。这两项若与合同不符，对应用例失败，不能改成跳过。
+随后的构造在扫描可见之前对未写的 4KiB 对齐区间调用 `F_PUNCHHOLE`，Darwin 候选改读 `ATTR_FILE_DATAALLOCSIZE`。这一改动是否让 `file-edges` 在逻辑长度超过 256KiB 的同时保持实际分配低于预算，要等下一次 macOS 报告。已 unlink fd 的 `st_nlink == 0` 已在上述通过的 `file-unlink` 里观察到。
 
 ## 不支持的路径
 

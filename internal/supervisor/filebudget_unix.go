@@ -49,8 +49,9 @@ func scanPrivateTree(root string) (FileScan, error) {
 			return fmt.Errorf("negative file stat at %s", filepath.Base(path))
 		}
 		size := uint64(st.Size)
-		if math.MaxUint64-out.LogicalNamed < size {
-			return fmt.Errorf("logical name sum overflow")
+		blocks := uint64(st.Blocks)
+		if blocks > math.MaxUint64/512 || math.MaxUint64-out.LogicalNamed < size {
+			return fmt.Errorf("file stat sum overflow at %s", filepath.Base(path))
 		}
 		out.LogicalNamed += size
 		key := [2]uint64{uint64(st.Dev), uint64(st.Ino)}
@@ -58,13 +59,18 @@ func scanPrivateTree(root string) (FileScan, error) {
 			return nil
 		}
 		seen[key] = struct{}{}
-		blocks := uint64(st.Blocks)
-		if blocks > math.MaxUint64/512 {
-			return fmt.Errorf("allocated block overflow")
+		alloc, e := allocatedRegularBytes(path, st)
+		if e != nil {
+			return e
+		}
+		physical := blocks * 512
+		if math.MaxUint64-out.StatBlocks < physical || math.MaxUint64-out.Allocated < alloc || math.MaxUint64-out.LogicalUnique < size {
+			return fmt.Errorf("file stat sum overflow at %s", filepath.Base(path))
 		}
 		out.UniqueInodes++
 		out.LogicalUnique += size
-		out.Allocated += blocks * 512
+		out.StatBlocks += physical
+		out.Allocated += alloc
 		return nil
 	})
 	if err != nil {

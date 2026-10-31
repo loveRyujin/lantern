@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -86,6 +87,11 @@ func TestFileQAScanDistinguishesAxesAndDoesNotFollowOrKeepUnlinkedBytes(t *testi
 	if _, err := sf.WriteAt([]byte{0xA5}, (1<<20)-1); err != nil {
 		t.Fatal(err)
 	}
+	// Darwin allocates that span; punch it back before the scan. Other Unix
+	// filesystems already leave the hole, and reclaimSparseSpan is a no-op.
+	if err := reclaimSparseSpan(int(sf.Fd())); err != nil {
+		t.Fatal(err)
+	}
 	if err := sf.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +100,7 @@ func TestFileQAScanDistinguishesAxesAndDoesNotFollowOrKeepUnlinkedBytes(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sparse.LogicalUnique < 1<<20 || sparse.Allocated >= sparse.LogicalUnique/8 {
+	if sparse.LogicalUnique < 1<<20 || sparse.Allocated >= sparse.LogicalUnique/8 || (runtime.GOOS != "darwin" && sparse.StatBlocks != sparse.Allocated) {
 		t.Fatalf("sparse logical length was used as allocated space: %+v", sparse)
 	}
 
