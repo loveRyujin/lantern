@@ -53,9 +53,9 @@ type Tool struct {
 
 // NewTool 绑定已经用 [Open] 打开的只读库。
 // path 必须是打开时用的那个路径，而且和 allowed 是同一个文件。allowed 是工作区登记的业务库。
-// Linux 查询在独立 worker 里执行，父进程不使用 db 执行模型 SQL。
+// Linux 与 Darwin 查询在独立 worker 里执行，父进程不使用 db 执行模型 SQL。
 // 构造时固定解析后的路径与文件身份；文件替换后返回 data_busy，调用方需重新打开并构造工具。
-// worker 保留只读连接与查询两侧的文件哈希核对。其他平台在隔离实现前返回 sql_worker_unavailable。
+// worker 保留只读连接与查询两侧的文件哈希核对。Windows 等其余平台在隔离实现前返回 sql_worker_unavailable。
 // log 可以为 nil，此时拒绝语句不会写审计。
 // 调用方把 [Event] 转成自己的审计记录即可，字段已经带好 actor、action 和 RunID。
 func NewTool(db Queryer, path, allowed string, log Logger) (*Tool, error) {

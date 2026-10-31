@@ -33,6 +33,12 @@ jobs:
       - name: Vet windows
         run: GOOS=windows go vet ./...
 
+      - name: Compile Darwin SQL worker
+        run: |
+          GOOS=darwin GOARCH=arm64 go test -c -o "${RUNNER_TEMP}/sqlx.darwin.arm64.test" ./core/sqlx/
+          GOOS=darwin GOARCH=amd64 go test -c -o "${RUNNER_TEMP}/sqlx.darwin.amd64.test" ./core/sqlx/
+          GOOS=darwin GOARCH=arm64 go test -c -o "${RUNNER_TEMP}/agent.darwin.arm64.test" ./core/agent/
+
       - name: Vet
         run: go vet ./...
 
@@ -96,6 +102,25 @@ jobs:
         run: |
           make eval MODE=mock PLATFORM=darwin REPORT_DIR="${RUNNER_TEMP}/eval-darwin"
           python3 scripts/check-eval-platform.py darwin "${RUNNER_TEMP}/eval-darwin"
+
+  # #65: real Darwin SQL worker. Linux cross-compile above does not prove phys_footprint, reap, or kqueue.
+  macos-sql-worker:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+
+      - name: Darwin SQL worker and Agent loop
+        run: |
+          go test ./core/sqlx/ -count=1 -timeout 15m
+          go test ./core/agent/ -count=1 -timeout 8m
 
   # 在 Linux 上真实创建 venv，并用哈希锁定安装 pandas、matplotlib。允许较慢。
   pyrt-install:

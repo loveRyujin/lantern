@@ -7,8 +7,11 @@ import (
 	"io"
 )
 
-// ProcessMemoryBytes 是 Linux SQL worker 的 RLIMIT_AS：1 GiB 的总虚拟地址空间。
-// 它包括 Go 运行时的地址空间预留，不能解释成 1 GiB 的 SQLite 堆或 RSS 配额。
+// ProcessMemoryBytes 是 SQL worker 的 1 GiB（1,073,741,824 字节）上限数值。
+// Linux 把它用作 RLIMIT_AS，限制整个虚拟地址空间，包括 Go 运行时预留，不是 RSS 或 SQLite 堆。
+// Darwin 不用 RLIMIT_AS：该常量和 RLIMIT_RSS 是同一个值，而且内核不强制。同一字节数是
+// proc_pid_rusage 物理足迹的采样停止线，不是 jetsam 配额，也不是把 1 GiB 放大。
+// 两条路径都在读不到停止条件时失败关闭，不退回父进程。
 const ProcessMemoryBytes uint64 = 1 << 30
 
 const (
