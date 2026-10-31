@@ -137,20 +137,8 @@ func checkWorkspace(root string, pid int) error {
 		return nil
 	}
 	if err != nil {
-		// A task entering zombie state has no surviving file descriptors, but
-		// procfs may reject fd inspection before Wait observes its exit.
 		if os.IsPermission(err) {
-			stat, readErr := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-			if readErr != nil && os.IsNotExist(readErr) {
-				return nil
-			}
-			if end := strings.LastIndexByte(string(stat), ')'); end >= 0 {
-				fields := strings.Fields(string(stat[end+1:]))
-				if len(fields) > 0 && (fields[0] == "Z" || fields[0] == "X") {
-					return nil
-				}
-			}
-			return fmt.Errorf("%w: %v", errTaskFDNotReady, err)
+			return taskFDPermission(pid, err)
 		}
 		return err
 	}
@@ -170,6 +158,12 @@ func checkWorkspace(root string, pid int) error {
 		if os.IsNotExist(e) {
 			continue
 		}
+		// Exit can make one descriptor EACCES after the directory listing
+		// succeeded. That is the same teardown race as a directory-level
+		// permission error, not a live task hiding deleted files.
+		if os.IsPermission(e) {
+			return taskFDPermission(pid, e)
+		}
 		if e != nil {
 			return e
 		}
@@ -178,4 +172,20 @@ func checkWorkspace(root string, pid int) error {
 		}
 	}
 	return nil
+}
+
+// taskFDPermission reports a gone or zombie task as success. A still-live task
+// whose descriptors cannot be read stays retryable for a short window.
+func taskFDPermission(pid int, err error) error {
+	stat, readErr := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if readErr != nil && os.IsNotExist(readErr) {
+		return nil
+	}
+	if end := strings.LastIndexByte(string(stat), ')'); end >= 0 {
+		fields := strings.Fields(string(stat[end+1:]))
+		if len(fields) > 0 && (fields[0] == "Z" || fields[0] == "X") {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %v", errTaskFDNotReady, err)
 }
