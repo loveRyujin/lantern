@@ -112,7 +112,9 @@ print('production-chart-sum:12')
 	for _, message := range h.provider.requests()[3].Messages {
 		if message.ToolCallID == "plot" {
 			found = true
-			if err := json.Unmarshal([]byte(message.Content), &observation); err != nil {
+			// 下一轮请求里的观察值先经 toolMessage 套上数据边界，清单 JSON 在标签内。
+			inner := qaInner(t, "run_python", message.Content)
+			if err := json.Unmarshal([]byte(inner), &observation); err != nil {
 				t.Fatalf("model did not receive manifest JSON: %s %v", message.Content, err)
 			}
 			if strings.Contains(message.Content, ws.Dir) || strings.Contains(message.Content, rt.Venv) || strings.Contains(message.Content, "base64") {
