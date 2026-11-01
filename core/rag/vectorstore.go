@@ -100,7 +100,8 @@ type stored struct {
 	hit    Hit
 }
 
-// FakeStore 是进程内的 VectorStore。它不写 kb.db，检索算法和以后的默认实现相同：归一化后点积，小顶堆取 top-k。
+// FakeStore 是进程内的 VectorStore。它不写 kb.db。
+// 检索语义和 SQLiteStore 相同：归一化后点积，小顶堆取 top-k。
 type FakeStore struct {
 	mu          sync.Mutex
 	workspaceID string
@@ -296,14 +297,20 @@ func (s *FakeStore) LastSearchStats() SearchStats {
 }
 
 func (s *FakeStore) mismatchLocked() error {
-	if s.meta == nil {
+	return mismatchError(s.meta, s.current)
+}
+
+// mismatchError 在索引身份和当前 Embedder 不一致时返回 ErrEmbedderMismatch。
+// meta 为空表示还没有索引，此时允许第一次写入。
+func mismatchError(meta *IndexMeta, current EmbedderIdentity) error {
+	if meta == nil {
 		return nil
 	}
-	have := s.meta.Identity()
-	if have == s.current {
+	have := meta.Identity()
+	if have == current {
 		return nil
 	}
-	return &EmbedderMismatchError{Have: have, Want: s.current}
+	return &EmbedderMismatchError{Have: have, Want: current}
 }
 
 func (s *FakeStore) apply(items []stored) {
