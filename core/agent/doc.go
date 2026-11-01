@@ -7,4 +7,8 @@
 // 策略只拿到参数的副本。普通批准和确认单两条路径，都在执行前重算参数哈希。
 // 对不上就不执行，错误码是 hash_mismatch，并写一条审计。审计写失败时不执行工具，运行记为 failed。
 // 工具在单独的 goroutine 里跑。时限到了就返回超时；如果工具一直不返回，那个 goroutine 会留下来，不再碰循环的状态。
+//
+// 最终回答里的 [[cite:chunk_id]] 必须出现在本次运行 search_docs 已经返回的片段中。
+// 不合格时打回重写，次数是 DefaultCitationRewrites（默认 1）。用完仍不合格则 citation_invalid，不把伪造引用当成完成。
+// search_docs 返回无依据且本次没有可引用片段时，最终回答必须包含「未找到依据」。
 package agent

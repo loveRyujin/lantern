@@ -11,18 +11,21 @@ import (
 
 var (
 	// SpecSearchDocs 是检索工具的注册说明。
+	// 执行在 rag.SearchTool。k 的 maximum 必须和 rag.MaxSearchK 一致。
+	// 引用格式 [[cite:chunk_id]] 由 Agent 循环校验，不写进 Schema。
 	SpecSearchDocs = Spec{
 		Name:        "search_docs",
-		Description: "在当前工作区检索口径文档",
+		Description: "在当前工作区的知识库中检索口径文档。只查打开的那一个 kb.db。query 必填，k 是可选的 top-k。最高分低于阈值时返回未找到依据，不附带低分片段。引用片段时写成 [[cite:chunk_id]]，chunk_id 必须来自本次运行已经返回的检索结果。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"additionalProperties": false,
 			"required": ["query"],
 			"properties": {
-				"query": {"type": "string", "minLength": 1},
-				"k": {"type": "integer", "minimum": 1}
+				"query": {"type": "string", "minLength": 1, "maxLength": 8192},
+				"k": {"type": "integer", "minimum": 1, "maximum": 20}
 			}
 		}`),
+		MaxAttempts: 1,
 	}
 	// SpecRunSQL 是只读 SQL 工具的注册说明。#34 按这个 Schema 注册真正的执行。
 	// limit 不传时，执行层默认返回 200 行。这里的 maximum 是 1000，再大就在执行前被 Schema 拒绝。
@@ -109,6 +112,7 @@ func (s Stub) Execute(ctx context.Context, call Call) (Result, error) {
 }
 
 // RegisterBuiltins 登记五个桩。同名工具已经存在时返回错误。
+// 真正的 search_docs 用 rag.SearchTool 和 [SpecSearchDocs] 登记，不要和桩一起注册。
 // 真正的 run_sql 不要和桩一起注册，自己用 [SpecRunSQL] 登记实现。
 func RegisterBuiltins(r *Registry) error {
 	for _, spec := range []Spec{SpecSearchDocs, SpecRunSQL, SpecRunPython, SpecExportData, SpecWriteAction} {

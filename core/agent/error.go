@@ -13,6 +13,10 @@ const (
 	// CodeAnswerIncomplete 表示这次没有工具调用，只有最终回答被截断。
 	// 运行就此结束，可以整段重试。它不是工具失败，不计入连续校验失败。
 	CodeAnswerIncomplete = "answer_incomplete"
+	// CodeCitationInvalid 表示最终回答里的 chunk_id 不在本次检索结果中，
+	// 或者检索已经明确无依据后仍没有写明「未找到依据」。
+	// 默认先打回重写一次。重写后仍不通过时运行结束，不把这篇回答当成完成。
+	CodeCitationInvalid = "citation_invalid"
 )
 
 const (
