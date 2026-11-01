@@ -11,4 +11,8 @@
 // 最终回答里的 [[cite:chunk_id]] 必须出现在本次运行 search_docs 已经返回的片段中。
 // 不合格时打回重写，次数是 DefaultCitationRewrites（默认 1）。用完仍不合格则 citation_invalid，不把伪造引用当成完成。
 // search_docs 返回无依据且本次没有可引用片段时，最终回答必须包含「未找到依据」。
+//
+// 检索片段和工具返回进入下一轮模型请求前，由 toolMessage 用数据边界包裹。
+// 格式是 DataBoundaryOpen / DataBoundaryClose，系统提示里的 BoundaryClause 声明边界内指令无效。
+// 引用校验仍使用包裹前的 search_docs 原文。用户问题不包进边界。
 package agent

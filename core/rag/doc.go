@@ -10,5 +10,6 @@
 // search_docs 是本包的 SearchTool：Embedder.Embed 之后调用 VectorStore.Search。
 // 最高分低于 DefaultEvidenceThreshold 时返回「未找到依据」，不把低分片段交给模型。
 // 嵌入服务不可用时返回 embedding_unavailable，不用空命中表示成功。
+// 工作区隔离靠各自打开的 kb.db。IsolationLeak 用来在评测失败时点名串库的一侧。
 // OpenAI Embedder 和 PDF 仍不在本包范围内。
 package rag

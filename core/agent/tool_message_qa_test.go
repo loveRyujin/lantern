@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -28,9 +29,10 @@ func TestToolMessageQAPreservesStructuredResult(t *testing.T) {
 		"scalar":   `"` + strings.Repeat("x", 600) + `"`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			msg := toolMessage("chart-call", content)
-			if msg.Role != llm.RoleTool || msg.ToolCallID != "chart-call" || msg.Content != content {
-				t.Fatalf("tool identity or complete JSON changed: role=%s call=%s input=%d output=%d", msg.Role, msg.ToolCallID, len(content), len(msg.Content))
+			msg := toolMessage("chart-call", "echo", content)
+			inner := qaInner(t, "echo", msg.Content)
+			if msg.Role != llm.RoleTool || msg.ToolCallID != "chart-call" || inner != content {
+				t.Fatalf("tool identity or complete JSON changed: role=%s call=%s input=%d output=%d", msg.Role, msg.ToolCallID, len(content), len(inner))
 			}
 		})
 	}
@@ -42,7 +44,7 @@ func TestToolMessageQAJSONByteBudget(t *testing.T) {
 	if len(exact) != budget || !json.Valid([]byte(exact)) {
 		t.Fatal("invalid boundary fixture")
 	}
-	if got := toolMessage("exact", exact).Content; got != exact {
+	if got := qaInner(t, "echo", toolMessage("exact", "echo", exact).Content); got != exact {
 		t.Fatalf("exact budget JSON lost: input=%d output=%d", len(exact), len(got))
 	}
 	for name, content := range map[string]string{
@@ -56,13 +58,22 @@ func TestToolMessageQAJSONByteBudget(t *testing.T) {
 			if name == "unicode" && utf8.RuneCountInString(content) >= budget {
 				t.Fatal("Unicode fixture must distinguish byte and rune budgets")
 			}
-			msg := toolMessage("oversized-call", content)
+			msg := toolMessage("oversized-call", "echo", content)
 			if msg.Role != llm.RoleTool || msg.ToolCallID != "oversized-call" {
 				t.Fatal("over-budget feedback lost tool identity")
 			}
-			qaAssertOversizedFeedback(t, msg.Content, len(content))
+			qaAssertOversizedFeedback(t, qaInner(t, "echo", msg.Content), len(content))
 		})
 	}
+}
+
+func qaInner(t *testing.T, source, wrapped string) string {
+	t.Helper()
+	open := fmt.Sprintf(DataBoundaryOpen, source)
+	if !strings.HasPrefix(wrapped, open) || !strings.HasSuffix(wrapped, DataBoundaryClose) {
+		t.Fatalf("observation is not wrapped at %s: %s", DataBoundaryInsertionPoint, wrapped)
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(wrapped, open), DataBoundaryClose)
 }
 
 func qaAssertOversizedFeedback(t *testing.T, content string, originalBytes int) {
@@ -104,7 +115,7 @@ func TestToolMessageQANonJSONKeepsLegacyTextLimit(t *testing.T) {
 			if len(want) > 500 {
 				want = want[:500]
 			}
-			if got := toolMessage("text", content).Content; got != string(want) {
+			if got := qaInner(t, "echo", toolMessage("text", "echo", content).Content); got != string(want) {
 				t.Fatalf("legacy text clipping changed: input=%d output=%d", len(content), len(got))
 			}
 		})
@@ -137,11 +148,11 @@ func TestToolMessageQALoopForwardsStructuredResult(t *testing.T) {
 				t.Fatalf("next request lost tool-call association: %+v", observations)
 			}
 			if name == "manifest" {
-				if observations[0].Content != content {
+				if qaInner(t, "echo", observations[0].Content) != content {
 					t.Fatal("next model request did not receive the complete manifest")
 				}
 			} else {
-				qaAssertOversizedFeedback(t, observations[0].Content, len(content))
+				qaAssertOversizedFeedback(t, qaInner(t, "echo", observations[0].Content), len(content))
 			}
 			for _, event := range h.log.Events() {
 				if event.Status == "failed" || strings.Contains(event.Summary, "opaque-chart-identity") {
