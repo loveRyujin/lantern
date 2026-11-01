@@ -127,8 +127,11 @@ lantern/
 ## 9. RAG
 - 切分：`fixed`（512 token，重叠 64；token 数先按字符数近似）和 `structural`（按标题和口径条目切）。
 - `VectorStore` 接口：`Upsert(ctx, []Chunk) / Delete(ctx, docID) / Search(ctx, vec, k) ([]Hit, error)`，实例绑定到单个工作区。
-- 检索时用 `[]float32` 在内存里做点积 + 小顶堆；记录检索耗时和 chunk 数（FR-RAG-8）。
-- 引用校验、无依据拒答与 v0.2 相同。
+- 检索时用 `[]float32` 在内存里做点积 + 小顶堆；记录检索耗时和 chunk 数（FR-RAG-8）。`search_docs` 把 `LastSearchStats` 放进工具结果的 `stats.duration_ns` 和 `stats.chunks`。
+- `search_docs` 注册在现有 Tool Registry（Schema 为 `tools.SpecSearchDocs`，实现为 `rag.SearchTool`）。入参是 `query` 和可选 `k`（省略时 `DefaultSearchK = 5`，最大 `MaxSearchK = 20`）。路径是 `Embedder.Embed` → 绑定的 `VectorStore.Search`。工具不读 `workspace_id`，SQL 也不按工作区过滤；当前工作区就是打开的那一个 `kb.db`。
+- 无依据拒答：最高分低于 `DefaultEvidenceThreshold`（0.45，余弦，等于阈值仍算有依据）或没有命中时，`status` 为 `no_evidence`，`message` 为「未找到依据」，`hits` 为空。低分片段的正文和 `chunk_id` 不交给模型。阈值可用 `WithEvidenceThreshold` 覆盖。0.45 是起始常量，不是金标集上测出的召回切点。
+- 引用校验在 Go 侧、针对本次 run：最终回答里的 `[[cite:chunk_id]]` 必须出现在这次运行已经成功返回的 `search_docs` 片段中。不合格则打回重写，次数是 `DefaultCitationRewrites = 1`。重写后仍不合格，运行以 `citation_invalid` 结束，不把伪造引用当成完成。低于阈值的片段不算本次检索结果。若本次成功的检索全部是无依据，最终回答还必须包含「未找到依据」。
+- 嵌入服务不可用时 `search_docs` 返回 `embedding_unavailable`（模型不一致时是 `embedding_mismatch`）。这是工具失败，不是空命中成功。默认测试使用 `FakeEmbedder`，不连接本机 Ollama。
 
 ## 10. 评测 CLI
 - `lantern-eval run --category=... --mode=mock|live --platform=auto`，复用 Core，用脚本化 Approver。

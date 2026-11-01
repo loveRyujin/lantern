@@ -14,5 +14,5 @@
 // run_sql、run_python、export_data、write_action、search_docs 用同一套
 // [Tool] 接口注册。本包装它们的 Schema 和桩，不实现业务。
 // run_sql 的执行由只读 SQL 工具接 [SpecRunSQL]，确认单的落库由审批状态机接
-// [approval.Store]。
+// [approval.Store]。search_docs 的执行由 rag.SearchTool 接 [SpecSearchDocs]。
 package tools
