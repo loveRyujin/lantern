@@ -9,11 +9,19 @@ import (
 )
 
 const (
-	// StrategyFixed 是固定长度切分，设计上的窗口是 512 token、重叠 64。
-	// token 数先按字符数近似，切分器本身不在本次接口里。
+	// StrategyFixed 是固定长度切分。
+	// 默认窗口是 FixedWindowRunes 个 Unicode 码点，重叠 FixedOverlapRunes 个码点，
+	// 用来近似设计里的 512 token、重叠 64。这里的单位是码点，不是分词器 token。
 	StrategyFixed = "fixed"
-	// StrategyStructural 是按标题和口径条目切分。
+	// StrategyStructural 是按标题路径和口径条目切分。
 	StrategyStructural = "structural"
+
+	// FixedWindowRunes 是 fixed 的默认窗口，按 Unicode 码点计。
+	FixedWindowRunes = 512
+	// FixedOverlapRunes 是 fixed 的默认重叠，按 Unicode 码点计。
+	FixedOverlapRunes = 64
+	// TitlePathSeparator 连接 structural 的标题路径。
+	TitlePathSeparator = " / "
 )
 
 // Chunk 是一条可写入向量库的片段。
@@ -226,6 +234,69 @@ func (s *FakeStore) Delete(ctx context.Context, docID string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.deleteDocLocked(docID)
+	return nil
+}
+
+// ReplaceDocument 用这一批 chunk 替换文档的全部分片。
+//
+// 先在锁内完成校验和向量准备，通过之后才删除该 doc_id 的旧分片并写入新分片。
+// 校验失败时库保持原样。空批次会拒绝，避免把「没有切出片段」误当成清空。
+// 调用方应先拿到全部向量再调用；本方法不再访问 Embedder。
+func (s *FakeStore) ReplaceDocument(ctx context.Context, doc Document, chunks []Chunk) error {
+	if ctx == nil {
+		return errors.New("rag: ctx 不能为 nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateDocument(doc); err != nil {
+		return err
+	}
+	if len(chunks) == 0 {
+		return fmt.Errorf("%w: 替换需要至少一条 chunk", ErrInvalidArgument)
+	}
+	for _, ch := range chunks {
+		if ch.DocID != doc.ID {
+			return fmt.Errorf("%w: chunk doc_id 与文档不一致", ErrInvalidArgument)
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.mismatchLocked(); err != nil {
+		return err
+	}
+	filtered := make(map[string]stored, len(s.chunks))
+	for id, item := range s.chunks {
+		if item.docID == doc.ID {
+			continue
+		}
+		filtered[id] = item
+	}
+	meta := s.meta
+	fresh := false
+	if meta == nil {
+		meta = &IndexMeta{
+			EmbedderID: s.current.ID,
+			Dim:        s.current.Dim,
+			Normalize:  true,
+			CreatedAt:  time.Now().UTC(),
+		}
+		fresh = true
+	}
+	prepared, err := prepareChunks(*meta, chunks, filtered)
+	if err != nil {
+		return err
+	}
+	if fresh {
+		s.meta = meta
+	}
+	s.deleteDocLocked(doc.ID)
+	s.apply(prepared)
+	return nil
+}
+
+func (s *FakeStore) deleteDocLocked(docID string) {
 	kept := s.order[:0]
 	for _, id := range s.order {
 		if s.chunks[id].docID == docID {
@@ -235,7 +306,6 @@ func (s *FakeStore) Delete(ctx context.Context, docID string) error {
 		kept = append(kept, id)
 	}
 	s.order = kept
-	return nil
 }
 
 // Search 用点积取 top-k。k 必须大于 0。

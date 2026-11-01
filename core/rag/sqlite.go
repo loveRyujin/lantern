@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 )
@@ -161,6 +162,99 @@ func (s *SQLiteStore) Delete(ctx context.Context, docID string) error {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM chunks WHERE document_id = ?`, docID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ReplaceDocument 在一个事务里用这一批 chunk 替换该文档，并写上文档标题、来源和正文。
+//
+// 顺序是：读 index_meta 并比对模型 → 准备全部向量 → 写入或更新 documents →
+// 删除该 doc_id 的 vectors 和 chunks → 插入新片段 → 提交。
+// 准备失败或后面的 SQL 失败都会回滚，旧片段和旧正文都还在，也不会留下没有 chunk 的新向量。
+// 空批次会拒绝。嵌入是否成功由调用方负责；这里看到错误时还没有提交任何替换。
+func (s *SQLiteStore) ReplaceDocument(ctx context.Context, doc Document, chunks []Chunk) error {
+	if err := s.check(ctx); err != nil {
+		return err
+	}
+	if err := validateDocument(doc); err != nil {
+		return err
+	}
+	if len(chunks) == 0 {
+		return fmt.Errorf("%w: 替换需要至少一条 chunk", ErrInvalidArgument)
+	}
+	for _, ch := range chunks {
+		if ch.DocID != doc.ID {
+			return fmt.Errorf("%w: chunk doc_id 与文档不一致", ErrInvalidArgument)
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	meta, err := readMeta(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if err := mismatchError(meta, s.current); err != nil {
+		return err
+	}
+	fresh := false
+	if meta == nil {
+		n, err := countVectors(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			return fmt.Errorf("%w: 存在向量但没有 index_meta", ErrInvalidArgument)
+		}
+		meta = &IndexMeta{
+			EmbedderID: s.current.ID,
+			Dim:        s.current.Dim,
+			Normalize:  true,
+			CreatedAt:  time.Now().UTC(),
+		}
+		fresh = true
+	}
+	existing, err := loadChunkDocs(ctx, tx)
+	if err != nil {
+		return err
+	}
+	filtered := make(map[string]stored, len(existing))
+	for id, item := range existing {
+		if item.docID == doc.ID {
+			continue
+		}
+		filtered[id] = item
+	}
+	prepared, err := prepareChunks(*meta, chunks, filtered)
+	if err != nil {
+		return err
+	}
+	if fresh {
+		if err := insertMeta(ctx, tx, *meta); err != nil {
+			return err
+		}
+	}
+	if err := upsertDocument(ctx, tx, doc); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM vectors WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`,
+		doc.ID,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM chunks WHERE document_id = ?`, doc.ID); err != nil {
+		return err
+	}
+	// 旧行已经删除。传入空表，让写入走 INSERT，而不是按替换前的 id 去 UPDATE。
+	if err := writeChunks(ctx, tx, *meta, prepared, map[string]stored{}); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -365,6 +459,25 @@ func loadChunkDocs(ctx context.Context, tx *sql.Tx) (map[string]stored, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func upsertDocument(ctx context.Context, tx *sql.Tx, doc Document) error {
+	title := strings.TrimSpace(doc.Title)
+	if title == "" {
+		title = doc.ID
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO documents (id, title, source, body, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			title = excluded.title,
+			source = excluded.source,
+			body = excluded.body,
+			updated_at = excluded.updated_at`,
+		doc.ID, title, doc.Source, doc.Body, now, now,
+	)
+	return err
 }
 
 func insertMeta(ctx context.Context, tx *sql.Tx, meta IndexMeta) error {
