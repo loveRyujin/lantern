@@ -100,6 +100,7 @@ type Publisher interface {
 | `runtime_unavailable` | `errcode.RuntimeUnavailable` | Python 缺失或版本不符，不得改走无沙箱执行 |
 | `sandbox_unavailable` | `errcode.SandboxUnavailable` | 隔离机制不可用，不得换一套更弱的隔离 |
 | `embedding_mismatch` | `errcode.EmbeddingMismatch` | 索引与当前 Embedder 的 ID 或维度不同 |
+| `embedding_unavailable` | `errcode.EmbeddingUnavailable` | 嵌入服务不可达、模型未拉取，或响应不能当作向量；不得当成空向量继续 |
 | `stream_truncated` | `errcode.StreamTruncated` | 模型流在 `[DONE]` 和 `finish_reason` 都没到时断开，可重试；截断的正文和 tool_call 参数不能当成成功结果 |
 | `path_escape` | `errcode.PathEscape` | 解析 Root 之后，其下的路径上有符号链接，或解析后不在该根目录内；不得顺着链接删改外面的文件。Root 的祖先目录可以是符号链接 |
 | `export_unconfirmed` | `errcode.ExportUnconfirmed` | 没有可用的已批准导出确认，不能打开敏感库；不得改走别的连接去读敏感原文 |

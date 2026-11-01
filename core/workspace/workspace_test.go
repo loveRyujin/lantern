@@ -59,6 +59,9 @@ func TestCreateOpenLayout(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := 1
+		if db == h.KB {
+			want = 2
+		}
 		if db == h.Runs {
 			want = 3
 		}
@@ -87,8 +90,14 @@ func TestCreateOpenLayout(t *testing.T) {
 	if err := reopened.KB.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
+	if n != 2 {
 		t.Fatalf("reopen applied migrations again: %d", n)
+	}
+	kbCols := columnNames(t, ctx, reopened.KB, "chunks")
+	for _, name := range []string{"title_path", "strategy"} {
+		if _, ok := kbCols[name]; !ok {
+			t.Fatalf("chunks 缺少 %s", name)
+		}
 	}
 	if err := reopened.Runs.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
@@ -358,6 +367,34 @@ func TestIndexMetaSingleRow(t *testing.T) {
 		`INSERT INTO index_meta (id, embedder_id, dim, normalize, created_at) VALUES (2, 'other', 3, 1, 't')`,
 	); err == nil {
 		t.Fatal("second index_meta row succeeded")
+	}
+}
+
+func TestKBChunkMetaMigrationUpgrades(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	h := mustCreate(t, ctx, root, "kb")
+	for _, column := range []string{"title_path", "strategy"} {
+		if _, err := h.KB.ExecContext(ctx, `ALTER TABLE chunks DROP COLUMN `+column); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.KB.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(ctx, root, "kb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	cols := columnNames(t, ctx, reopened.KB, "chunks")
+	for _, name := range []string{"title_path", "strategy"} {
+		if _, ok := cols[name]; !ok {
+			t.Fatalf("重开后 chunks 仍缺少 %s", name)
+		}
 	}
 }
 

@@ -10,20 +10,21 @@ import (
 
 func TestCodeValues(t *testing.T) {
 	want := map[errcode.Code]string{
-		errcode.Timeout:            "timeout",
-		errcode.OOM:                "oom",
-		errcode.Killed:             "killed",
-		errcode.Exec:               "error",
-		errcode.RuntimeUnavailable: "runtime_unavailable",
-		errcode.SandboxUnavailable: "sandbox_unavailable",
-		errcode.EmbeddingMismatch:  "embedding_mismatch",
-		errcode.StreamTruncated:    "stream_truncated",
-		errcode.PathEscape:         "path_escape",
-		errcode.ExportUnconfirmed:  "export_unconfirmed",
-		errcode.ApprovalMismatch:   "approval_mismatch",
+		errcode.Timeout:              "timeout",
+		errcode.OOM:                  "oom",
+		errcode.Killed:               "killed",
+		errcode.Exec:                 "error",
+		errcode.RuntimeUnavailable:   "runtime_unavailable",
+		errcode.SandboxUnavailable:   "sandbox_unavailable",
+		errcode.EmbeddingMismatch:    "embedding_mismatch",
+		errcode.EmbeddingUnavailable: "embedding_unavailable",
+		errcode.StreamTruncated:      "stream_truncated",
+		errcode.PathEscape:           "path_escape",
+		errcode.ExportUnconfirmed:    "export_unconfirmed",
+		errcode.ApprovalMismatch:     "approval_mismatch",
 	}
-	if len(want) != 11 {
-		t.Fatalf("稳定错误码数量 = %d，想要 11", len(want))
+	if len(want) != 12 {
+		t.Fatalf("稳定错误码数量 = %d，想要 12", len(want))
 	}
 	for code, text := range want {
 		if code.String() != text {
