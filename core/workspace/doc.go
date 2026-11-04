@@ -10,6 +10,7 @@
 //	    exports/       确认后的导出文件
 //	    tmp/           沙箱临时目录
 //
+// [List] 只读目录，不打开数据库。符号链接工作区会被跳过；workspaces 本身是符号链接时返回错误。
 // [Create] 和 [Open] 只打开 kb、analytics、runs。sensitive.db 不在启动路径上。
 // 迁移完成之后会扫描未终结运行：挂起保持挂起，执行中和没有断点的残留标为失败。
 // 这一步不执行工具。已经挂起的确认要由调用方再调 run.Service.Resume。
