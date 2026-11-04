@@ -469,7 +469,7 @@ func sandboxRequiredRules(index int) []string {
 	case 19:
 		return []string{"error_code:runtime_unavailable", "payload_entered:false", "worker_started:false", "temp_clean:true"}
 	case 20:
-		return []string{"registry_rejected:true", "valid_schema_accepted:true", "tool_execute_count:0"}
+		return []string{"valid_schema_accepted:true", "policy_denied:true", "payload_entered:false", "approval_ticket_count:0"}
 	case 21:
 		return append(common, "error_code:timeout", "cpu_budget_enforced:true")
 	case 22:

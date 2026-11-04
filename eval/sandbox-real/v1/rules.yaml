@@ -2,6 +2,7 @@ keys:
     - file_quota_enforced
     - artifact_rejection_observed
     - agent_loop_completed
+    - approval_ticket_count
     - listener_quiet
     - cancel_observed
     - capability_failure_closed
@@ -12,14 +13,13 @@ keys:
     - output_bounded
     - parent_death_cleaned
     - payload_entered
+    - policy_denied
     - process_reaped
     - production_png_valid
-    - registry_rejected
     - required_host_controls
     - sandbox_denials
     - sentinel_unchanged
     - temp_clean
-    - tool_execute_count
     - valid_schema_accepted
     - wall_budget_enforced
     - worker_started
