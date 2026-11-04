@@ -38,10 +38,12 @@ const systemPrompt = "你是 Lantern 的问数助手。" + BoundaryClause + "不
 // Config 控制步数和超时。
 // MaxSteps 为 0 时用 DefaultMaxSteps。负数拒绝启动。
 // StepTimeout、TotalTimeout 同样：0 用默认，负数拒绝。
+// ApprovalTTL 为 0 时确认单 24 小时后过期。正数用于评测把「不响应」缩到很短。负数拒绝启动。
 type Config struct {
 	MaxSteps     int
 	StepTimeout  time.Duration
 	TotalTimeout time.Duration
+	ApprovalTTL  time.Duration
 }
 
 // Input 是一次运行。
@@ -51,7 +53,7 @@ type Input struct {
 	Prompt      string
 }
 
-// Outcome 是运行结果。State 用 completed、failed、cancelled、rejected、awaiting_approval。
+// Outcome 是运行结果。State 用 completed、failed、cancelled、rejected、expired、awaiting_approval。
 type Outcome struct {
 	State      string
 	Text       string
@@ -139,6 +141,10 @@ func (l *Loop) Run(ctx context.Context, in Input) (Outcome, error) {
 	}
 	total, err := normalizeTimeout(l.Config.TotalTimeout, DefaultTotalTimeout, "总超时")
 	if err != nil {
+		return Outcome{State: StateFailed, Err: err}, err
+	}
+	if l.Config.ApprovalTTL < 0 {
+		err := plain("确认超时不能为负")
 		return Outcome{State: StateFailed, Err: err}, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -413,7 +419,7 @@ func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *c
 		Sensitive:     append([]string(nil), decision.Sensitive...),
 		EstimatedRows: decision.EstimatedRows,
 		Risk:          decision.Risk,
-		ExpiresAt:     l.clock()().Add(24 * time.Hour),
+		ExpiresAt:     l.clock()().Add(l.approvalTTL()),
 		ExportObject:  exportObject(p.Name, p.Args),
 	}
 	if ticket.Risk == "" {
@@ -438,11 +444,18 @@ func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *c
 			return out, true, false
 		}
 	}
-	choice, err := l.Approver.Request(ctx, ticket)
+	// 父上下文先结束（取消或整次运行超时）仍按原来的状态收场。
+	// 只有确认单自己的期限到了、Approver 还没给决定，才过期并且不执行。
+	waitCtx, waitCancel := context.WithDeadline(ctx, ticket.ExpiresAt)
+	defer waitCancel()
+	choice, err := l.Approver.Request(waitCtx, ticket)
 	if err != nil {
 		if ctx.Err() != nil {
 			out, _ := l.finish(ctx, in, modelCalls, statusFromContext(ctx), contextError(ctx))
 			return out, true, false
+		}
+		if waitCtx.Err() != nil {
+			return l.expireSilent(ctx, in, ticket.ID, modelCalls)
 		}
 		out, _ := l.finish(ctx, in, modelCalls, StateFailed, err)
 		return out, true, false
@@ -667,6 +680,31 @@ func runTool(ctx context.Context, tool tools.Tool, call tools.Call) (tools.Resul
 			return tools.Result{}, errToolIgnoredTimeout, true
 		}
 	}
+}
+
+// expireSilent 把已经到期、仍无人决定的确认单转成 expired。工具不执行。
+func (l *Loop) expireSilent(ctx context.Context, in Input, ticketID string, modelCalls int) (Outcome, bool, bool) {
+	statusCtx := context.WithoutCancel(ctx)
+	exp, ok := l.Tickets.(interface {
+		Expire(context.Context, string) error
+	})
+	if !ok {
+		out, _ := l.finish(statusCtx, in, modelCalls, StateFailed, plain("确认超时但存储不能过期"))
+		return out, true, false
+	}
+	if err := exp.Expire(statusCtx, ticketID); err != nil && !errors.Is(err, approval.ErrTerminal) {
+		out, _ := l.finish(statusCtx, in, modelCalls, StateFailed, err)
+		return out, true, false
+	}
+	out, _ := l.finish(statusCtx, in, modelCalls, StateExpired, agentErr("approval_expired", "确认超时未响应", false))
+	return out, true, false
+}
+
+func (l *Loop) approvalTTL() time.Duration {
+	if l != nil && l.Config.ApprovalTTL > 0 {
+		return l.Config.ApprovalTTL
+	}
+	return 24 * time.Hour
 }
 
 func (l *Loop) applyDecision(ctx context.Context, id string, decision approval.Decision) (approval.DecideResult, error) {

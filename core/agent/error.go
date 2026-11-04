@@ -30,6 +30,8 @@ const (
 	StateRejected = "rejected"
 	// StateAwaitingApproval 是确认被暂缓。
 	StateAwaitingApproval = "awaiting_approval"
+	// StateExpired 是确认等待超时，工具没有执行。
+	StateExpired = "expired"
 )
 
 // Error 是循环返回的错误。Retryable 为 true 时，这次运行已经结束，调用方可以整段重跑。

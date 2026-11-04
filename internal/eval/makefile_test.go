@@ -68,13 +68,14 @@ func TestMakeEvalEmptySuiteExitsZero(t *testing.T) {
 }
 
 // linuxAutoScored 是 Linux 上 make eval（PLATFORM=auto）的实际评分数。
-// 237 条都会加载；其中 20 条 darwin 沙箱用例被过滤，skipped 为 0。
-// #34 增加了 4 条只读 SQL 用例，所以分数从 213 变成 217。
-const linuxAutoScored = 217
+// 237 条都会加载；其中 20 条 darwin 沙箱用例被过滤。
+// #34 增加了 4 条只读 SQL 用例，分数从 213 变成 217。
+// #81 起 AP-011 明确跳过，分数从 217 变成 216，skipped 为 1。
+const linuxAutoScored = 216
 
 func TestMakeEvalOfficialSet(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("Linux CI 的 auto 基线只在 linux 上锁定 scored 217、filtered 20、skipped 0")
+		t.Skip("Linux CI 的 auto 基线只在 linux 上锁定 scored 216、filtered 20、skipped 1")
 	}
 	root := moduleRoot(t)
 	out := t.TempDir()
@@ -90,8 +91,8 @@ func TestMakeEvalOfficialSet(t *testing.T) {
 	if sum.Cases != 237 {
 		t.Fatalf("Linux auto 加载了 %d 条，用例总数是 237", sum.Cases)
 	}
-	if sum.Scored != linuxAutoScored || sum.Passed != linuxAutoScored || sum.Filtered != 20 || sum.Skipped != 0 || sum.Failed != 0 || sum.MissingObservation != 0 {
-		t.Fatalf("Linux auto 应评分 217、过滤 20、跳过 0，摘要 %+v", sum)
+	if sum.Scored != linuxAutoScored || sum.Passed != linuxAutoScored || sum.Filtered != 20 || sum.Skipped != 1 || sum.Failed != 0 || sum.MissingObservation != 0 {
+		t.Fatalf("Linux auto 应评分 216、过滤 20、跳过 1，摘要 %+v", sum)
 	}
 	var filteredIDs []string
 	for _, item := range report.Cases {
@@ -128,11 +129,14 @@ func TestMakeEvalOfficialSet(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"- 实际评分: 217",
-		"- 跳过: 0",
+		"- 实际评分: 216",
+		"- 跳过: 1",
 		"- 平台过滤: 20",
 		"### 跳过",
+		"`AP-011`",
+		"W6-01",
 		"### 平台过滤",
+		"| confirmation |",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("报告缺少 %q", want)

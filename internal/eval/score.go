@@ -40,10 +40,11 @@ func newGateTally() gateTally {
 
 func scoreSuite(ctx context.Context, suite Suite, catalog RuleCatalog, gates GateSet, opt Options, judge Judge, model string) Report {
 	selected := resolvePlatform(opt.Platform)
+	scripts, scriptErr := readApproverScript(opt.Root)
 	results := make([]CaseResult, 0, len(suite.Cases))
 	tally := newGateTally()
 	for _, item := range suite.Cases {
-		scored := scoreCase(ctx, item, catalog, gates, opt, judge, model, selected)
+		scored := scoreCase(ctx, item, catalog, gates, opt, judge, model, selected, scripts, scriptErr)
 		results = append(results, scored.result)
 		if scored.countGates {
 			addGateSamples(&tally, gates, item.Category, item.Platform, selected, scored.observations)
@@ -99,10 +100,11 @@ func scoreSuite(ctx context.Context, suite Suite, catalog RuleCatalog, gates Gat
 		Metrics:          buildMetrics(hard),
 		Sandbox:          sandboxReports(tally.sandbox, hasGate(gates, "sandbox")),
 		Cases:            results,
+		Categories:       categorySummaries(results),
 	}
 }
 
-func scoreCase(ctx context.Context, item Case, catalog RuleCatalog, gates GateSet, opt Options, judge Judge, model, selected string) caseScore {
+func scoreCase(ctx context.Context, item Case, catalog RuleCatalog, gates GateSet, opt Options, judge Judge, model, selected string, scripts map[string]string, scriptErr error) caseScore {
 	res := CaseResult{
 		ID:       item.ID,
 		Category: item.Category,
@@ -114,6 +116,28 @@ func scoreCase(ctx context.Context, item Case, catalog RuleCatalog, gates GateSe
 	}
 	selectedCase := caseSelected(item, opt.Category, selected)
 	mock, hasMock := mockState(item.Input)
+	var confirmSkip, confirmFail string
+	if drivesConfirmation(item, scripts, scriptErr) && modeOrDefault(opt.Mode) == ModeMock && selectedCase {
+		// 带确认动作的用例观测来自 Core。input.mock 只留在用例里，不参与判定。
+		// 没有动作、也没有脚本文件的合成用例仍按 mock 计分，用来测门槛算术。
+		hasMock = false
+		mock = nil
+		if scriptErr != nil {
+			confirmFail = scriptErr.Error()
+		} else if reason, err := confirmationPlan(item, scripts); err != nil {
+			confirmFail = err.Error()
+		} else if reason != "" {
+			confirmSkip = reason
+		} else {
+			obs, err := executeConfirmation(ctx, item)
+			if err != nil {
+				confirmFail = err.Error()
+			} else {
+				mock = obs
+				hasMock = true
+			}
+		}
+	}
 	var msgs []string
 	var observations []gateObs
 	rulesOK := true
@@ -172,6 +196,18 @@ func scoreCase(ctx context.Context, item Case, catalog RuleCatalog, gates GateSe
 		res.Status = statusFailed
 		res.Passed = false
 		return finishScore(res, observations, hasMock)
+	}
+	if confirmSkip != "" {
+		res.Status = statusSkipped
+		res.Passed = false
+		res.NotScoredReasons = []string{confirmSkip}
+		return finishScore(res, nil, false)
+	}
+	if confirmFail != "" {
+		res.Failures = append(msgs, confirmFail)
+		res.Status = statusFailed
+		res.Passed = false
+		return finishScore(res, nil, false)
 	}
 	if !hasMock {
 		res.Status = statusSkipped
@@ -438,6 +474,17 @@ func runID(mode, id string) string {
 		mode = ModeMock
 	}
 	return mode + ":" + id
+}
+
+func drivesConfirmation(item Case, scripts map[string]string, scriptErr error) bool {
+	if item.Category != "confirmation" {
+		return false
+	}
+	if scriptErr != nil || scripts != nil || inputBool(item.Input, "eval_skip") {
+		return true
+	}
+	action, ok := inputString(item.Input, "approver_action")
+	return ok && action != ""
 }
 
 func modeOrDefault(mode string) string {

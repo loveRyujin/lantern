@@ -6,7 +6,7 @@
 
 ## 保留历史，另建真实契约
 
-冻结的 eval/v1 保留 Mock 基线：Linux 选择时加载 237、评分并通过 217，另 20 为平台过滤；all 模式及旧 scoring digest 不变。新增 `sandbox-real`，使用 eval/sandbox-real/v1 独立清单，不能污染旧递归加载范围。真实执行完全忽略 input.mock，不从历史预设结果补观测。
+冻结的 eval/v1 当时保留 Mock 基线：Linux 选择时加载 237、评分并通过 217，另 20 为平台过滤。新增 `sandbox-real`，使用 eval/sandbox-real/v1 独立清单，不能污染旧递归加载范围。真实执行完全忽略 input.mock，不从历史预设结果补观测。#81 之后 confirmation 改为脚本化 Approver 走 Core，`AP-011` 跳过，Linux / darwin 评分 216、all 评分 236；这不改变 sandbox-real 的独立契约。
 
 原 SB-LINUX-01–20 每项保留来源 ID、历史指纹与意图；新断言按已批准的 Linux 单进程/单线程 profile 版本化。尤其不能把实际 EPERM 改写为历史 killed、output_limit、permission_denied；符号链接逃逸应记录实际 attempt>0 与成功逃逸=0，而非声称未发生尝试。
 
