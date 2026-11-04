@@ -46,16 +46,41 @@ var (
 		MaxAttempts: 1,
 	}
 	// SpecRunPython 是沙箱代码工具的注册说明。
+	// limits / extra_read_only / network 交给 Policy：超默认资源或额外只读目录要确认，
+	// 网络（含回环）直接拒绝。requires_approval 和 approved 可以出现，但不改变判定。
+	// 运行时路径和任意输入仍然不是合法参数。
 	SpecRunPython = Spec{
 		Name:        "run_python",
-		Description: "在禁网沙箱中执行 Python 分析；可用 sql_call_id 引用同一运行中成功的 run_sql 调用，用 load_table() 读取 (columns, rows, metadata)。图表写入 OUTPUT_DIR，返回可取回产物 ID。",
+		Description: "在禁网沙箱中执行 Python 分析；可用 sql_call_id 引用同一运行中成功的 run_sql 调用，用 load_table() 读取 (columns, rows, metadata)。图表写入 OUTPUT_DIR，返回可取回产物 ID。limits 中提高 cpu_ms、memory_bytes、wall_ms 或 nproc（不超过硬上限），或给出 extra_read_only，会进入本人确认。network 只要不是 false（含 loopback、127.0.0.1、::1）就直接拒绝，不能通过确认放开。requires_approval 和 approved 会被忽略。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"additionalProperties": false,
 			"required": ["code"],
 			"properties": {
 				"code": {"type": "string", "minLength": 1, "maxLength": 1048000},
-				"sql_call_id": {"type": "string", "minLength": 1, "maxLength": 256}
+				"sql_call_id": {"type": "string", "minLength": 1, "maxLength": 256},
+				"limits": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"cpu_ms": {"type": "integer", "minimum": 0},
+						"memory_bytes": {"type": "integer", "minimum": 0},
+						"wall_ms": {"type": "integer", "minimum": 0},
+						"nproc": {"type": "integer", "minimum": 0}
+					}
+				},
+				"extra_read_only": {
+					"type": "array",
+					"items": {"type": "string", "minLength": 1, "maxLength": 4096}
+				},
+				"network": {
+					"anyOf": [
+						{"type": "boolean"},
+						{"type": "string", "minLength": 1, "maxLength": 256}
+					]
+				},
+				"requires_approval": {},
+				"approved": {}
 			}
 		}`),
 		MaxAttempts: 1,

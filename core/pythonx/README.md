@@ -13,9 +13,17 @@ registry.Register(session.SQLTool())
 registry.Register(session.PythonTool())
 ```
 
-The existing Registry, Policy and Approver still control execution. The default
-profile only accepts `code` and optional `sql_call_id`; model parameters cannot
-request networking, runtime paths, arbitrary directories or larger limits.
+The existing Registry, Policy and Approver still control execution. Schema now
+accepts optional `limits` (`cpu_ms`, `memory_bytes`, `wall_ms`, `nproc`),
+`extra_read_only` and `network`, plus ignored markers `requires_approval` and
+`approved`. `policy.Default` asks for confirmation when CPU, memory, wall time
+or an extra read-only directory exceeds the runner default while staying within
+the hard ceiling. Any network value other than false, including loopback, is
+denied and is not written into `sandbox.Spec`. Execute repeats that decision:
+without an approval id the raised request never acquires a runtime or calls
+`Run`; with an approval id only the confirmed resources and read-only directories
+are copied. Requests above the hard ceiling stay denied even if an approval id
+is present. Runtime paths and arbitrary inputs are still schema errors.
 Production defaults always use the real Linux Runner with workspace-local tmp.
 
 `run_sql` stores successful observations by explicit call ID, scoped to the
