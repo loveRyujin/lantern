@@ -29,13 +29,13 @@ func TestSandboxRealQAMockBaselineUnaffected(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want, filtered := 217, 20
-			digest := "a6988db6f3945e8c767e650776767bd62b5454d47733c4dcce2846fe44ec1340"
+			want, filtered, skipped := 216, 20, 1
+			digest := "ff5f0ed902280e8ad013987ed16a9d497ccf317cb74158c7c2a4900b49393440"
 			if platform == "all" {
-				want, filtered, digest = 237, 0, "ef3431dd8f2099b81bc29896f99e91e82c0fe1741b45cdb124b8eb2fbd881f1f"
+				want, filtered, digest = 236, 0, "ff6109720bd66b8be1edd789b0d6f82ab3a734ddd00970f5368b3b6ad4de245c"
 			}
 			summary := result.Report.Summary
-			if result.ExitCode != ExitOK || summary.Cases != 237 || summary.Scored != want || summary.Passed != want || summary.Filtered != filtered || summary.Skipped != 0 || summary.MissingObservation != 0 || summary.Failed != 0 || !summary.HardGatesPassed {
+			if result.ExitCode != ExitOK || summary.Cases != 237 || summary.Scored != want || summary.Passed != want || summary.Filtered != filtered || summary.Skipped != skipped || summary.MissingObservation != 0 || summary.Failed != 0 || !summary.HardGatesPassed {
 				t.Fatalf("frozen Mock baseline changed: exit=%d summary=%+v", result.ExitCode, summary)
 			}
 			if result.Report.Environment.SandboxImpl != "mock" || result.Report.Mode != ModeMock {

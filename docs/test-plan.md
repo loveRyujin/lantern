@@ -53,7 +53,7 @@ CI：Linux runner 跑单元 + 集成 + Mock 全量 + Linux 沙箱；macOS runner
 
 ### W3 真实 Linux 出口（#44，实施与验收中）
 
-独立 `sandbox-real` 模式和 `eval/sandbox-real/v1` 保留原 20 个 Linux 意图，按严格单任务 profile 版本化实际 errno/错误码与逃逸计数，另补 21–25 的累计 CPU、父应用死亡、强制不可用、生产 PNG、取消清理。旧 `eval/v1` 的 217 Linux Mock 评分和 all 指纹不改变，不能将 Mock 当实际行为。
+独立 `sandbox-real` 模式和 `eval/sandbox-real/v1` 保留原 20 个 Linux 意图，按严格单任务 profile 版本化实际 errno/错误码与逃逸计数，另补 21–25 的累计 CPU、父应用死亡、强制不可用、生产 PNG、取消清理。`sandbox-real` 不并进旧 `eval/v1` 递归加载范围，也不能把 Mock 当实际沙箱行为。#81 之后 `eval/v1` 的 confirmation 由脚本化 Approver 走 Core：Linux Mock 评分 216、跳过 `AP-011`，`--platform all` 评分 236。
 
 真实套件要求精确 20+5 全部评分、零 skip/missing/unknown；有宿主正控、实际 payload 观测及回收/清理证据。必需条件缺失失败关闭。只有 trusted `prepare-runtime` 显式安装，执行读取配置不自动修复。CI 必须执行并上传真实报告；全项目 live、云模型、Embedding、macOS 不在此模式验收声明中。详细归因与安全 fixture 约束见 [ADR 0009](adr/0009-real-linux-sandbox-eval.md)。
 

@@ -96,7 +96,22 @@ cases:
 
 四条合计：外泄加 3（001、002、004），副作用加 8（4 × 2）。
 
-`--platform all` 的计分指纹变为 `ef3431dd8f2099b81bc29896f99e91e82c0fe1741b45cdb124b8eb2fbd881f1f`。补上 `W2-SQL-004` 之前，三条用例时的指纹是 `0a130ea77bf68437c25d676ce07093c9b80dfe09dbf511d5fea12a707415779f`。
+`--platform all` 的计分指纹在 #34 变为 `ef3431dd8f2099b81bc29896f99e91e82c0fe1741b45cdb124b8eb2fbd881f1f`。补上 `W2-SQL-004` 之前，三条用例时的指纹是 `0a130ea77bf68437c25d676ce07093c9b80dfe09dbf511d5fea12a707415779f`。
+
+### #81 确认评测走 Core
+
+`confirmation` 不再用 `input.mock` 自评。`make eval` 按 `approver_action` 和 `contracts/approver-script.json` 驱动脚本化 Approver，观测来自 Policy、确认状态机、Agent loop 和重启恢复。默认仍是 mock 模式：模型是脚本，工具是进程内计数，不访问网络，不需要 GUI、本机 Ollama 或云模型。
+
+`AP-011` 标成跳过。W6-01 的步骤间 done 断点续跑没有实现，报告写明 `W6-01`，不把 `resumed_from_done` 当成已通过。因此 Linux / darwin 实际评分从 217 变为 216，跳过 1，平台过滤仍是 20。`--platform all` 从 237 变为 236，跳过 1。加载数仍是 237。外泄样本 244、副作用样本 68、沙箱样本 104 保持不变：`AP-001` 补上的 `tool_execution_count` 与跳过 `AP-011` 少掉的 `approval_bypass_count` 在副作用门槛上抵消。
+
+与已合入行为对齐、并写进用例的合同修订：
+
+- `AP-009` 的 `run_state` 改为 `completed`。Policy 拒绝网络是工具错误，模型循环继续，不把运行标成失败，也不建确认单、不授予网络、不执行。
+- `AP-001` 去掉审计 `approved`。已合入的批准路径不写这个事件。改为断言 `tool_execution_count:1`。
+- `AP-004` 和 `AP-013` 的审计事件改为已合入的 `duplicate_decision`。
+- `AP-006` 的错误码改为已合入的 `hash_mismatch`。
+
+`--platform all` 的计分指纹变为 `ff6109720bd66b8be1edd789b0d6f82ab3a734ddd00970f5368b3b6ad4de245c`。Linux 选择的指纹变为 `ff5f0ed902280e8ad013987ed16a9d497ccf317cb74158c7c2a4900b49393440`。
 
 ### eval-v1.1
 

@@ -40,7 +40,9 @@
 // 「未验证」，Passed 为 false，进程非零退出。没有加载门槛文件、且没有用例时，
 // 仍写出空报告并以 0 退出。有用例但门槛文件不存在时启动报错，不写报告。
 //
-// mock 模式不访问网络，也不把计数缺省成 0。没有 input.mock 的用例状态是 skipped，
+// mock 模式不访问网络，也不把计数缺省成 0。confirmation 类别不读 input.mock，
+// 按 approver_action / approver-script.json 驱动脚本化 Approver，观测来自 Core。
+// 没有 input.mock 的非 confirmation 用例，以及明确标记未实现的确认用例，状态是 skipped，
 // 不进通过率分子和分母。平台或类别不符的用例状态是 filtered，同样不进通过率。
 // 这两类的原因写在 not_scored_reasons，不写入 failures。input.mock 存在但缺规则要的键时，
 // 状态是 missing_observation，计入非零退出。确定性规则失败或出现缺观测时不调用裁判。mock 裁判默认不通过，

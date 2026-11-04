@@ -18,7 +18,7 @@ const (
 	statusSkipped  = "skipped"
 	statusFiltered = "filtered"
 
-	skeletonNote = "骨架阶段记录约定的环境实现；mock 模式只按 input.mock 里实际出现的观测计分，缺观测和零样本都不算通过，不访问网络。"
+	skeletonNote = "mock 模式不访问网络。confirmation 由脚本化 Approver 走 Core 判定，忽略 input.mock；其余类别仍只按 input.mock 里实际出现的观测计分。缺观测和零样本都不算通过。"
 )
 
 // Report 是一次评测的 Markdown 和 JSON 共用内容。
@@ -38,7 +38,18 @@ type Report struct {
 	Metrics          []Metric          `json:"metrics"`
 	Sandbox          []SandboxPlatform `json:"sandbox"`
 	Cases            []CaseResult      `json:"cases"`
+	Categories       []CategorySummary `json:"categories,omitempty"`
 	SandboxReal      *SandboxRealInfo  `json:"sandbox_real,omitempty"`
+}
+
+// CategorySummary 是一个类别在本次报告里的计数。跳过和过滤不计入通过率。
+type CategorySummary struct {
+	Category           string `json:"category"`
+	Passed             int    `json:"passed"`
+	Failed             int    `json:"failed"`
+	MissingObservation int    `json:"missing_observation"`
+	Skipped            int    `json:"skipped"`
+	Filtered           int    `json:"filtered"`
 }
 
 // Environment 是报告里的运行环境。评测 CLI 不链接 mygo，版本从 go.mod 读取。
@@ -71,7 +82,7 @@ type CatalogInfo struct {
 
 // Summary 是用例计数和硬门槛总结果。
 // Scored 是实际评分数，等于 Passed + Failed + MissingObservation，也是通过率分母。
-// Skipped（没有 input.mock）和 Filtered（平台或类别不符）不计入。
+// Skipped（没有 input.mock，或确认用例明确未实现）和 Filtered（平台或类别不符）不计入。
 type Summary struct {
 	Cases              int      `json:"cases"`
 	Scored             int      `json:"scored"`
@@ -407,12 +418,22 @@ func renderMarkdown(report Report) string {
 	if report.Mode == ModeSandboxReal {
 		fmt.Fprintf(&b, "- 跳过: %d（真实模式不允许跳过）\n", report.Summary.Skipped)
 	} else {
-		fmt.Fprintf(&b, "- 跳过: %d（没有 input.mock，不计入通过率）\n", report.Summary.Skipped)
+		fmt.Fprintf(&b, "- 跳过: %d（未实现或没有 input.mock，不计入通过率）\n", report.Summary.Skipped)
 	}
 	fmt.Fprintf(&b, "- 平台过滤: %d（本次平台 %s，不计入通过率）\n", report.Summary.Filtered, report.SelectedPlatform)
 	fmt.Fprintf(&b, "- 通过率: %s\n", rateText(report.Summary))
 	fmt.Fprintf(&b, "- 摘要指纹: %s\n", report.Digest)
 	fmt.Fprintf(&b, "- 说明: %s\n\n", report.Note)
+
+	b.WriteString("## 类别\n\n")
+	b.WriteString("| 类别 | 通过 | 失败 | 缺观测 | 跳过 | 过滤 |\n| --- | --- | --- | --- | --- | --- |\n")
+	if len(report.Categories) == 0 {
+		b.WriteString("| 无 | 0 | 0 | 0 | 0 | 0 |\n")
+	}
+	for _, row := range report.Categories {
+		fmt.Fprintf(&b, "| %s | %d | %d | %d | %d | %d |\n", row.Category, row.Passed, row.Failed, row.MissingObservation, row.Skipped, row.Filtered)
+	}
+	b.WriteString("\n")
 
 	b.WriteString("## 环境\n\n")
 	b.WriteString("| 项 | 值 |\n| --- | --- |\n")
@@ -494,6 +515,39 @@ func renderMarkdown(report Report) string {
 		renderSandboxRealEvidence(&b, report)
 	}
 	return b.String()
+}
+
+func categorySummaries(results []CaseResult) []CategorySummary {
+	index := map[string]int{}
+	var out []CategorySummary
+	for _, item := range results {
+		name := item.Category
+		if name == "" {
+			name = "(empty)"
+		}
+		pos, ok := index[name]
+		if !ok {
+			pos = len(out)
+			index[name] = pos
+			out = append(out, CategorySummary{Category: name})
+		}
+		switch item.Status {
+		case statusPassed:
+			out[pos].Passed++
+		case statusFailed:
+			out[pos].Failed++
+		case statusMissing:
+			out[pos].MissingObservation++
+		case statusSkipped:
+			out[pos].Skipped++
+		case statusFiltered:
+			out[pos].Filtered++
+		}
+	}
+	if out == nil {
+		out = []CategorySummary{}
+	}
+	return out
 }
 
 func writeUnscored(b *strings.Builder, report Report, status, title string) {

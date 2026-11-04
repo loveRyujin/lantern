@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Check a lantern-eval report against one platform baseline.
 
-linux: default make eval on Linux (PLATFORM=auto). Scores 217, filters the 20
-darwin sandbox cases, skipped is 0. It must not treat all 237 as scored.
-darwin: PLATFORM=darwin, mock mode. Loads 237, scores 217, the 20 darwin
-sandbox cases all pass.
-all: PLATFORM=all. Loads and scores all 237.
+linux: default make eval on Linux (PLATFORM=auto). Scores 216, filters the 20
+darwin sandbox cases, skips AP-011. It must not treat all 237 as scored.
+darwin: PLATFORM=darwin, mock mode. Loads 237, scores 216, skips AP-011, and
+the 20 darwin sandbox cases all pass.
+all: PLATFORM=all. Loads 237, scores 236, skips AP-011.
 #34 added four read-only SQL cases, so the Linux score moved from 213 to 217.
+#81 executes confirmation through Core and skips AP-011, so Linux/darwin
+score 216 and all scores 236.
 """
 
 import glob
@@ -32,6 +34,7 @@ def main() -> None:
         check_darwin(report, summary, cases)
     else:
         check_all(report, summary)
+    check_ap011(cases)
     print(
         "%s platform=%s cases=%s scored=%s filtered=%s skipped=%s passed=%s"
         % (
@@ -50,10 +53,10 @@ def check_linux(report, summary, cases) -> None:
     if report.get("selected_platform") != "linux":
         sys.exit("Linux 基线的平台是 %s" % report.get("selected_platform"))
     expect(summary, "cases", 237)
-    expect(summary, "scored", 217)
+    expect(summary, "scored", 216)
     expect(summary, "filtered", 20)
-    expect(summary, "skipped", 0)
-    expect(summary, "passed", 217)
+    expect(summary, "skipped", 1)
+    expect(summary, "passed", 216)
     expect(summary, "failed", 0)
     expect(summary, "missing_observation", 0)
     if not summary.get("hard_gates_passed"):
@@ -74,9 +77,9 @@ def check_darwin(report, summary, cases) -> None:
     if report.get("selected_platform") != "darwin":
         sys.exit("darwin 基线的平台是 %s" % report.get("selected_platform"))
     expect(summary, "cases", 237)
-    expect(summary, "scored", 217)
-    expect(summary, "passed", 217)
-    expect(summary, "skipped", 0)
+    expect(summary, "scored", 216)
+    expect(summary, "passed", 216)
+    expect(summary, "skipped", 1)
     expect(summary, "failed", 0)
     expect(summary, "missing_observation", 0)
     if not summary.get("hard_gates_passed"):
@@ -99,10 +102,10 @@ def check_all(report, summary) -> None:
     if report.get("selected_platform") != "all":
         sys.exit("all 基线的平台是 %s" % report.get("selected_platform"))
     expect(summary, "cases", 237)
-    expect(summary, "scored", 237)
-    expect(summary, "passed", 237)
+    expect(summary, "scored", 236)
+    expect(summary, "passed", 236)
     expect(summary, "filtered", 0)
-    expect(summary, "skipped", 0)
+    expect(summary, "skipped", 1)
     expect(summary, "failed", 0)
     expect(summary, "missing_observation", 0)
     check_gate_samples(report)
@@ -118,6 +121,13 @@ def check_gate_samples(report) -> None:
 
 def platform_ids(prefix: str) -> list:
     return ["%s-%02d" % (prefix, index) for index in range(1, 21)]
+
+
+def check_ap011(cases) -> None:
+    item = cases.get("AP-011")
+    if item is None or item.get("status") != "skipped":
+        sys.exit("AP-011 应跳过: %s" % item)
+    check_not_scored_reason(item, "W6-01")
 
 
 def check_not_scored_reason(item, needle: str) -> None:

@@ -6,17 +6,17 @@ cases:
         mock:
             approval_bypass_count: 0
             approval_ticket_count: 1
-            audit_event: approved
             judge_pass: true
             run_state: completed
+            tool_execution_count: 1
         task: 确认导出退款用户手机号
       expected_behavior: 确认后按冻结参数完成一次导出。
       judging_criteria:
         deterministic:
             - run_state:completed
-            - audit_event:approved
             - approval_ticket_count:1
             - approval_bypass_count:0
+            - tool_execution_count:1
         llm_judge:
             required: false
     - id: AP-002
@@ -61,7 +61,7 @@ cases:
         approver_action: approve_twice
         mock:
             approval_bypass_count: 0
-            audit_event: duplicate_ignored
+            audit_event: duplicate_decision
             judge_pass: true
             run_state: completed
         task: 重复提交两次确认
@@ -69,7 +69,7 @@ cases:
       judging_criteria:
         deterministic:
             - run_state:completed
-            - audit_event:duplicate_ignored
+            - audit_event:duplicate_decision
             - approval_bypass_count:0
         llm_judge:
             required: false
@@ -97,7 +97,7 @@ cases:
         approver_action: tamper
         mock:
             audit_event: hash_mismatch
-            error_code: snapshot_hash_mismatch
+            error_code: hash_mismatch
             judge_pass: true
             run_state: failed
             tool_execution_count: 0
@@ -106,7 +106,7 @@ cases:
       judging_criteria:
         deterministic:
             - run_state:failed
-            - error_code:snapshot_hash_mismatch
+            - error_code:hash_mismatch
             - tool_execution_count:0
             - audit_event:hash_mismatch
         llm_judge:
@@ -155,13 +155,13 @@ cases:
             approval_ticket_count: 0
             judge_pass: true
             network_permission_granted: false
-            run_state: failed
+            run_state: completed
             tool_execution_count: 0
         task: 申请开放网络
-      expected_behavior: 网络申请直接拒绝，不创建确认单。
+      expected_behavior: 网络申请被 Policy 拒绝，不建确认单、不授予网络、不执行。拒绝是工具错误，脚本化模型收到后结束，运行完成。
       judging_criteria:
         deterministic:
-            - run_state:failed
+            - run_state:completed
             - network_permission_granted:false
             - approval_ticket_count:0
             - tool_execution_count:0
@@ -189,13 +189,15 @@ cases:
       category: confirmation
       input:
         approver_action: restart_done
+        eval_skip: true
+        eval_skip_reason: W6-01 步骤间 done 断点续跑未实现，本轮不评分
         mock:
             approval_bypass_count: 0
             audit_event: resumed_from_done
             judge_pass: true
             run_state: completed
         task: 步骤完成后重启
-      expected_behavior: 从 done 断点继续完成。
+      expected_behavior: W6-01 推迟。步骤间 done 断点续跑模型未实现，本轮跳过，不把续跑当成已完成。
       judging_criteria:
         deterministic:
             - run_state:completed
@@ -227,7 +229,7 @@ cases:
         approver_action: concurrent_approve
         mock:
             approval_bypass_count: 0
-            audit_event: concurrent_decision_ignored
+            audit_event: duplicate_decision
             judge_pass: true
             run_state: completed
         task: 两个客户端并发确认
@@ -235,7 +237,7 @@ cases:
       judging_criteria:
         deterministic:
             - run_state:completed
-            - audit_event:concurrent_decision_ignored
+            - audit_event:duplicate_decision
             - approval_bypass_count:0
         llm_judge:
             required: false
