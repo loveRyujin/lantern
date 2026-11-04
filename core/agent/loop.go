@@ -13,6 +13,7 @@ import (
 	"github.com/loveRyujin/lantern/core/events"
 	"github.com/loveRyujin/lantern/core/llm"
 	"github.com/loveRyujin/lantern/core/policy"
+	"github.com/loveRyujin/lantern/core/run"
 	"github.com/loveRyujin/lantern/core/tools"
 )
 
@@ -83,8 +84,25 @@ type Loop struct {
 	Log           RunLog
 	Audit         audit.Log
 	Status        StatusStore
-	Config        Config
-	now           func() time.Time
+	// Steps 非空时，工具执行前把 run_steps 落成 executing，返回后再落 done 或 error。
+	// 确认完成之前不会写 executing。nil 时不碰步骤表。
+	Steps  StepStore
+	Config Config
+	now    func() time.Time
+}
+
+// StepMark 是执行前要落库的步骤。Input 只进 run_steps，不进审计。
+type StepMark struct {
+	ID       string
+	RunID    string
+	ToolName string
+	Input    []byte
+}
+
+// StepStore 记录工具是否已经开始执行。重启恢复靠 executing 判断能不能重跑。
+type StepStore interface {
+	Begin(ctx context.Context, step StepMark) error
+	Finish(ctx context.Context, id, status string) error
 }
 
 type callItem struct {
@@ -485,7 +503,7 @@ func (l *Loop) confirm(ctx context.Context, in Input, resp llm.Response, item *c
 	}
 }
 
-func (l *Loop) execute(ctx context.Context, in Input, item *callItem, stepTimeout time.Duration) (tools.Result, time.Duration, error) {
+func (l *Loop) execute(ctx context.Context, in Input, item *callItem, stepTimeout time.Duration) (result tools.Result, total time.Duration, err error) {
 	prepared := item.prepared
 	attempts := prepared.Spec.MaxAttempts
 	if item.consumed || attempts < 1 {
@@ -511,43 +529,101 @@ func (l *Loop) execute(ctx context.Context, in Input, item *callItem, stepTimeou
 		StepID:      item.stepID,
 		ArgsHash:    prepared.Hash,
 	}
+	stepID := ""
+	tracked := false
+	if l.Steps != nil {
+		stepID = stepIdentity(item)
+		if stepID == "" {
+			err = plain("步骤标识为空")
+			return
+		}
+		err = l.Steps.Begin(ctx, StepMark{
+			ID:       stepID,
+			RunID:    in.RunID,
+			ToolName: prepared.Name,
+			Input:    append([]byte(nil), prepared.Args...),
+		})
+		if err != nil {
+			return
+		}
+		tracked = true
+	}
+	defer func() {
+		if !tracked {
+			return
+		}
+		status := run.StepDone
+		if err != nil {
+			status = run.StepError
+		}
+		ferr := l.Steps.Finish(context.WithoutCancel(ctx), stepID, status)
+		if ferr == nil {
+			return
+		}
+		if err != nil {
+			err = errors.Join(err, ferr)
+			return
+		}
+		err = ferr
+		result = tools.Result{}
+	}()
+
 	var last error
-	var total time.Duration
-	var result tools.Result
 	for i := 0; i < attempts; i++ {
 		if toolCtx.Err() != nil {
-			return tools.Result{}, total, timeoutAbandoned(ctx)
+			err = timeoutAbandoned(ctx)
+			return
 		}
 		start := l.clock()()
-		res, err, abandoned := runTool(toolCtx, prepared.Tool, call)
+		res, runErr, abandoned := runTool(toolCtx, prepared.Tool, call)
 		total += l.clock()().Sub(start)
 		if abandoned {
-			return tools.Result{}, total, timeoutAbandoned(ctx)
+			err = timeoutAbandoned(ctx)
+			return
 		}
-		result, last = res, err
+		result, last = res, runErr
 		if last == nil {
-			return result, total, nil
+			err = nil
+			return
 		}
 		if ctx.Err() != nil {
-			return tools.Result{}, total, ctx.Err()
+			err = ctx.Err()
+			return
 		}
 		if !retryableTool(last) || i == attempts-1 {
-			return tools.Result{}, total, last
+			err = last
+			return
 		}
 		if prepared.Spec.Backoff > 0 {
 			timer := time.NewTimer(prepared.Spec.Backoff)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return tools.Result{}, total, ctx.Err()
+				err = ctx.Err()
+				return
 			case <-toolCtx.Done():
 				timer.Stop()
-				return tools.Result{}, total, timeoutAbandoned(ctx)
+				err = timeoutAbandoned(ctx)
+				return
 			case <-timer.C:
 			}
 		}
 	}
-	return result, total, last
+	err = last
+	return
+}
+
+func stepIdentity(item *callItem) string {
+	if item == nil {
+		return ""
+	}
+	if item.stepID != "" {
+		return item.stepID
+	}
+	if item.call.ID != "" {
+		return item.call.ID
+	}
+	return item.prepared.ID
 }
 
 // timeoutAbandoned 区分总超时和「工具不理会 ctx」。

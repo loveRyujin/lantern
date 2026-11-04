@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/loveRyujin/lantern/core/run"
 	"github.com/loveRyujin/lantern/core/sqlx"
 	"modernc.org/sqlite"
 )
@@ -72,6 +73,11 @@ func openAll(ctx context.Context, id, root, dir string) (*Handle, error) {
 	h.Runs, err = openDB(ctx, filepath.Join(dir, fileRuns), runsMigrations, "migrations/runs", nil)
 	if err != nil {
 		return nil, fmt.Errorf("workspace: runs: %w", err)
+	}
+	// 打开工作区就是一次启动。未终结运行在这里按 FR-SM-5 归类，不执行工具。
+	if _, err = run.New(h.Runs).Recover(ctx); err != nil {
+		err = fmt.Errorf("workspace: recover runs: %w", err)
+		return nil, err
 	}
 	return h, nil
 }
