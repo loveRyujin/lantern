@@ -342,7 +342,12 @@ func (l *Loop) runPrepared(ctx context.Context, in Input, resp llm.Response, ite
 		return Outcome{}, false
 	}
 	if decision.Deny {
-		item.err = plain("策略拒绝执行 %s", p.Name)
+		// 拒绝不创建确认单。原因带回工具错误，调用方改过的 Args 副本不会执行。
+		msg := "策略拒绝执行 " + p.Name
+		if decision.Reason != "" {
+			msg += "：" + decision.Reason
+		}
+		item.err = plain("%s", msg)
 		return Outcome{}, false
 	}
 	if decision.NeedsConfirm {

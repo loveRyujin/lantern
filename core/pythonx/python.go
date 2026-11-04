@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/loveRyujin/lantern/core/analysisdata"
+	"github.com/loveRyujin/lantern/core/policy"
 	"github.com/loveRyujin/lantern/core/sandbox"
 	"github.com/loveRyujin/lantern/core/tools"
 )
@@ -36,8 +37,13 @@ type pythonTool struct{ session *Session }
 func (t pythonTool) Spec() tools.Spec { return tools.SpecRunPython }
 func (t pythonTool) Execute(ctx context.Context, call tools.Call) (tools.Result, error) {
 	var args struct {
-		Code      *string `json:"code"`
-		SQLCallID *string `json:"sql_call_id"`
+		Code             *string         `json:"code"`
+		SQLCallID        *string         `json:"sql_call_id"`
+		Limits           json.RawMessage `json:"limits"`
+		ExtraReadOnly    json.RawMessage `json:"extra_read_only"`
+		Network          json.RawMessage `json:"network"`
+		RequiresApproval json.RawMessage `json:"requires_approval"`
+		Approved         json.RawMessage `json:"approved"`
 	}
 	d := json.NewDecoder(bytes.NewReader(call.Args))
 	d.DisallowUnknownFields()
@@ -48,13 +54,24 @@ func (t pythonTool) Execute(ctx context.Context, call tools.Call) (tools.Result,
 	if d.Decode(&extra) != io.EOF || args.Code == nil || strings.TrimSpace(*args.Code) == "" || len(*args.Code) > 1048000 || !utf8.ValidString(*args.Code) || (args.SQLCallID != nil && !validID(*args.SQLCallID, 256)) {
 		return tools.Result{}, invalidArgs()
 	}
+	// 这些字段只为通过解码。是否放行由 Policy 决定，这里不把模型标记当成批准。
+	_ = []json.RawMessage{args.Limits, args.ExtraReadOnly, args.Network, args.RequiresApproval, args.Approved}
+	limits, mounts, err := allowedSandbox(ctx, call)
+	if err != nil {
+		return tools.Result{}, err
+	}
 	s := t.session
 	ctx, done, err := s.begin(ctx, call)
 	if err != nil {
 		return tools.Result{}, err
 	}
 	defer done()
-	spec := sandbox.Spec{Code: *args.Code, Runtime: sandbox.Runtime{Python: s.runtime.Python, PyRoot: s.runtime.Base.Stdlib, Venv: s.runtime.Venv}}
+	spec := sandbox.Spec{
+		Code:          *args.Code,
+		Runtime:       sandbox.Runtime{Python: s.runtime.Python, PyRoot: s.runtime.Base.Stdlib, Venv: s.runtime.Venv},
+		Limits:        limits,
+		ExtraReadOnly: mounts,
+	}
 	if args.SQLCallID != nil {
 		s.mu.Lock()
 		content, exists := s.sources[*args.SQLCallID]
@@ -96,6 +113,38 @@ func (t pythonTool) Execute(ctx context.Context, call tools.Call) (tools.Result,
 }
 func invalidArgs() error {
 	return &tools.Error{Code: tools.CodeArgumentsInvalid, Retryable: true, Message: "Python 参数不符合默认沙箱契约"}
+}
+
+// allowedSandbox 使用和 Agent 相同的 Policy。
+// 未确认的超权限、网络和无法识别的字段在进入沙箱前失败。
+// 已经带确认单号的 NeedsConfirm 才把资源和额外只读目录写进 Spec；网络永远不写。
+func allowedSandbox(ctx context.Context, call tools.Call) (sandbox.Limits, []string, error) {
+	if ctx == nil {
+		return sandbox.Limits{}, nil, nil
+	}
+	snapshot := append(json.RawMessage(nil), call.Args...)
+	decision, err := policy.Default().Decide(ctx, policy.Request{Tool: policy.ToolRunPython, Args: snapshot})
+	if err != nil {
+		if ctx.Err() != nil {
+			return sandbox.Limits{}, nil, bridge(ctx.Err())
+		}
+		return sandbox.Limits{}, nil, invalidArgs()
+	}
+	if decision.Deny || (decision.NeedsConfirm && strings.TrimSpace(call.ApprovalID) == "") {
+		return sandbox.Limits{}, nil, invalidArgs()
+	}
+	if !decision.NeedsConfirm {
+		return sandbox.Limits{}, nil, nil
+	}
+	grant, err := policy.ParseRunPython(snapshot)
+	if err != nil || grant.Network {
+		return sandbox.Limits{}, nil, invalidArgs()
+	}
+	cpu, memory, nproc, wall, err := grant.Limits()
+	if err != nil {
+		return sandbox.Limits{}, nil, invalidArgs()
+	}
+	return sandbox.Limits{CPU: cpu, Memory: memory, NProc: nproc, Wall: wall}, append([]string(nil), grant.ExtraReadOnly...), nil
 }
 
 func (s *Session) cleanOutput(value string) (string, bool) {

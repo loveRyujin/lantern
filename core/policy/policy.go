@@ -6,7 +6,8 @@ import (
 )
 
 // Request 是一次已经通过 Schema 的工具调用。
-// Args 是调用方给的副本，只供策略以后读取业务字段。就地修改不会影响执行。默认实现不读它。
+// Args 是调用方给的副本。策略可以读取它；就地修改不会影响执行。
+// Static 不读 Args。Gate 只在 run_python 上读取资源、额外只读目录和网络。
 type Request struct {
 	Tool string
 	Args json.RawMessage
@@ -33,12 +34,13 @@ type Static struct {
 	Confirm map[string]struct{}
 }
 
-// Default 要求 export_data 和 write_action 确认。
-func Default() Static {
-	return Static{Confirm: map[string]struct{}{
+// Default 要求 export_data 和 write_action 按工具名确认，
+// 并对 run_python 按参数判定沙箱超权限。
+func Default() Gate {
+	return Gate{Names: Static{Confirm: map[string]struct{}{
 		"export_data":  {},
 		"write_action": {},
-	}}
+	}}}
 }
 
 // Decide 实现 Policy。Args 故意不参与判断。

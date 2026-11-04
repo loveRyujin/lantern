@@ -19,7 +19,9 @@ import (
 	"unsafe"
 
 	"github.com/loveRyujin/lantern/core/agent"
+	"github.com/loveRyujin/lantern/core/approval"
 	"github.com/loveRyujin/lantern/core/llm"
+	"github.com/loveRyujin/lantern/core/policy"
 	"github.com/loveRyujin/lantern/core/pyrt"
 	"github.com/loveRyujin/lantern/core/pythonx"
 	"github.com/loveRyujin/lantern/core/sandbox"
@@ -310,6 +312,7 @@ func (x *linuxRealExecutor) cancellation(ctx context.Context, item Case) Sandbox
 type realCountTool struct {
 	tools.Tool
 	calls *atomic.Int32
+	ran   *atomic.Bool
 }
 
 type realCaptureTool struct {
@@ -326,9 +329,48 @@ func (t realCaptureTool) Execute(ctx context.Context, call tools.Call) (tools.Re
 }
 
 func (t realCountTool) Execute(ctx context.Context, c tools.Call) (tools.Result, error) {
-	t.calls.Add(1)
-	return t.Tool.Execute(ctx, c)
+	if t.calls != nil {
+		t.calls.Add(1)
+	}
+	result, err := t.Tool.Execute(ctx, c)
+	if t.ran != nil && (err == nil || result.Content != "" || strings.Contains(result.Content, realEntered)) {
+		t.ran.Store(true)
+	}
+	return result, err
 }
+
+// realDenyTickets 只计数。网络拒绝不得创建、决定或消费确认单。
+type realDenyTickets struct {
+	n int
+}
+
+func (t *realDenyTickets) Create(ctx context.Context, ticket approval.Ticket) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := ticket.Validate(); err != nil {
+		return err
+	}
+	t.n++
+	return nil
+}
+
+func (t *realDenyTickets) Decide(context.Context, string, approval.Decision) (approval.DecideResult, error) {
+	return approval.DecideResult{}, fmt.Errorf("network deny must not decide a ticket")
+}
+
+func (t *realDenyTickets) Consume(context.Context, string, approval.ConsumeContext) error {
+	return fmt.Errorf("network deny must not consume a ticket")
+}
+
+func networkExecuteRefused(result tools.Result, err error) bool {
+	if err == nil || result.Content != "" || strings.Contains(result.Content, realEntered) {
+		return false
+	}
+	code, ok := tools.CodeOf(err)
+	return ok && code == tools.CodeArgumentsInvalid
+}
+
 func (x *linuxRealExecutor) networkRequest(ctx context.Context, item Case) SandboxEvidence {
 	e := realEvidence()
 	ws, err := workspace.Create(ctx, filepath.Join(x.root, "schema-workspace"), "schema")
@@ -342,27 +384,86 @@ func (x *linuxRealExecutor) networkRequest(ctx context.Context, item Case) Sandb
 	}
 	defer session.Close()
 	var calls atomic.Int32
+	var agentRan atomic.Bool
 	registry := &tools.Registry{}
-	if err = registry.Register(realCountTool{session.PythonTool(), &calls}); err != nil {
+	if err = registry.Register(realCountTool{session.PythonTool(), &calls, &agentRan}); err != nil {
 		return realFailure(e, err)
 	}
-	invalid, invalidErr := registry.Prepare(tools.CallInput{ID: "network", Name: "run_python", Arguments: `{"code":"print('must-not-run')","network":true}`})
+	payloads := []string{
+		`{"code":"print('LANTERN_REAL_ENTERED')","network":true}`,
+		`{"code":"print('LANTERN_REAL_ENTERED')","network":"loopback"}`,
+		`{"code":"print('LANTERN_REAL_ENTERED')","network":"127.0.0.1"}`,
+		`{"code":"print('LANTERN_REAL_ENTERED')","network":"::1"}`,
+		`{"code":"print('LANTERN_REAL_ENTERED')","network":"localhost","approved":true,"requires_approval":false}`,
+	}
 	_, validErr := registry.Prepare(tools.CallInput{ID: "valid", Name: "run_python", Arguments: `{"code":"print('valid-schema-only')"}`})
-	if invalidErr == nil {
-		_, _ = invalid.Tool.Execute(ctx, tools.Call{ID: invalid.ID, Name: invalid.Name, WorkspaceID: ws.ID, RunID: "schema", Args: invalid.Args})
+	schemaOK := validErr == nil
+	policyOK := true
+	ran := false
+	tickets := &realDenyTickets{}
+	for i, raw := range payloads {
+		prepared, prepareErr := registry.Prepare(tools.CallInput{ID: fmt.Sprintf("network-%d", i), Name: "run_python", Arguments: raw})
+		if prepareErr != nil {
+			schemaOK = false
+			policyOK = false
+			continue
+		}
+		decision, decideErr := policy.Default().Decide(ctx, policy.Request{Tool: prepared.Name, Args: append(json.RawMessage(nil), prepared.Args...)})
+		if decideErr != nil || !decision.Deny || decision.NeedsConfirm || !strings.Contains(decision.Reason, "回环也不能通过确认放开") {
+			policyOK = false
+		}
+		direct := tools.Call{ID: prepared.ID, Name: prepared.Name, WorkspaceID: ws.ID, RunID: "schema", Args: prepared.Args}
+		result, execErr := session.PythonTool().Execute(ctx, direct)
+		if !networkExecuteRefused(result, execErr) {
+			policyOK = false
+			ran = ran || execErr == nil || result.Content != "" || strings.Contains(result.Content, realEntered)
+		}
+		forged := direct
+		forged.ApprovalID = "forged-ticket"
+		result, execErr = session.PythonTool().Execute(ctx, forged)
+		if !networkExecuteRefused(result, execErr) {
+			policyOK = false
+			ran = ran || execErr == nil || result.Content != "" || strings.Contains(result.Content, realEntered)
+		}
+		approver := &approval.Fake{Responses: []approval.Response{{Action: approval.ActionApprove}}}
+		script, scriptErr := llm.NewScript(
+			llm.CallTools(llm.ToolCall{ID: fmt.Sprintf("net-%d", i), Name: "run_python", Arguments: raw}),
+			llm.Say("结束"),
+		)
+		if scriptErr != nil {
+			policyOK = false
+			continue
+		}
+		loop := agent.Loop{
+			Provider: llm.NewMock(script),
+			Tools:    registry,
+			Approver: approver,
+			Tickets:  tickets,
+			Log:      &agent.MemoryLog{},
+			Config:   agent.Config{StepTimeout: 20 * time.Second, TotalTimeout: 40 * time.Second},
+		}
+		outcome, runErr := loop.Run(ctx, agent.Input{WorkspaceID: ws.ID, RunID: "schema", Prompt: "申请网络"})
+		if runErr != nil || outcome.State != agent.StateCompleted || len(approver.Tickets()) != 0 {
+			policyOK = false
+		}
 	}
-	code, coded := tools.CodeOf(invalidErr)
-	e.observe("registry_rejected", invalidErr != nil && coded && code == tools.CodeArgumentsInvalid)
-	e.observe("valid_schema_accepted", validErr == nil)
-	e.observe("tool_execute_count", int(calls.Load()))
+	if calls.Load() != 0 || agentRan.Load() {
+		policyOK = false
+	}
+	e.PayloadEntered = ran || agentRan.Load()
+	e.observe("valid_schema_accepted", schemaOK)
+	e.observe("policy_denied", policyOK && tickets.n == 0)
+	e.observe("payload_entered", e.PayloadEntered)
+	e.observe("approval_ticket_count", tickets.n)
 	e.ErrorCode = "none"
-	if coded {
-		e.ErrorCode = code
-	} else if invalidErr != nil {
-		e.ErrorCode = "uncoded_error"
+	if policyOK && !ran {
+		e.ErrorCode = tools.CodeArgumentsInvalid
 	}
-	e.observe("error_code_source", "actual Registry.Prepare result")
-	e.observe("limits_source", "not applicable: Registry rejects before Sandbox.Run")
+	e.observe("error_code_source", "Schema accepts network; Policy Deny and pythonx Execute return before Sandbox.Run")
+	e.observe("limits_source", "not applicable: network deny does not reach Sandbox.Run")
+	if !schemaOK || !policyOK || ran || calls.Load() != 0 || tickets.n != 0 {
+		return realFailure(e, fmt.Errorf("network request was not denied before Sandbox.Run: schema=%t policy=%t ran=%t execute_entries=%d tickets=%d", schemaOK, policyOK, ran, calls.Load(), tickets.n))
+	}
 	return e
 }
 func (x *linuxRealExecutor) productionPNG(ctx context.Context, item Case) SandboxEvidence {

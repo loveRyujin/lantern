@@ -69,14 +69,24 @@ func TestPythonQASchemaScopeAndUnavailable(t *testing.T) {
 	if err := reg.Register(s.PythonTool()); err != nil {
 		t.Fatal(err)
 	}
+	// 运行时、任意输入和旧的 limits.memory 仍在 Schema 被拒绝。
+	// 网络、额外只读目录和 cpu_ms/memory_bytes/wall_ms/nproc 要到达 Policy，不能在这里被吃掉。
 	for _, raw := range []string{
-		`{"code":"pass","network":true}`, `{"code":"pass","extra_read_only":["/"]}`,
 		`{"code":"pass","inputs":{"secret":"x"}}`, `{"code":"pass","runtime":{"python":"/usr/bin/python3"}}`,
 		`{"code":"pass","limits":{"memory":999999999}}`, `{"code":"pass","sql_call_id":null}`,
 		`{"code":"pass","sql_call_id":""}`, `{"code":null}`, `{"code":17}`,
 	} {
 		if _, err := reg.PrepareRaw("run_python", []byte(raw)); !tools.ArgumentFailure(err) {
 			t.Fatalf("permission/shape passed Schema: %s error=%v", raw, err)
+		}
+	}
+	for _, raw := range []string{
+		`{"code":"pass","network":true}`, `{"code":"pass","network":"loopback"}`,
+		`{"code":"pass","extra_read_only":["/"]}`, `{"code":"pass","limits":{"memory_bytes":536870912,"wall_ms":45000}}`,
+		`{"code":"pass","approved":true,"requires_approval":false}`,
+	} {
+		if _, err := reg.PrepareRaw("run_python", []byte(raw)); err != nil {
+			t.Fatalf("privilege request did not reach Policy: %s error=%v", raw, err)
 		}
 	}
 	if _, err := reg.PrepareRaw("run_python", []byte(`{"code":"print(1)","sql_call_id":"source"}`)); err != nil {

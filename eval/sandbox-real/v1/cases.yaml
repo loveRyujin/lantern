@@ -389,7 +389,7 @@ cases:
             required: false
       platform: linux
     - category: sandbox.real
-      expected_behavior: 网络权限仍直接拒绝。
+      expected_behavior: Schema 放行 network（含回环）到 Policy；Policy 与 Execute 拒绝且不 Run，不创建确认单。
       id: SB-LINUX-20
       input:
         fixture: network-request
@@ -399,9 +399,10 @@ cases:
         legacy_version: v1
       judging_criteria:
         deterministic:
-            - registry_rejected:true
             - valid_schema_accepted:true
-            - tool_execute_count:0
+            - policy_denied:true
+            - payload_entered:false
+            - approval_ticket_count:0
         llm_judge:
             required: false
       platform: linux

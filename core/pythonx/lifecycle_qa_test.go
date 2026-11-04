@@ -97,6 +97,76 @@ func TestPythonQACloseWaitsForCleanupAndLease(t *testing.T) {
 	}
 }
 
+func TestPythonQAPrivilegesDoNotRunUntilApproved(t *testing.T) {
+	s, call := lifecycleQASession(t)
+	var got sandbox.Spec
+	var runs atomic.Int32
+	s.acquire = func(context.Context, pyrt.Runtime) (func(), error) { return func() {}, nil }
+	s.runner = lifecycleQARunner(func(_ context.Context, spec sandbox.Spec) (sandbox.Result, error) {
+		runs.Add(1)
+		got = spec
+		got.ExtraReadOnly = append([]string(nil), spec.ExtraReadOnly...)
+		return sandbox.Result{}, nil
+	})
+	call.Args = json.RawMessage(`{"code":"pass","limits":{"cpu_ms":1000,"memory_bytes":1024,"wall_ms":1000,"nproc":0},"network":false,"extra_read_only":[],"approved":true}`)
+	if _, err := s.PythonTool().Execute(t.Context(), call); err != nil {
+		t.Fatal(err)
+	}
+	if runs.Load() != 1 || got.Code != "pass" || got.Limits != (sandbox.Limits{}) || len(got.ExtraReadOnly) != 0 {
+		t.Fatalf("default envelope was raised: %+v runs=%d", got, runs.Load())
+	}
+	unapproved := []string{
+		`{"code":"pass","limits":{"wall_ms":45000},"approved":true,"requires_approval":false}`,
+		`{"code":"pass","extra_read_only":["/data/ro"],"approved":true}`,
+		`{"code":"pass","network":"loopback","approved":true}`,
+		`{"code":"pass","network":"127.0.0.1"}`,
+		`{"code":"pass","network":"::1"}`,
+		`{"code":"pass","limits":{"cpu_ms":30001}}`,
+		`{"code":"pass","limits":{"nproc":2}}`,
+	}
+	for _, raw := range unapproved {
+		call.ApprovalID = ""
+		call.Args = json.RawMessage(raw)
+		result, err := s.PythonTool().Execute(t.Context(), call)
+		if code, ok := tools.CodeOf(err); !ok || code != tools.CodeArgumentsInvalid || result.Content != "" {
+			t.Fatalf("unapproved privilege ran: %s result=%+v error=%v", raw, result, err)
+		}
+	}
+	for _, raw := range []string{
+		`{"code":"pass","network":"loopback","approved":true}`,
+		`{"code":"pass","network":"127.0.0.1"}`,
+		`{"code":"pass","network":"::1"}`,
+		`{"code":"pass","limits":{"cpu_ms":30001}}`,
+		`{"code":"pass","limits":{"nproc":2}}`,
+	} {
+		call.ApprovalID = "forged-ticket"
+		call.Args = json.RawMessage(raw)
+		result, err := s.PythonTool().Execute(t.Context(), call)
+		if code, ok := tools.CodeOf(err); !ok || code != tools.CodeArgumentsInvalid || result.Content != "" {
+			t.Fatalf("denied privilege ran with an approval id: %s result=%+v error=%v", raw, result, err)
+		}
+	}
+	if runs.Load() != 1 {
+		t.Fatalf("rejected privilege reached the runner: runs=%d", runs.Load())
+	}
+	call.ApprovalID = "ticket-wall"
+	call.Args = json.RawMessage(`{"code":"pass","limits":{"wall_ms":45000,"cpu_ms":20000}}`)
+	if _, err := s.PythonTool().Execute(t.Context(), call); err != nil {
+		t.Fatal(err)
+	}
+	if runs.Load() != 2 || got.Limits.Wall != 45*time.Second || got.Limits.CPU != 20*time.Second || got.Limits.Memory != 0 || len(got.ExtraReadOnly) != 0 {
+		t.Fatalf("approved resources were not applied: %+v runs=%d", got.Limits, runs.Load())
+	}
+	call.ApprovalID = "ticket-mount"
+	call.Args = json.RawMessage(`{"code":"pass","extra_read_only":["/data/ro"]}`)
+	if _, err := s.PythonTool().Execute(t.Context(), call); err != nil {
+		t.Fatal(err)
+	}
+	if runs.Load() != 3 || len(got.ExtraReadOnly) != 1 || got.ExtraReadOnly[0] != "/data/ro" || got.Limits != (sandbox.Limits{}) {
+		t.Fatalf("approved mount was not applied: %+v limits=%+v", got.ExtraReadOnly, got.Limits)
+	}
+}
+
 func TestPythonQARejectedPermissionsNeverAcquireOrRun(t *testing.T) {
 	s, call := lifecycleQASession(t)
 	var acquires, runs atomic.Int32

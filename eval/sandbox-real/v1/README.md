@@ -10,6 +10,18 @@ CPU, parent application death, forced capability failure, production Session PNG
 and cancellation. Reports count the two groups independently; passing requires
 all 25, with no skipped, filtered or missing observations.
 
+SB-LINUX-20 (`network-request`) scores the production privilege contract, not
+the old Registry rejection. Schema/Registry Prepare accepts `network`, including
+loopback, and hands the arguments to Policy. Policy denies that request and
+does not create an approval ticket. The Execute path refuses before
+`Sandbox.Run`, so the payload does not enter. Scored observations are
+`valid_schema_accepted:true`, `policy_denied:true`, `payload_entered:false` and
+`approval_ticket_count:0`. `registry_rejected` and `tool_execute_count` are not
+part of this contract. `legacy_fingerprint` stays the frozen eval/v1 lineage and
+is not recomputed from these rules. The real source fingerprint hashes the
+effective manifest (`expected_behavior`, deterministic rules and fixture
+identity) and still excludes `input.mock`.
+
 Prepare explicitly (this step may download hash-locked dependencies):
 
 ```sh
