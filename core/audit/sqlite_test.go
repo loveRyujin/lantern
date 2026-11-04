@@ -36,4 +36,11 @@ func TestSQLiteAppendOnly(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("审计行数 %d", n)
 	}
+	var runID, detail string
+	if err := h.Runs.QueryRowContext(context.Background(), `SELECT run_id, detail FROM audit`).Scan(&runID, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if runID != "run-1" || !strings.Contains(detail, "run-1") {
+		t.Fatalf("run_id=%q detail=%q", runID, detail)
+	}
 }

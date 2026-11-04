@@ -39,8 +39,8 @@ func (s *SQLite) Append(ctx context.Context, rec Record) error {
 		detail = rec.RunID + ": " + detail
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO audit (at, actor, action, detail) VALUES (?, ?, ?, ?)`,
-		at.UTC().Format(time.RFC3339Nano), actor, rec.Action, detail,
+		`INSERT INTO audit (at, actor, action, detail, run_id) VALUES (?, ?, ?, ?, ?)`,
+		at.UTC().Format(time.RFC3339Nano), actor, rec.Action, detail, rec.RunID,
 	)
 	if err != nil {
 		return fmt.Errorf("audit: 追加失败: %w", err)

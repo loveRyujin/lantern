@@ -11,6 +11,8 @@
 //	    tmp/           沙箱临时目录
 //
 // [Create] 和 [Open] 只打开 kb、analytics、runs。sensitive.db 不在启动路径上。
+// 迁移完成之后会扫描未终结运行：挂起保持挂起，执行中和没有断点的残留标为失败。
+// 这一步不执行工具。已经挂起的确认要由调用方再调 run.Service.Resume。
 // 用户确认导出并落成 runs.approvals 里的一条已批准记录之后，调用
 // [Handle.ConfirmExport] 才会签发 [ExportGrant]。记录必须存在、决定为批准、
 // 动作是 export_data、工作区和导出对象与本次调用一致、未过期，且没有用过。
