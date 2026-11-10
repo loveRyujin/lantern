@@ -54,6 +54,20 @@ func (c dsnConnector) Connect(ctx context.Context) (driver.Conn, error) {
 func (c dsnConnector) Driver() driver.Driver { return c.drv }
 
 func openAll(ctx context.Context, id, root, dir string) (*Handle, error) {
+	h, err := openMigrated(ctx, id, root, dir)
+	if err != nil {
+		return nil, err
+	}
+	// 打开工作区就是一次启动。未终结运行在这里按 FR-SM-5 归类，不执行工具。
+	if _, err = run.New(h.Runs).Recover(ctx); err != nil {
+		_ = h.Close()
+		return nil, fmt.Errorf("workspace: recover runs: %w", err)
+	}
+	return h, nil
+}
+
+// openMigrated 只打开三个库并补迁移。不调用 Recover，因此不写 approval_restored。
+func openMigrated(ctx context.Context, id, root, dir string) (*Handle, error) {
 	h := &Handle{ID: id, Root: root, Dir: dir}
 	var err error
 	defer func() {
@@ -73,11 +87,6 @@ func openAll(ctx context.Context, id, root, dir string) (*Handle, error) {
 	h.Runs, err = openDB(ctx, filepath.Join(dir, fileRuns), runsMigrations, "migrations/runs", nil)
 	if err != nil {
 		return nil, fmt.Errorf("workspace: runs: %w", err)
-	}
-	// 打开工作区就是一次启动。未终结运行在这里按 FR-SM-5 归类，不执行工具。
-	if _, err = run.New(h.Runs).Recover(ctx); err != nil {
-		err = fmt.Errorf("workspace: recover runs: %w", err)
-		return nil, err
 	}
 	return h, nil
 }

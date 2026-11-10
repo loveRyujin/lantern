@@ -144,10 +144,21 @@ func Create(ctx context.Context, root, id string) (*Handle, error) {
 	return h, nil
 }
 
-// Open 打开已有工作区并补跑 kb、analytics、runs 上尚未应用的迁移。
+// Open 打开已有工作区并补跑 kb、analytics、runs 上尚未应用的迁移，然后按启动归类未终结运行。
 // 目录或这三个库的文件不存在时返回 [ErrNotFound]。sensitive.db 缺失不算缺失，也不会被打开。
 // 工作区目录若是指向 workspaces 之外的符号链接，返回 [ErrPathEscape]。
 func Open(ctx context.Context, root, id string) (*Handle, error) {
+	return openExisting(ctx, root, id, true)
+}
+
+// OpenPrepared 打开已有工作区并补跑迁移，不扫描未终结运行，也不写恢复审计。
+// 桌面在第一次读取待确认列表前用它把旧库补到当前 schema，读完就关闭。
+// 重开同一张确认单也用它。刷新列表仍只读查询，不要改走 [Open]。
+func OpenPrepared(ctx context.Context, root, id string) (*Handle, error) {
+	return openExisting(ctx, root, id, false)
+}
+
+func openExisting(ctx context.Context, root, id string, recover bool) (*Handle, error) {
 	absRoot, dir, err := resolve(root, id)
 	if err != nil {
 		return nil, err
@@ -178,7 +189,10 @@ func Open(ctx context.Context, root, id string) (*Handle, error) {
 			return nil, fmt.Errorf("workspace: open %s: %w", sub, err)
 		}
 	}
-	return openAll(ctx, id, absRoot, dir)
+	if recover {
+		return openAll(ctx, id, absRoot, dir)
+	}
+	return openMigrated(ctx, id, absRoot, dir)
 }
 
 // Close 关闭启动时打开的三个库，以及还没关掉的 sensitive 连接，并作废尚未使用的导出凭证。

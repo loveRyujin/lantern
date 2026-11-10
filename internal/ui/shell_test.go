@@ -2,15 +2,21 @@ package ui
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	mygoui "github.com/egoist/mygo/ui"
+	"github.com/loveRyujin/lantern/core/approval"
 	"github.com/loveRyujin/lantern/core/events"
 	"github.com/loveRyujin/lantern/core/workspace"
 	"github.com/loveRyujin/lantern/internal/ui/session"
+	_ "modernc.org/sqlite"
 )
 
 func TestSidebarSwitchesWorkspace(t *testing.T) {
@@ -312,6 +318,322 @@ func TestDialogShowsFrozenTicketAndReopens(t *testing.T) {
 	if err != nil || len(left) != 0 {
 		t.Fatalf("拒绝后仍待确认 %+v err=%v", left, err)
 	}
+}
+
+func TestOldSchemaStartsListsAndReopensSameTicket(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	const (
+		ticketID = "ap-legacy"
+		runID    = "run-legacy"
+		ws       = "星禾"
+		other    = "云杉"
+	)
+	params := []byte(`{"object":"旧库导出"}`)
+	sum, err := approval.ParamsHash(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedOldWorkspace(t, root, ws, &legacyTicket{
+		ID: ticketID, RunID: runID, StepID: "step-legacy",
+		Params: params, Hash: sum, Action: "export_data",
+	})
+	seedOldWorkspace(t, root, other, nil)
+	if riskColumn(t, root, ws) {
+		t.Fatal("旧库在启动前就有 risk 列")
+	}
+	if n := migrationCount(t, root, ws); n != 4 {
+		t.Fatalf("旧库迁移数=%d", n)
+	}
+
+	waiter := session.NewWaiter()
+	runner := session.NewDemoRunner(root, waiter)
+	s, err := newShell(ctx, Options{Root: root, Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := runner.Tool.(*session.CountTool)
+	if !ok {
+		t.Fatal("演示工具不是计数器")
+	}
+	if !riskColumn(t, root, ws) || migrationCount(t, root, ws) != 5 {
+		t.Fatalf("启动没有补上 risk 迁移 risk=%v n=%d", riskColumn(t, root, ws), migrationCount(t, root, ws))
+	}
+	if !s.state.Switch(ws) {
+		t.Fatal("没有星禾")
+	}
+	s.reloadList()
+	s.reloadList()
+	got := shellList(s)
+	if shellNotice(s) != "" || len(got) != 1 || got[0].ID != ticketID || got[0].RunID != runID || got[0].Risk != "" || string(got[0].Params) != string(params) {
+		t.Fatalf("list=%+v notice=%s", got, shellNotice(s))
+	}
+	if session.RiskLine(got[0].Risk) != session.RiskUnfrozen {
+		t.Fatalf("risk line=%s", session.RiskLine(got[0].Risk))
+	}
+	if restoredAudits(t, root, ws) != 0 || restoredAudits(t, root, other) != 0 {
+		t.Fatal("首次列出写了 approval_restored")
+	}
+
+	again, err := newShell(ctx, Options{Root: root, Runner: session.NewDemoRunner(root, session.NewWaiter())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.state.Switch(ws) {
+		t.Fatal("第二次启动没有星禾")
+	}
+	again.reloadList()
+	second := shellList(again)
+	if len(second) != 1 || second[0].ID != ticketID || restoredAudits(t, root, ws) != 0 {
+		t.Fatalf("再次打开 list=%+v audits=%d", second, restoredAudits(t, root, ws))
+	}
+	if n := approvalCount(t, root, ws); n != 1 {
+		t.Fatalf("再次打开后票据数=%d", n)
+	}
+
+	if !s.state.Switch(other) {
+		t.Fatal("没有云杉")
+	}
+	s.reloadList()
+	if otherList := shellList(s); len(otherList) != 0 || shellNotice(s) != "" {
+		t.Fatalf("云杉看见了星禾的票据 %+v notice=%s", otherList, shellNotice(s))
+	}
+	s.reopen(got[0])
+	if tool.N() != 0 || waiter.Busy(runID) {
+		t.Fatal("在云杉重开了星禾的确认单")
+	}
+	if !s.state.Switch(ws) {
+		t.Fatal("切不回星禾")
+	}
+	s.reloadList()
+
+	tt := tester(s)
+	tt.Frame()
+	if !tt.HasText("重开 " + ticketID) {
+		t.Fatalf("列表没有原确认单：%q", tt.Texts())
+	}
+	s.reopen(got[0])
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		tt.Frame()
+		s.mu.Lock()
+		shown := s.asking && s.dialog != nil && s.dialog.ID == ticketID && s.dialog.Risk == ""
+		s.mu.Unlock()
+		if shown && tt.HasText(session.RiskUnfrozen) && tt.HasText("旧库导出") && tool.N() == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("重开没有展示原票据 phase=%s n=%d texts=%q", s.state.Phase(), tool.N(), tt.Texts())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := waiter.Deliver(ticketID, approval.Decision{Action: approval.ActionApprove}); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		tt.Frame()
+		if tool.N() == 1 && shellNotice(s) == "已按冻结参数执行一次。没有继续问模型。" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("批准后 phase=%s n=%d notice=%s", s.state.Phase(), tool.N(), shellNotice(s))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if tool.N() != 1 || approvalCount(t, root, ws) != 1 || approvalCount(t, root, other) != 0 {
+		t.Fatalf("n=%d 星禾票据=%d 云杉票据=%d", tool.N(), approvalCount(t, root, ws), approvalCount(t, root, other))
+	}
+	if id, risk := approvalRisk(t, root, ws); id != ticketID || risk != "" {
+		t.Fatalf("票据=%s risk=%q", id, risk)
+	}
+	if restoredAudits(t, root, ws) != 0 || restoredAudits(t, root, other) != 0 {
+		t.Fatal("重开或刷新追加了 approval_restored")
+	}
+	s.reloadList()
+	if left := shellList(s); len(left) != 0 || restoredAudits(t, root, ws) != 0 {
+		t.Fatalf("完成后仍待确认 %+v audits=%d", left, restoredAudits(t, root, ws))
+	}
+}
+
+type legacyTicket struct {
+	ID, RunID, StepID, Hash, Action string
+	Params                          []byte
+}
+
+func seedOldWorkspace(t *testing.T, root, id string, ticket *legacyTicket) {
+	t.Helper()
+	dir := filepath.Join(root, "workspaces", id)
+	for _, sub := range []string{"", "exports", "tmp"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"kb.db", "analytics.db"} {
+		touchSQLite(t, filepath.Join(dir, name))
+	}
+	db := touchSQLite(t, filepath.Join(dir, "runs.db"))
+	applyRepoMigrations(t, db, "runs", []string{
+		"001_init.sql", "002_export_approval.sql", "003_approval_state.sql", "004_audit_run_id.sql",
+	})
+	if ticket == nil {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := db.ExecContext(t.Context(), `
+		INSERT INTO runs (id, state, version, context, created_at, updated_at)
+		VALUES (?, 'awaiting_approval', 0, '', ?, ?)`, ticket.RunID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), `
+		INSERT INTO approvals (
+			id, run_id, step_id, params_hash, params_json, decision, created_at,
+			workspace_id, action, export_object, expires_at, state, version
+		) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, '', ?, 'pending', 0)`,
+		ticket.ID, ticket.RunID, ticket.StepID, ticket.Hash, string(ticket.Params),
+		now, id, ticket.Action, exp); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func touchSQLite(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.PingContext(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func applyRepoMigrations(t *testing.T, db *sql.DB, kind string, names []string) {
+	t.Helper()
+	if _, err := db.ExecContext(t.Context(), `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			applied_at TEXT NOT NULL
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join("..", "..", "core", "workspace", "migrations", kind)
+	for _, name := range names {
+		body, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		version := migrationPrefix(t, name)
+		tx, err := db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), string(body)); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(),
+			`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`,
+			version, name, "2026-01-01T00:00:00Z"); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func migrationPrefix(t *testing.T, name string) int {
+	t.Helper()
+	i := 0
+	for i < len(name) && name[i] >= '0' && name[i] <= '9' {
+		i++
+	}
+	n, err := strconv.Atoi(name[:i])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func riskColumn(t *testing.T, root, id string) bool {
+	t.Helper()
+	db := openRunsRO(t, root, id)
+	defer db.Close()
+	var n int
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name = 'risk'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n == 1
+}
+
+func migrationCount(t *testing.T, root, id string) int {
+	t.Helper()
+	db := openRunsRO(t, root, id)
+	defer db.Close()
+	var n int
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func restoredAudits(t *testing.T, root, id string) int {
+	t.Helper()
+	db := openRunsRO(t, root, id)
+	defer db.Close()
+	var n int
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM audit WHERE action = 'approval_restored'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func approvalCount(t *testing.T, root, id string) int {
+	t.Helper()
+	db := openRunsRO(t, root, id)
+	defer db.Close()
+	var n int
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM approvals`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func approvalRisk(t *testing.T, root, id string) (string, string) {
+	t.Helper()
+	db := openRunsRO(t, root, id)
+	defer db.Close()
+	var ticketID, risk string
+	if err := db.QueryRowContext(t.Context(), `SELECT id, risk FROM approvals`).Scan(&ticketID, &risk); err != nil {
+		t.Fatal(err)
+	}
+	return ticketID, risk
+}
+
+func openRunsRO(t *testing.T, root, id string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(root, "workspaces", id, "runs.db")+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func shellList(s *shell) []approval.Ticket {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]approval.Ticket(nil), s.list...)
+}
+
+func shellNotice(s *shell) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.notice
 }
 
 func drainUIEvents(s *shell, evc <-chan events.Event) {

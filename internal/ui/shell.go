@@ -141,8 +141,29 @@ func newShell(ctx context.Context, opts Options) (*shell, error) {
 		s.waiter = lr.Waiter
 		lr.Waiter.SetOnShow(s.showTicket)
 	}
+	if err := s.prepareWorkspaces(); err != nil {
+		return nil, err
+	}
 	s.reloadList()
 	return s, nil
+}
+
+// prepareWorkspaces 在第一次读取待确认列表前，把已有工作区补到当前 schema。
+// 这里不调用 workspace.Open，因此不会跑 Recover，也不会追加 approval_restored。
+func (s *shell) prepareWorkspaces() error {
+	if strings.TrimSpace(s.root) == "" || s.state == nil {
+		return nil
+	}
+	for _, ws := range s.state.Workspaces {
+		h, err := workspace.OpenPrepared(s.ctx, s.root, ws.ID)
+		if err != nil {
+			return err
+		}
+		if err := h.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func loadWorkspaces(ctx context.Context, root string) ([]session.Workspace, error) {
@@ -584,6 +605,8 @@ func (s *shell) showTicket(tk approval.Ticket) {
 	_ = s.deliver(apply)
 }
 
+// reloadList 只读当前工作区的有效待确认单。
+// 不打开工作区，不跑 Recover，也不为了刷新追加恢复审计。
 func (s *shell) reloadList() {
 	if strings.TrimSpace(s.root) == "" || s.state == nil {
 		return
@@ -613,7 +636,7 @@ func (s *shell) reopen(tk approval.Ticket) {
 	}
 	tool := lr.Executable()
 	go func() {
-		h, err := workspace.Open(s.ctx, s.root, tk.WorkspaceID)
+		h, err := workspace.OpenPrepared(s.ctx, s.root, tk.WorkspaceID)
 		if err != nil {
 			s.setNotice(err.Error())
 			return
