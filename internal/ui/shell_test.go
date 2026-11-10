@@ -320,6 +320,208 @@ func TestDialogShowsFrozenTicketAndReopens(t *testing.T) {
 	}
 }
 
+func TestEnterDefersSameTicketAndClickApprovesOnce(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	h, err := workspace.Create(ctx, root, "星禾")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waiter := session.NewWaiter()
+	runner := session.NewDemoRunner(root, waiter)
+	s, err := newShell(ctx, Options{
+		Root:       root,
+		Workspaces: []session.Workspace{{ID: "星禾"}},
+		Runner:     runner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := runner.Tool.(*session.CountTool)
+	if !ok {
+		t.Fatal("演示工具不是计数器")
+	}
+	tt := tester(s)
+	askState, ticketID := askUntilDialog(t, tt, s, runner, "星禾", "导出客户")
+	if tool.N() != 0 {
+		t.Fatalf("弹窗出现时已经执行 %d 次", tool.N())
+	}
+	if !tt.Focused("暂缓") || tt.Focused("批准") {
+		t.Fatal("Enter 的默认焦点不在暂缓上")
+	}
+	before := readApproval(t, root, "星禾", ticketID)
+	tt.Key(0, mygoui.KeyEnter)
+	tt.Frame()
+	waitAskDone(t, tt, s, askState.RunID, session.StatusAwaiting)
+	s.reloadList()
+	tt.Frame()
+	afterEnter := readApproval(t, root, "星禾", ticketID)
+	if tool.N() != 0 || afterEnter != before || s.state.Phase() != "等待确认" {
+		t.Fatalf("Enter 后 n=%d phase=%s before=%+v after=%+v", tool.N(), s.state.Phase(), before, afterEnter)
+	}
+	if !tt.HasText("重开 " + ticketID) {
+		t.Fatalf("Enter 后原确认单不在列表：%q", tt.Texts())
+	}
+
+	reopenTicket(t, tt, s, ticketID)
+	if !tt.Focused("暂缓") {
+		t.Fatal("重开后默认焦点不在暂缓")
+	}
+	tt.Key(0, mygoui.KeyEscape)
+	tt.Frame()
+	waitNotice(t, tt, s, "仍在等待确认。")
+	afterEscape := readApproval(t, root, "星禾", ticketID)
+	if tool.N() != 0 || afterEscape != before {
+		t.Fatalf("Escape 后 n=%d before=%+v after=%+v", tool.N(), before, afterEscape)
+	}
+
+	reopenTicket(t, tt, s, ticketID)
+	if err := tt.Click("拒绝"); err != nil {
+		t.Fatal(err)
+	}
+	waitNotice(t, tt, s, "已拒绝，工具未执行。")
+	if tool.N() != 0 || s.state.Phase() != "已拒绝" {
+		t.Fatalf("拒绝后 n=%d phase=%s", tool.N(), s.state.Phase())
+	}
+	// 拒绝已经消费这张票。再开一问，显式点击批准只能执行一次。
+	askState, ticketID = askUntilDialog(t, tt, s, runner, "星禾", "再导出")
+	if tool.N() != 0 || tt.Focused("批准") || !tt.Focused("暂缓") {
+		t.Fatalf("第二张弹窗 n=%d focus暂缓=%v focus批准=%v", tool.N(), tt.Focused("暂缓"), tt.Focused("批准"))
+	}
+	if err := tt.Click("批准"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for tool.N() != 1 {
+		tt.Frame()
+		if time.Now().After(deadline) {
+			t.Fatalf("点击批准后 n=%d phase=%s notice=%s", tool.N(), s.state.Phase(), shellNotice(s))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if tool.N() != 1 {
+		t.Fatalf("执行了 %d 次", tool.N())
+	}
+	if n := countWorkspaceApprovals(t, root, "星禾"); n != 2 {
+		t.Fatalf("确认单数量=%d", n)
+	}
+}
+
+func askUntilDialog(t *testing.T, tt *mygoui.Tester, s *shell, runner *session.LoopRunner, ws, prompt string) (session.Ask, string) {
+	t.Helper()
+	askState, err := s.state.Begin(prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := events.NewStream(16)
+	go func() {
+		for range stream.Events() {
+		}
+	}()
+	go func() {
+		result, err := runner.Ask(s.ctx, session.Ask{
+			RunID: askState.RunID, WorkspaceID: ws, Prompt: prompt, Events: stream,
+		})
+		stream.Close()
+		s.onUI(func() {
+			s.state.FinishResult(askState.RunID, err, result.RunState)
+			s.reloadList()
+		})
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	var ticketID string
+	for {
+		tt.Frame()
+		s.mu.Lock()
+		if s.asking && s.dialog != nil && s.dialog.RunID == askState.RunID {
+			ticketID = s.dialog.ID
+		}
+		s.mu.Unlock()
+		if ticketID != "" && tt.HasText("将执行 export_data") && tt.HasText("**不要执行**") && tt.Focused("暂缓") {
+			return askState, ticketID
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("确认单没有出现：%q focused暂缓=%v", tt.Texts(), tt.Focused("暂缓"))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func waitAskDone(t *testing.T, tt *mygoui.Tester, s *shell, runID, state string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		tt.Frame()
+		msg := s.state.Thread(s.state.ActiveID())
+		for i := range msg.Messages {
+			m := &msg.Messages[i]
+			if m.RunID == runID && m.Done && m.Status == state {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("运行 %s 没有变成 %s", runID, state)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func reopenTicket(t *testing.T, tt *mygoui.Tester, s *shell, ticketID string) {
+	t.Helper()
+	tt.Frame()
+	if err := tt.Click("重开 " + ticketID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		tt.Frame()
+		s.mu.Lock()
+		again := s.asking && s.dialog != nil && s.dialog.ID == ticketID
+		s.mu.Unlock()
+		if again && tt.Focused("暂缓") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("重开没有回到同一张确认单")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func waitNotice(t *testing.T, tt *mygoui.Tester, s *shell, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		tt.Frame()
+		if shellNotice(s) == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("notice=%q want %q phase=%s", shellNotice(s), want, s.state.Phase())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+type approvalRow struct {
+	id, state string
+	version   int64
+}
+
+func readApproval(t *testing.T, root, id, ticketID string) approvalRow {
+	t.Helper()
+	db := openRunsRO(t, root, id)
+	defer db.Close()
+	var row approvalRow
+	if err := db.QueryRowContext(t.Context(), `SELECT id, state, version FROM approvals WHERE id = ?`, ticketID).Scan(&row.id, &row.state, &row.version); err != nil {
+		t.Fatal(err)
+	}
+	return row
+}
+
 func TestOldSchemaStartsListsAndReopensSameTicket(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()

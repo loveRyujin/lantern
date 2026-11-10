@@ -564,9 +564,11 @@ func (s *shell) confirm(c *mygoui.Context) {
 		session.RiskLine(tk.Risk),
 		"哈希 " + tk.ParamsHash,
 		"参数 " + string(tk.Params),
-		"按 Escape 只暂缓，运行保持挂起。",
+		"按 Enter 或 Escape 只暂缓，运行保持挂起。",
 	}, "\n")
-	choice := mygoui.AlertDialog(c, &open, "确认 "+tk.Action+"？", message, "暂缓", "拒绝", "批准")
+	// mygo 的 AlertDialog 把最后一个按钮当成默认项：自动聚焦，Enter 点击它。
+	// 暂缓放在最后，Enter 不会执行工具。批准只能显式点击。
+	choice := mygoui.AlertDialog(c, &open, "确认 "+tk.Action+"？", message, "拒绝", "批准", "暂缓")
 	if choice == -1 {
 		return
 	}
@@ -578,12 +580,12 @@ func (s *shell) confirm(c *mygoui.Context) {
 	}
 	var action approval.Action
 	switch choice {
-	case mygoui.AlertDismissed, 0:
-		action = approval.ActionDefer
-	case 1:
+	case 0:
 		action = approval.ActionReject
-	case 2:
+	case 1:
 		action = approval.ActionApprove
+	case mygoui.AlertDismissed, 2:
+		action = approval.ActionDefer
 	default:
 		return
 	}
