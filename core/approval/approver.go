@@ -41,7 +41,9 @@ type Ticket struct {
 	Sensitive []string
 	// EstimatedRows 是预估行数或影响范围。没有估计时为 0。
 	EstimatedRows int64
-	// Risk 是给用户看的风险说明。
+	// Risk 是 Policy 在开票时给出的风险说明，由状态机原样落库。
+	// 空字符串表示这张单没有冻结风险（旧数据）。调用方必须明示缺失，
+	// 不能用模型回复或事后重算填上。
 	Risk string
 	// StepID 是当前步骤。调用方传入，状态机不会从别的字段反推。
 	StepID string

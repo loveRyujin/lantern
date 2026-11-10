@@ -96,7 +96,7 @@ func TestTokenStepAndDoneDriveText(t *testing.T) {
 	if len(msg.Steps) != 1 || msg.Steps[0].Line() != "完成 · 整理回答" {
 		t.Fatalf("steps=%+v", msg.Steps)
 	}
-	if !strings.Contains(msg.Approval, "本张不弹窗") || !strings.Contains(msg.Approval, "export_data") {
+	if !strings.Contains(msg.Approval, "等待确认") || !strings.Contains(msg.Approval, "export_data") || strings.Contains(msg.Approval, "不弹窗") {
 		t.Fatalf("approval=%q", msg.Approval)
 	}
 	before := st.Updates
@@ -165,12 +165,13 @@ func TestScriptedRunnerPublishesTokenStream(t *testing.T) {
 	stream := events.NewStream(4)
 	errc := make(chan error, 1)
 	go func() {
-		errc <- (ScriptedRunner{Chunk: 1}).Ask(ctx, Ask{
+		_, err := (ScriptedRunner{Chunk: 1}).Ask(ctx, Ask{
 			RunID:       "run-1",
 			WorkspaceID: "星禾",
 			Prompt:      "营收",
 			Events:      stream,
 		})
+		errc <- err
 		stream.Close()
 	}()
 	var got []events.Event
@@ -221,7 +222,7 @@ func TestScriptedRunnerStopsOnCancel(t *testing.T) {
 	cancel()
 	stream := events.NewStream(1)
 	t.Cleanup(stream.Close)
-	err := (ScriptedRunner{}).Ask(ctx, Ask{
+	_, err := (ScriptedRunner{}).Ask(ctx, Ask{
 		RunID:  "run",
 		Events: stream,
 	})

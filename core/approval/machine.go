@@ -23,8 +23,8 @@ WHERE id = ? AND state = ? AND version = ?`
 const insertSQL = `
 INSERT INTO approvals (
 	id, run_id, step_id, params_hash, params_json, decision, created_at,
-	workspace_id, action, export_object, expires_at, state, version
-) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, 0)`
+	workspace_id, action, export_object, expires_at, state, version, risk
+) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, 0, ?)`
 
 // Machine 是审批状态机。确认单的插入、决定、过期和消费都从这里写。
 type Machine struct {
@@ -297,7 +297,7 @@ func (m *Machine) insert(ctx context.Context, q queryRower, ticket Ticket) error
 	_, err = q.ExecContext(ctx, insertSQL,
 		ticket.ID, ticket.RunID, ticket.StepID, ticket.ParamsHash, string(ticket.Params),
 		now.Format(timeLayout), ticket.WorkspaceID, ticket.Action, ticket.ExportObject,
-		exp.UTC().Format(timeLayout), string(StatePending),
+		exp.UTC().Format(timeLayout), string(StatePending), ticket.Risk,
 	)
 	if err != nil {
 		return fmt.Errorf("approval: 写入确认单: %w", err)

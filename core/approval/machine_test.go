@@ -1034,7 +1034,7 @@ func openApprovalDB(t *testing.T) *sql.DB {
 	db.SetMaxOpenConns(8)
 	t.Cleanup(func() { _ = db.Close() })
 	root := moduleRoot(t)
-	for _, name := range []string{"001_init.sql", "002_export_approval.sql", "003_approval_state.sql", "004_audit_run_id.sql"} {
+	for _, name := range []string{"001_init.sql", "002_export_approval.sql", "003_approval_state.sql", "004_audit_run_id.sql", "005_approval_risk.sql"} {
 		file, err := filepath.EvalSymlinks(filepath.Join(root, "core", "workspace", "migrations", "runs", name))
 		if err != nil {
 			t.Fatal(err)
