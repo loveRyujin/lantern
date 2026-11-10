@@ -63,7 +63,7 @@ func TestCreateOpenLayout(t *testing.T) {
 			want = 2
 		}
 		if db == h.Runs {
-			want = 4
+			want = 5
 		}
 		if n != want {
 			t.Fatalf("schema_migrations = %d, want %d", n, want)
@@ -102,8 +102,8 @@ func TestCreateOpenLayout(t *testing.T) {
 	if err := reopened.Runs.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 4 {
-		t.Fatalf("reopen runs migrations = %d, want 4", n)
+	if n != 5 {
+		t.Fatalf("reopen runs migrations = %d, want 5", n)
 	}
 	assertSensitiveAbsent(t, reopened.Dir)
 }

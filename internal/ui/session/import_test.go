@@ -2,26 +2,42 @@ package session
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestPackageDoesNotImportMygo(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
+	assertNoMygo(t, ".")
+	assertNoMygo(t, filepath.Join("..", "..", "..", "core"))
+}
+
+func assertNoMygo(t *testing.T, root string) {
+	t.Helper()
 	needle := "github.com/egoist/" + "mygo"
-	for _, ent := range entries {
-		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".go") {
-			continue
-		}
-		data, err := os.ReadFile(ent.Name())
+	err := filepath.WalkDir(root, func(path string, ent os.DirEntry, err error) error {
 		if err != nil {
-			t.Fatal(err)
+			return err
+		}
+		if ent.IsDir() {
+			if ent.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(ent.Name(), ".go") || strings.HasSuffix(ent.Name(), "_test.go") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
 		}
 		if strings.Contains(string(data), needle) {
-			t.Fatalf("%s 引用了 mygo", ent.Name())
+			t.Fatalf("%s 引用了 mygo", path)
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

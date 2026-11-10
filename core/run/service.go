@@ -329,16 +329,16 @@ type kind int
 
 func loadRestorable(ctx context.Context, q rowQuery, runID string) (approval.Ticket, kind, error) {
 	var (
-		id, stepID, hash, params, workspaceID, action, object, expires, state string
+		id, stepID, hash, params, workspaceID, action, object, expires, state, risk string
 	)
 	err := q.QueryRowContext(ctx, `
-		SELECT id, step_id, params_hash, params_json, workspace_id, action, export_object, expires_at, state
+		SELECT id, step_id, params_hash, params_json, workspace_id, action, export_object, expires_at, state, risk
 		FROM approvals
 		WHERE run_id = ?
 		  AND state IN ('pending', 'approved')
 		  AND (consumed_at IS NULL OR consumed_at = '')
 		ORDER BY CASE state WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC, id DESC
-		LIMIT 1`, runID).Scan(&id, &stepID, &hash, &params, &workspaceID, &action, &object, &expires, &state)
+		LIMIT 1`, runID).Scan(&id, &stepID, &hash, &params, &workspaceID, &action, &object, &expires, &state, &risk)
 	if errors.Is(err, sql.ErrNoRows) {
 		return approval.Ticket{}, kindNone, nil
 	}
@@ -354,6 +354,7 @@ func loadRestorable(ctx context.Context, q rowQuery, runID string) (approval.Tic
 		Params:       append([]byte(nil), params...),
 		ParamsHash:   hash,
 		ExportObject: object,
+		Risk:         risk,
 	}
 	if exp, ok := parseTime(expires); ok {
 		ticket.ExpiresAt = exp

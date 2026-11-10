@@ -5,12 +5,20 @@
 package session
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/loveRyujin/lantern/core/events"
 )
+
+// StatusAwaiting 是确认被暂缓。事件流没有对应的 done 状态，由 FinishResult 记下。
+const StatusAwaiting = "awaiting_approval"
+
+// RiskUnfrozen 是旧确认单没有冻结风险说明时界面必须使用的原文。
+const RiskUnfrozen = "风险说明：未随确认单冻结"
 
 const (
 	// RoleUser 是用户提问。
@@ -135,8 +143,10 @@ func (s *State) Begin(prompt string) (Ask, error) {
 	if id == "" {
 		return Ask{}, errors.New("session: 没有工作区")
 	}
-	s.seq++
-	runID := fmt.Sprintf("ui-%d", s.seq)
+	runID, err := newRunID()
+	if err != nil {
+		return Ask{}, err
+	}
 	th := s.Thread(id)
 	s.seq++
 	userID := s.seq
@@ -180,7 +190,7 @@ func (s *State) Apply(ev events.Event) {
 		if ev.Approval == nil {
 			return
 		}
-		msg.Approval = fmt.Sprintf("确认请求 %s · %s（本张不弹窗）", ev.Approval.Action, ev.Approval.TicketID)
+		msg.Approval = fmt.Sprintf("等待确认 · %s · %s", ev.Approval.Action, ev.Approval.TicketID)
 	case events.KindDone:
 		msg.Done = true
 		if ev.Done != nil {
@@ -201,8 +211,41 @@ func (s *State) Apply(ev events.Event) {
 // Finish 在运行返回后收尾。事件里已经有 Done 时不再改状态。
 // 事件流没有把这条运行收完时，记成失败，避免界面一直停在流式中。
 func (s *State) Finish(runID string, err error) {
+	s.FinishResult(runID, err, "")
+}
+
+// NoteRun 用纯文本注明恢复结果，不写入模型回答。
+func (s *State) NoteRun(runID, status, note string) {
 	msg := s.messageByRun(runID)
 	if msg == nil {
+		return
+	}
+	msg.Done = true
+	if status != "" {
+		msg.Status = status
+	}
+	if note != "" {
+		msg.Note = note
+	}
+	if s.StreamingRun == runID {
+		s.StreamingRun = ""
+	}
+	s.Updates++
+}
+
+// FinishResult 与 Finish 相同。runState 为 awaiting_approval 时记成等待确认，
+// 不把暂缓画成失败。
+func (s *State) FinishResult(runID string, err error, runState string) {
+	msg := s.messageByRun(runID)
+	if msg == nil {
+		if s.StreamingRun == runID {
+			s.StreamingRun = ""
+		}
+		return
+	}
+	if runState == StatusAwaiting && !msg.Done {
+		msg.Done = true
+		msg.Status = StatusAwaiting
 		if s.StreamingRun == runID {
 			s.StreamingRun = ""
 		}
@@ -242,6 +285,8 @@ func (s *State) Phase() string {
 		return "已拒绝"
 	case events.DoneExpired:
 		return "已超时"
+	case StatusAwaiting:
+		return "等待确认"
 	default:
 		if msg.Status == "" {
 			return "已完成"
@@ -285,6 +330,22 @@ func (m *Message) upsert(step Step) {
 		}
 	}
 	m.Steps = append(m.Steps, step)
+}
+
+func newRunID() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("session: 生成运行标识: %w", err)
+	}
+	return "ui-" + hex.EncodeToString(buf[:]), nil
+}
+
+// RiskLine 返回要展示的风险原文。空风险不用别的文案顶替。
+func RiskLine(risk string) string {
+	if strings.TrimSpace(risk) == "" {
+		return RiskUnfrozen
+	}
+	return "风险 " + risk
 }
 
 func stepStatusLabel(status string) string {

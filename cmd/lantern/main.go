@@ -16,7 +16,7 @@ import (
 
 func main() {
 	root := flag.String("root", "", "应用数据目录。空则用本机 Lantern 目录")
-	check := flag.Bool("check", false, "打开窗口，自动提一个问题，看到流式 Markdown 后退出")
+	check := flag.Bool("check", false, "打开窗口，自动提问，截到确认弹窗后暂缓并退出")
 	shot := flag.String("shot", "", "和 -check 一起用，把结束时的窗口写成 PNG")
 	flag.Parse()
 	opts := ui.Options{Root: *root, CheckShot: *shot}

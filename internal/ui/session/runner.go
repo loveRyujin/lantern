@@ -18,14 +18,20 @@ type Ask struct {
 	Events      events.Publisher
 }
 
+// AskResult 是一次提问结束后的运行状态。事件流没有 done 时，界面用 RunState 收尾。
+type AskResult struct {
+	RunState string
+}
+
 // Runner 把一次提问写成 token、step、done 事件。
-// 确认请求可以不发。发了的话，窗口只把原文留在对话里，不弹确认框。
+// 确认请求可以不发。发了的话，窗口只把原文留在对话里；确认框由 Approver 的票据驱动。
 type Runner interface {
-	Ask(ctx context.Context, req Ask) error
+	Ask(ctx context.Context, req Ask) (AskResult, error)
 }
 
 // ScriptedRunner 在本地拼一段 Markdown，并按 rune 写成 token 事件。
-// 它不联网，也不进入 Agent 循环。桌面端在还没接模型时用它把窗口路径跑通。
+// 它不联网，也不进入 Agent 循环。窗口测试用它把旧路径跑通。
+// 产品窗口用 LoopRunner，不把这里的文案当成确认单。
 type ScriptedRunner struct {
 	// Delay 是两个 token 之间的等待。测试用 0。
 	Delay time.Duration
@@ -36,15 +42,15 @@ type ScriptedRunner struct {
 }
 
 // Ask 依次发布：步骤开始、若干 token、步骤结束、done。
-func (r ScriptedRunner) Ask(ctx context.Context, req Ask) error {
+func (r ScriptedRunner) Ask(ctx context.Context, req Ask) (AskResult, error) {
 	if req.Events == nil {
-		return errors.New("session: 事件流为空")
+		return AskResult{}, errors.New("session: 事件流为空")
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return AskResult{}, err
 	}
 	if req.RunID == "" {
-		return errors.New("session: 缺少 run_id")
+		return AskResult{}, errors.New("session: 缺少 run_id")
 	}
 	answer := r.answer(req.WorkspaceID, req.Prompt)
 	if err := publish(ctx, req.Events, events.Event{
@@ -52,18 +58,18 @@ func (r ScriptedRunner) Ask(ctx context.Context, req Ask) error {
 		RunID: req.RunID,
 		Step:  &events.Step{ID: "compose", Status: events.StepExecuting, Summary: "整理回答"},
 	}); err != nil {
-		return err
+		return AskResult{}, err
 	}
 	for _, part := range chunkRunes(answer, r.Chunk) {
 		if err := ctx.Err(); err != nil {
-			return err
+			return AskResult{}, err
 		}
 		if r.Delay > 0 {
 			timer := time.NewTimer(r.Delay)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return ctx.Err()
+				return AskResult{}, ctx.Err()
 			case <-timer.C:
 			}
 		}
@@ -72,7 +78,7 @@ func (r ScriptedRunner) Ask(ctx context.Context, req Ask) error {
 			RunID: req.RunID,
 			Token: &events.Token{Text: part},
 		}); err != nil {
-			return err
+			return AskResult{}, err
 		}
 	}
 	if err := publish(ctx, req.Events, events.Event{
@@ -80,13 +86,17 @@ func (r ScriptedRunner) Ask(ctx context.Context, req Ask) error {
 		RunID: req.RunID,
 		Step:  &events.Step{ID: "compose", Status: events.StepDone, Summary: "整理回答"},
 	}); err != nil {
-		return err
+		return AskResult{}, err
 	}
-	return publish(ctx, req.Events, events.Event{
+	err := publish(ctx, req.Events, events.Event{
 		Kind:  events.KindDone,
 		RunID: req.RunID,
 		Done:  &events.Done{Status: events.DoneCompleted, Text: answer},
 	})
+	if err != nil {
+		return AskResult{}, err
+	}
+	return AskResult{RunState: events.DoneCompleted}, nil
 }
 
 func (r ScriptedRunner) answer(workspaceID, prompt string) string {

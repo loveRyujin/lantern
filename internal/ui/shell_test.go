@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	mygoui "github.com/egoist/mygo/ui"
 	"github.com/loveRyujin/lantern/core/events"
@@ -154,12 +155,191 @@ func TestApprovalStaysInline(t *testing.T) {
 		},
 	})
 	tt.Frame()
-	if !tt.HasText("本张不弹窗") || !tt.HasText("export_data") {
+	if !tt.HasText("等待确认") || !tt.HasText("export_data") {
 		t.Fatalf("确认请求没有留在对话里：%q", tt.Texts())
 	}
 	if tt.HasText("暂缓") || tt.HasText("批准") {
 		t.Fatalf("出现了确认框按钮：%q", tt.Texts())
 	}
+}
+
+func TestDialogShowsFrozenTicketAndReopens(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	for _, id := range []string{"星禾", "云杉"} {
+		h, err := workspace.Create(ctx, root, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := h.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waiter := session.NewWaiter()
+	runner := session.NewDemoRunner(root, waiter)
+	s, err := newShell(ctx, Options{
+		Root:       root,
+		Workspaces: []session.Workspace{{ID: "星禾"}, {ID: "云杉"}},
+		Runner:     runner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := runner.Tool.(*session.CountTool)
+	if !ok {
+		t.Fatal("演示工具不是计数器")
+	}
+	tt := tester(s)
+	tt.Frame()
+	if !tt.HasText("演示：确定性模型，经真实 Agent 循环。确认单来自 Core，不联网。") {
+		t.Fatalf("没有标明演示：%q", tt.Texts())
+	}
+	askState, err := s.state.Begin("导出客户")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := events.NewStream(16)
+	evc := make(chan events.Event, 16)
+	go func() {
+		for ev := range stream.Events() {
+			evc <- ev
+		}
+		close(evc)
+	}()
+	done := make(chan error, 1)
+	go func() {
+		result, err := runner.Ask(ctx, session.Ask{
+			RunID: askState.RunID, WorkspaceID: "星禾", Prompt: "导出客户", Events: stream,
+		})
+		stream.Close()
+		if err == nil && result.RunState != session.StatusAwaiting {
+			err = errors.New("run state " + result.RunState)
+		}
+		done <- err
+	}()
+
+	var ticketID, hash string
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		tt.Frame()
+		drainUIEvents(s, evc)
+		s.mu.Lock()
+		if s.asking && s.dialog != nil {
+			ticketID = s.dialog.ID
+			hash = s.dialog.ParamsHash
+		}
+		s.mu.Unlock()
+		if ticketID != "" && tt.HasText("将执行 export_data") && tt.HasText("**不要执行**") && tt.HasText("DROP TABLE users") && tt.HasText(hash) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("确认单没有按纯文本出现：%q", tt.Texts())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if tool.N() != 0 {
+		t.Fatalf("弹窗出现时已经执行 %d 次", tool.N())
+	}
+	tt.Key(0, mygoui.KeyEscape)
+	tt.Frame()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("暂缓后提问没有返回")
+	}
+	s.state.FinishResult(askState.RunID, nil, session.StatusAwaiting)
+	s.reloadList()
+	tt.Frame()
+	if tool.N() != 0 || s.state.Phase() != "等待确认" {
+		t.Fatalf("phase=%s n=%d", s.state.Phase(), tool.N())
+	}
+	if !tt.HasText("重开 " + ticketID) {
+		t.Fatalf("列表没有原确认单：%q", tt.Texts())
+	}
+	if err := tt.Click("云杉"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if tt.HasText(ticketID) || tt.HasText("DROP TABLE users") || tt.HasText("**不要执行**") || tt.HasText("将执行 export_data") {
+		t.Fatalf("云杉看见了星禾的确认单：%q", tt.Texts())
+	}
+	if err := tt.Click("星禾"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	list, err := session.ReadPending(ctx, root, "星禾", time.Now())
+	if err != nil || len(list) != 1 || list[0].ID != ticketID {
+		t.Fatalf("list=%+v err=%v", list, err)
+	}
+	if err := tt.Click("重开 " + ticketID); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		tt.Frame()
+		s.mu.Lock()
+		again := s.asking && s.dialog != nil && s.dialog.ID == ticketID
+		s.mu.Unlock()
+		if again && tt.HasText("拒绝") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("重开没有回到同一张确认单")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := tt.Click("拒绝"); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		tt.Frame()
+		if s.state.Phase() == "已拒绝" && tool.N() == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("phase=%s n=%d texts=%q", s.state.Phase(), tool.N(), tt.Texts())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := countWorkspaceApprovals(t, root, "星禾"); n != 1 {
+		t.Fatalf("重开后确认单数量=%d", n)
+	}
+	left, err := session.ReadPending(ctx, root, "星禾", time.Now())
+	if err != nil || len(left) != 0 {
+		t.Fatalf("拒绝后仍待确认 %+v err=%v", left, err)
+	}
+}
+
+func drainUIEvents(s *shell, evc <-chan events.Event) {
+	for {
+		select {
+		case ev, ok := <-evc:
+			if !ok {
+				return
+			}
+			s.state.Apply(ev)
+		default:
+			return
+		}
+	}
+}
+
+func countWorkspaceApprovals(t *testing.T, root, id string) int {
+	t.Helper()
+	h, err := workspace.Open(t.Context(), root, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	var n int
+	if err := h.Runs.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM approvals`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func TestEmptySendDoesNothing(t *testing.T) {
@@ -221,8 +401,8 @@ func TestLoadWorkspacesCreatesDemoAndKeepsExisting(t *testing.T) {
 
 type failRunner struct{}
 
-func (failRunner) Ask(context.Context, session.Ask) error {
-	return errors.New("ui: 演示失败")
+func (failRunner) Ask(context.Context, session.Ask) (session.AskResult, error) {
+	return session.AskResult{}, errors.New("ui: 演示失败")
 }
 
 func testShell(t *testing.T, runner session.Runner, ids ...string) *shell {
