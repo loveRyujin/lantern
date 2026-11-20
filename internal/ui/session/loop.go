@@ -58,7 +58,7 @@ func (r *LoopRunner) Executable() tools.Tool {
 	return r.Tool
 }
 
-// Ask 打开工作区，写入运行行，然后调用 agent.Loop.Run。
+// Ask 打开工作区，准备工具后写入运行行，然后调用 agent.Loop.Run。工具准备失败时不留下停在 created 的运行行。
 // 运行标识已经存在时直接返回，不进入循环，也不开新票据。
 func (r *LoopRunner) Ask(ctx context.Context, req Ask) (AskResult, error) {
 	if r == nil || r.Waiter == nil || (r.Tool == nil && r.Analysis == nil) {
@@ -86,10 +86,6 @@ func (r *LoopRunner) Ask(ctx context.Context, req Ask) (AskResult, error) {
 	if exists {
 		return AskResult{}, fmt.Errorf("session: 运行标识已存在")
 	}
-	if err := insertRun(ctx, h.Runs, req.RunID); err != nil {
-		return AskResult{}, err
-	}
-
 	provider := r.provider(req.RunID)
 	if provider == nil {
 		return AskResult{}, errors.New("session: 没有模型")
@@ -107,9 +103,14 @@ func (r *LoopRunner) Ask(ctx context.Context, req Ask) (AskResult, error) {
 		}
 		for _, tool := range extra {
 			if err := reg.Register(tool); err != nil {
+				_ = r.Analysis.CloseRun(req.RunID)
 				return AskResult{}, err
 			}
 		}
+	}
+	if err := insertRun(ctx, h.Runs, req.RunID); err != nil {
+		_ = r.Analysis.CloseRun(req.RunID)
+		return AskResult{}, err
 	}
 	status, steps := agent.Persist(run.New(h.Runs))
 	loop := &agent.Loop{

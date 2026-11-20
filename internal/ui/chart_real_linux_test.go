@@ -36,7 +36,7 @@ func TestChartRealSandboxSuccessFailureRecovery(t *testing.T) {
 		t.Fatalf("需要真实 Python 运行时：%v", err)
 	}
 	h := newChartHarness(t, rt)
-	h.an.KeepOpen = 3
+	h.an.KeepOpen = 4
 	tt := h.tt
 	demo := h.lr.NewProvider
 
@@ -65,11 +65,28 @@ func TestChartRealSandboxSuccessFailureRecovery(t *testing.T) {
 	}
 	label := chartLabel(chart)
 	first := assertChartDrawn(t, h, tt, "星禾", run1, chart)
+	var seen struct {
+		Rows [][]any `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(observationInner(t, "run_sql", h.rec.observation(t, "sql-"+run1))), &seen); err != nil {
+		t.Fatal(err)
+	}
+	if len(rc.Tables) != 1 || rc.Tables[0].Series == nil || rc.Tables[0].CallID != "sql-"+run1 || len(seen.Rows) != 2 {
+		t.Fatalf("场景 1 没有结构化图表：%+v", rc.Tables)
+	}
+	for i, row := range seen.Rows {
+		if sr := rc.Tables[0].Series; sr.Labels[i] != row[0] || sr.Values[i] != row[1] {
+			t.Fatalf("结构化图表第 %d 点 %s=%v，run_sql 结果是 %v", i, sr.Labels[i], sr.Values[i], row)
+		}
+	}
+	findScrolled(t, tt, seriesLabel("sql-"+run1))
+	findScrolled(t, tt, barLabel("2026-09", "12104587"))
 
 	trigger := "SQL 与代码 · " + chart.CallID
 	if tt.HasText("SUM(o.amount_cents)") {
 		t.Fatal("SQL 默认就展开了")
 	}
+	findScrolled(t, tt, trigger)
 	if err := tt.Click(trigger); err != nil {
 		t.Fatal(err)
 	}
@@ -115,6 +132,34 @@ func TestChartRealSandboxSuccessFailureRecovery(t *testing.T) {
 		t.Fatalf("应只剩第一问的那张图，实际 %d 张：%q", n, tt.Texts())
 	}
 
+	// 失败：run_python 已出图，但运行没有以 completed 结束时不取也不画。
+	h.lr.NewProvider = func(runID string) llm.Provider {
+		sqlArgs, _ := json.Marshal(map[string]string{"sql": session.ChartDemoSQL})
+		pyArgs, _ := json.Marshal(map[string]string{"code": session.ChartDemoCode, "sql_call_id": "sql-" + runID})
+		return llm.NewMock(llm.MustNewScript(
+			llm.CallTools(llm.ToolCall{ID: "sql-" + runID, Name: "run_sql", Arguments: string(sqlArgs)}),
+			llm.CallTools(llm.ToolCall{ID: "py-" + runID, Name: "run_python", Arguments: string(pyArgs)}),
+		))
+	}
+	h.rec.wrap(h.lr)
+	ask(t, tt, "画到一半")
+	tt.Frame()
+	runHalf := h.lastRun(t)
+	if msg := latestAssistant(h.s.state); msg.Status == events.DoneCompleted {
+		t.Fatalf("脚本耗尽的运行不该是 completed：%+v", msg)
+	}
+	if rcHalf, _ := h.an.Charts("星禾", runHalf); len(rcHalf.Charts) != 1 {
+		t.Fatalf("前提不成立，run_python 应已成功出图：%+v", rcHalf)
+	}
+	for k := range h.s.chartViews {
+		if strings.Contains(k, runHalf) {
+			t.Fatalf("未完成的运行取了图：%q", k)
+		}
+	}
+	if !tt.HasText("运行没有完成，不展示这次的图表。") || countLabels(tt, "图表 ") != 1 {
+		t.Fatalf("未完成的运行画了图：%q", tt.Texts())
+	}
+
 	// 不支持的格式和超限：同一运行出 PNG 与 CSV，界面上限压低后两件都给出占位，不去读字节。
 	h.an.MaxChartBytes = 1000
 	h.lr.NewProvider = scriptedChart(`import os
@@ -151,11 +196,15 @@ open(os.environ['OUTPUT_DIR'] + '/rows.csv', 'w').write('a,b\n1,2\n')
 		}
 	}
 
-	// Session 关闭：再问一次，最早的运行超出 KeepOpen 被关闭，切回时明确提示不可取回。
+	// Session 关闭：再问一次，最早的运行超出 KeepOpen 被关闭。不切换工作区也立刻丢掉缓存的图，切回后同样提示不可取回。
 	h.lr.NewProvider = demo
 	h.rec.wrap(h.lr)
 	ask(t, tt, session.ChartDemoPrompt)
 	tt.Frame()
+	closed := "图表 gmv_east.png 不可显示：分析会话已关闭，产物不可取回（analysis_session_closed）"
+	if v := h.s.chartViews[chartKey("星禾", run1, chart.ArtifactID)]; v == nil || v.bitmap != nil || !tt.HasText(closed) {
+		t.Fatalf("Session 淘汰后仍显示缓存的旧图：%+v %q", v, tt.Texts())
+	}
 	if err := tt.Click("云杉"); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +215,6 @@ open(os.environ['OUTPUT_DIR'] + '/rows.csv', 'w').write('a,b\n1,2\n')
 	if rc, _ := h.an.Charts("星禾", run1); !rc.Closed {
 		t.Fatal("第一问的 Session 没有被关闭")
 	}
-	closed := "图表 gmv_east.png 不可显示：分析会话已关闭，产物不可取回（analysis_session_closed）"
 	if !tt.HasText(closed) {
 		t.Fatalf("缺少关闭提示：%q", tt.Texts())
 	}

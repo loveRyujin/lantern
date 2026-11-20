@@ -47,7 +47,9 @@ type PythonFailure struct {
 }
 
 // RunCharts 是一次运行的图表记录。Closed 为真时 Session 已关闭，字节不可再取。
+// Tables 按调用顺序列出每次成功 run_sql 的结构化图表，数据就是交给模型的那份工具结果。
 type RunCharts struct {
+	Tables   []SQLChart
 	Charts   []Chart
 	Failures []PythonFailure
 	Closed   bool
@@ -73,6 +75,7 @@ type analysisRun struct {
 	workspaceID string
 	session     *pythonx.Session
 	sql         map[string]string
+	tables      []SQLChart
 	charts      []Chart
 	failures    []PythonFailure
 }
@@ -110,7 +113,7 @@ func (a *Analysis) open(ctx context.Context, h *workspace.Handle, runID string) 
 		_ = s.Close()
 	}
 	return []tools.Tool{
-		recorded{inner: sess.SQLTool(), done: func(call tools.Call, res tools.Result, err error) { a.noteSQL(runID, call, err) }},
+		recorded{inner: sess.SQLTool(), done: func(call tools.Call, res tools.Result, err error) { a.noteSQL(runID, call, res, err) }},
 		recorded{inner: sess.PythonTool(), done: func(call tools.Call, res tools.Result, err error) { a.notePython(runID, call, res, err) }},
 	}, nil
 }
@@ -144,7 +147,7 @@ func (a *Analysis) evictLocked() []*pythonx.Session {
 	return stale
 }
 
-func (a *Analysis) noteSQL(runID string, call tools.Call, err error) {
+func (a *Analysis) noteSQL(runID string, call tools.Call, res tools.Result, err error) {
 	if err != nil {
 		return
 	}
@@ -156,9 +159,13 @@ func (a *Analysis) noteSQL(runID string, call tools.Call, err error) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if rec := a.runs[runID]; rec != nil {
-		rec.sql[call.ID] = args.SQL
+	rec := a.runs[runID]
+	if rec == nil {
+		return
 	}
+	rec.sql[call.ID] = args.SQL
+	series, code, reason := SeriesFromSQL(res.Content)
+	rec.tables = append(rec.tables, SQLChart{CallID: call.ID, SQL: args.SQL, Series: series, Code: code, Reason: reason})
 }
 
 func (a *Analysis) notePython(runID string, call tools.Call, res tools.Result, err error) {
@@ -212,6 +219,7 @@ func (a *Analysis) Charts(workspaceID, runID string) (RunCharts, bool) {
 		return RunCharts{}, false
 	}
 	return RunCharts{
+		Tables:   append([]SQLChart(nil), rec.tables...),
 		Charts:   append([]Chart(nil), rec.charts...),
 		Failures: append([]PythonFailure(nil), rec.failures...),
 		Closed:   rec.session == nil,

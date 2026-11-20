@@ -27,6 +27,7 @@ func main() {
 	check := flag.Bool("check", false, "打开窗口，自动提问，截到确认弹窗后暂缓并退出")
 	shot := flag.String("shot", "", "和 -check 一起用，把结束时的窗口写成 PNG")
 	pyRoot := flag.String("pyrt-root", "", "准备 Python 运行时的目录。设置后窗口演示场景 1 出图")
+	chartDemo := flag.Bool("chart-demo", false, "不准备 Python，窗口演示场景 1 的结构化图表；run_python 会报 Python 环境不可用")
 	flag.Parse()
 	opts := ui.Options{Root: *root, CheckShot: *shot}
 	if *check {
@@ -39,9 +40,11 @@ func main() {
 			os.Exit(1)
 		}
 		opts.Python = &rt
-		if *check {
-			opts.CheckPrompt = session.ChartDemoPrompt
-		}
+	} else if *chartDemo {
+		opts.Python = &pyrt.Runtime{}
+	}
+	if opts.Python != nil && *check {
+		opts.CheckPrompt = session.ChartDemoPrompt
 	}
 	if err := ui.Run(opts); err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -35,7 +35,8 @@ type Options struct {
 	CheckPrompt string
 	// CheckShot 非空时，自动提问成功后把窗口写成这张 PNG。
 	CheckShot string
-	// Python 是可信方已显式准备的运行时。非空且 Runner 为空时，窗口用场景 1 出图演示。
+	// Python 是可信方已显式准备的运行时。非空且 Runner 为空时，窗口用场景 1 出图演示；
+	// 零值表示没有准备，只出 run_sql 的结构化图表，run_python 报环境不可用。
 	Python *pyrt.Runtime
 }
 
@@ -390,7 +391,7 @@ func (s *shell) dialogOpen() bool {
 
 func (s *shell) banner() string {
 	if lr, ok := s.runner.(*session.LoopRunner); ok && lr.Demo && lr.Analysis != nil {
-		return "演示：确定性模型按场景 1 调用本运行真实的 run_sql / run_python，图表从分析会话取回，不联网。"
+		return "演示：确定性模型按场景 1 调用本运行真实的 run_sql / run_python。柱状图来自 run_sql 结果，PNG 从分析会话取回，不联网。"
 	}
 	if lr, ok := s.runner.(*session.LoopRunner); ok && lr.Demo {
 		return "演示：确定性模型，经真实 Agent 循环。确认单来自 Core，不联网。"
