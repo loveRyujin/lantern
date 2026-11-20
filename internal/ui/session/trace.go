@@ -103,7 +103,7 @@ func TraceHeader(tr run.Trace) []string {
 		out = append(out, "运行中：步骤可能还在增加。")
 	}
 	if tr.NoTransitions {
-		out = append(out, "这个库没有状态迁移表，只能显示当前状态。")
+		out = append(out, "这次运行没有状态迁移记录（早于迁移 006），只能显示当前状态。")
 	}
 	return out
 }

@@ -34,14 +34,16 @@ func TestTraceViewShowsRealLoopRunAndRestart(t *testing.T) {
 	tool := runner.Tool.(*session.CountTool)
 	tt := traceTester(s)
 
-	approved, _ := askUntilDialog(t, tt, s, runner, "星禾", "导出客户")
+	approved, _, approvedDone := askUntilDialog(t, tt, s, runner, "星禾", "导出客户")
 	if err := tt.Click("批准"); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, tt, func() bool { return tool.N() == 1 && askFinished(s, approved.RunID) })
-	deferred, _ := askUntilDialog(t, tt, s, runner, "星禾", "再导出")
+	deferred, _, deferredDone := askUntilDialog(t, tt, s, runner, "星禾", "再导出")
 	tt.Key(0, mygoui.KeyEnter)
 	waitAskDone(t, tt, s, deferred.RunID, session.StatusAwaiting)
+	<-approvedDone
+	<-deferredDone
 	if tool.N() != 1 {
 		t.Fatalf("暂缓后执行了 %d 次", tool.N())
 	}

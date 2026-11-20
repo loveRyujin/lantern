@@ -174,7 +174,10 @@ func TestTraceTablesAreAppendOnly(t *testing.T) {
 	if err := audit.NewSQLite(h.Runs).Append(t.Context(), audit.Record{Action: "x", RunID: "run-1"}); err != nil {
 		t.Fatal(err)
 	}
+	mustExec(t, h.Runs, `INSERT INTO run_events (run_id, kind, payload, created_at) VALUES ('run-1', 'step', '{}', ?)`, stamp())
 	for _, q := range []string{
+		`UPDATE run_events SET payload = '{"summary":"改掉"}'`,
+		`DELETE FROM run_events`,
 		`UPDATE run_transitions SET to_state = 'completed'`,
 		`DELETE FROM run_transitions`,
 		`UPDATE audit SET action = 'y'`,
@@ -183,6 +186,47 @@ func TestTraceTablesAreAppendOnly(t *testing.T) {
 		if _, err := h.Runs.ExecContext(t.Context(), q); err == nil || !strings.Contains(err.Error(), "append-only") {
 			t.Fatalf("%s: err=%v", q, err)
 		}
+	}
+}
+
+// 同一时间戳的行没有跨表序号。创建排最前，终态排最后，中间保持来源顺序。
+func TestTraceTiesKeepLifecycleOrder(t *testing.T) {
+	ctx := t.Context()
+	h := openWorkspace(t)
+	at := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
+	ts := at.Format(time.RFC3339Nano)
+	mustExec(t, h.Runs, `INSERT INTO runs (id, state, version, context, created_at, updated_at) VALUES ('run-1', 'created', 0, '', ?, ?)`, ts, ts)
+	svc := run.New(h.Runs)
+	svc.SetClock(func() time.Time { return at })
+	if err := svc.Set(ctx, "run-1", run.StateRunning); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, h.Runs, `INSERT INTO run_events (run_id, kind, payload, created_at) VALUES ('run-1', 'model_call', '{"summary":"最终回答 1 字"}', ?)`, ts)
+	if err := svc.Set(ctx, "run-1", run.StateCompleted); err != nil {
+		t.Fatal(err)
+	}
+	tr, err := run.ReadTrace(ctx, h.Runs, "ws-1", "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range tr.Entries {
+		got = append(got, e.Source+":"+e.Kind)
+	}
+	if strings.Join(got, ",") != "transition:created,transition:running,model:model_call,transition:completed" {
+		t.Fatalf("同一时间戳顺序 %v", got)
+	}
+}
+
+// 迁移 006 之前创建的运行没有迁移记录，轨迹要明说，而不是静默缺行。
+func TestTraceFlagsRunWithoutTransitions(t *testing.T) {
+	h := openWorkspace(t)
+	mustExec(t, h.Runs, `DROP TRIGGER runs_record_created`)
+	insertRun(t, h.Runs, "legacy", run.StateCompleted)
+	insertRun(t, h.Runs, "fresh", run.StateCompleted)
+	tr, err := run.ReadTrace(t.Context(), h.Runs, "ws-1", "legacy")
+	if err != nil || !tr.NoTransitions || tr.State != run.StateCompleted {
+		t.Fatalf("tr=%+v err=%v", tr, err)
 	}
 }
 

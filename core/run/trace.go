@@ -49,7 +49,8 @@ type Trace struct {
 	State     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
-	// NoTransitions 为真表示库里没有 run_transitions 表，状态迁移无从显示。
+	// NoTransitions 为真表示这次运行没有任何迁移记录：库里没有 run_transitions 表，
+	// 或运行早于迁移 006。此时只能显示当前状态。
 	NoTransitions bool
 	Entries       []TraceEntry
 }
@@ -126,11 +127,11 @@ func ReadTrace(ctx context.Context, db *sql.DB, workspaceID, runID string) (Trac
 	if err != nil {
 		return Trace{}, err
 	}
-	transitions, ok, err := traceTransitions(ctx, db, runID)
+	transitions, err := traceTransitions(ctx, db, runID)
 	if err != nil {
 		return Trace{}, err
 	}
-	tr.NoTransitions = !ok
+	tr.NoTransitions = len(transitions) == 0
 	steps, err := traceSteps(ctx, db, runID)
 	if err != nil {
 		return Trace{}, err
@@ -144,7 +145,7 @@ func ReadTrace(ctx context.Context, db *sql.DB, workspaceID, runID string) (Trac
 		return Trace{}, err
 	}
 
-	// 时间相同的行按这里的拼接顺序排，迁移在前，审计在后。
+	// 时间相同的行没有跨表的写入序号可比，按 tieRank 和这里的拼接顺序排。
 	entries := make([]TraceEntry, 0, len(transitions)+len(approvals)+len(steps.ordered)+len(events)+len(audits))
 	entries = append(entries, transitions...)
 	entries = append(entries, events...)
@@ -153,9 +154,29 @@ func ReadTrace(ctx context.Context, db *sql.DB, workspaceID, runID string) (Trac
 		entries = append(entries, st.entry)
 	}
 	entries = append(entries, audits...)
-	sort.SliceStable(entries, func(i, j int) bool { return entries[i].At.Before(entries[j].At) })
+	sort.SliceStable(entries, func(i, j int) bool {
+		if !entries[i].At.Equal(entries[j].At) {
+			return entries[i].At.Before(entries[j].At)
+		}
+		return tieRank(entries[i]) < tieRank(entries[j])
+	})
 	tr.Entries = entries
 	return tr, nil
+}
+
+// tieRank 只在时间相同时使用：创建排最前，挂起和终态迁移排最后，因为它们收尾一段循环。
+func tieRank(e TraceEntry) int {
+	if e.Source != TraceTransition {
+		return 1
+	}
+	switch {
+	case e.From == "":
+		return 0
+	case e.To == StateAwaitingApproval || terminal(e.To):
+		return 2
+	default:
+		return 1
+	}
 }
 
 // ListRuns 只读列出最近的运行，新的在前。limit 不大于 0 时取 50。
@@ -266,42 +287,42 @@ func traceApprovals(ctx context.Context, db *sql.DB, workspaceID, runID string) 
 	return out, nil
 }
 
-func traceTransitions(ctx context.Context, db *sql.DB, runID string) ([]TraceEntry, bool, error) {
+func traceTransitions(ctx context.Context, db *sql.DB, runID string) ([]TraceEntry, error) {
 	var n int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'run_transitions'`).Scan(&n); err != nil {
-		return nil, false, fmt.Errorf("run: 读取迁移表: %w", err)
+		return nil, fmt.Errorf("run: 读取迁移表: %w", err)
 	}
 	if n == 0 {
-		return nil, false, nil
+		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT from_state, to_state, at FROM run_transitions
 		WHERE run_id = ?
 		ORDER BY id`, runID)
 	if err != nil {
-		return nil, true, fmt.Errorf("run: 读取状态迁移: %w", err)
+		return nil, fmt.Errorf("run: 读取状态迁移: %w", err)
 	}
 	defer rows.Close()
 	var out []TraceEntry
 	for rows.Next() {
 		var from, to, at string
 		if err := rows.Scan(&from, &to, &at); err != nil {
-			return nil, true, fmt.Errorf("run: 读取状态迁移: %w", err)
+			return nil, fmt.Errorf("run: 读取状态迁移: %w", err)
 		}
 		if !knownState(to) || (from != "" && !knownState(from)) {
-			return nil, true, corrupt("run_transitions 状态未知")
+			return nil, corrupt("run_transitions 状态未知")
 		}
 		when, err := traceTime(at, "run_transitions.at")
 		if err != nil {
-			return nil, true, err
+			return nil, err
 		}
 		out = append(out, TraceEntry{At: when, Source: TraceTransition, Kind: to, From: from, To: to})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, true, fmt.Errorf("run: 读取状态迁移: %w", err)
+		return nil, fmt.Errorf("run: 读取状态迁移: %w", err)
 	}
-	return out, true, nil
+	return out, nil
 }
 
 type traceStep struct {

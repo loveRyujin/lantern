@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loveRyujin/lantern/core/approval"
 	"github.com/loveRyujin/lantern/core/run"
 )
 
@@ -59,5 +60,58 @@ func TestTraceErrorCarriesNoRecordContent(t *testing.T) {
 		if got := TraceError("ws", "r1", err); !strings.HasPrefix(got, want) {
 			t.Fatalf("%v → %q", err, got)
 		}
+	}
+}
+
+// 重启后从待确认列表重开并批准：Resume 执行的那一步也要有结果摘要和迁移。
+func TestTraceAfterResumeShowsResultAndTransitions(t *testing.T) {
+	ctx := t.Context()
+	r, tool, w, root := newFlow(t, "星禾")
+	done := startAsk(ctx, r, "星禾", "导出客户", "run-resume")
+	tk := waitTicket(t, w, "run-resume")
+	if err := w.Deliver(tk.ID, approval.Decision{Action: approval.ActionDefer}); err != nil {
+		t.Fatal(err)
+	}
+	if res := waitAsk(t, done); res.result.RunState != StatusAwaiting {
+		t.Fatalf("%+v", res)
+	}
+	h := openWS(t, root, "星禾")
+	svc := run.New(h.Runs)
+	svc.SetApprover(w)
+	svc.SetExecutor(tool.Execute)
+	errc := make(chan error, 1)
+	go func() {
+		_, err := w.Resume(ctx, svc, "run-resume")
+		errc <- err
+	}()
+	if err := w.Deliver(waitTicket(t, w, "run-resume").ID, approval.Decision{Action: approval.ActionApprove}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+	h.Close()
+	if tool.N() != 1 {
+		t.Fatalf("执行 %d 次", tool.N())
+	}
+	tr, err := ReadTrace(ctx, root, "星禾", "run-resume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var moves []string
+	var step run.TraceEntry
+	for _, e := range tr.Entries {
+		switch e.Source {
+		case run.TraceTransition:
+			moves = append(moves, e.To)
+		case run.TraceTool:
+			step = e
+		}
+	}
+	if got := strings.Join(moves, ","); got != "created,running,awaiting_approval,running,completed" {
+		t.Fatalf("迁移 %s", got)
+	}
+	if step.Status != run.StepDone || step.Summary != "已执行" || step.TicketID != tk.ID || step.ParamsHash != tk.ParamsHash || step.Duration <= 0 {
+		t.Fatalf("Resume 步骤 %+v", step)
 	}
 }
