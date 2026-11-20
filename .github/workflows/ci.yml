@@ -149,7 +149,7 @@ jobs:
         env:
           SANDBOX_REQUIRE_REAL: "1"
           SANDBOX_REAL_PACKAGES: "1"
-        run: go test ./core/sandbox ./core/analysisdata ./core/pythonx ./core/agent ./internal/eval ./cmd/lantern-eval -count=1 -v -timeout 15m
+        run: go test ./core/sandbox ./core/analysisdata ./core/pythonx ./core/agent ./internal/eval ./cmd/lantern-eval ./internal/ui -count=1 -v -timeout 15m
 
       - name: Explicitly prepare runtime for real sandbox evaluation
         run: go run ./cmd/lantern-eval prepare-runtime --root "${RUNNER_TEMP}/lantern-eval-runtime" --out "${RUNNER_TEMP}/lantern-eval-runtime.json"

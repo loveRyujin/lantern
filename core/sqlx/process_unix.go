@@ -165,6 +165,10 @@ func killSQLProcessGroup(cmd *exec.Cmd) error {
 // memoryStop 只在平台已经观察到内存上限触发时为真；普通 SIGKILL 不会被当成超限。
 // observationLost 表示已经看见 worker 之后无法继续读取它的内存，必须失败关闭。
 func decodeWorkerOutcome(ctx context.Context, stdout, stderr *cappedBuffer, stats processStats, cmd *exec.Cmd, runErr error, workerSeen, memoryStop, observationLost bool) (Result, processStats, error) {
+	if cmd.ProcessState != nil {
+		stats.Exit = cmd.ProcessState.String()
+	}
+	stats.Fatal = runtimeFatal(stderr.String())
 	if ctx.Err() != nil {
 		return Result{}, stats, &codedTimeout{err: ctx.Err()}
 	}
@@ -226,6 +230,14 @@ func decodeWorkerOutcome(ctx context.Context, stdout, stderr *cappedBuffer, stat
 	default:
 		return Result{}, stats, workerError(CodeWorkerFailed)
 	}
+}
+
+func runtimeFatal(stderr string) string {
+	line, _, _ := strings.Cut(stderr, "\n")
+	if strings.HasPrefix(line, "fatal error: ") && len(line) <= 120 {
+		return line
+	}
+	return ""
 }
 
 func runtimeOOM(stderr string) bool {

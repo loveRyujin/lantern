@@ -35,6 +35,10 @@ type processStats struct {
 	MemoryLimit uint64 `json:"memory_limit_bytes"`
 	PeakRSS     uint64 `json:"peak_rss_bytes"`
 	PeakVirtual uint64 `json:"peak_virtual_bytes"`
+	// Exit 和 Fatal 只在父进程里填，不在协议里传：worker 的退出状态，
+	// 以及 Go 运行时 "fatal error:" 首行（固定文案，不含查询数据）。只用于诊断。
+	Exit  string `json:"-"`
+	Fatal string `json:"-"`
 }
 
 type processMessage struct {

@@ -13,6 +13,7 @@ import (
 	"github.com/egoist/mygo/ui/markdown"
 	"github.com/loveRyujin/lantern/core/approval"
 	"github.com/loveRyujin/lantern/core/events"
+	"github.com/loveRyujin/lantern/core/pyrt"
 	"github.com/loveRyujin/lantern/core/run"
 	"github.com/loveRyujin/lantern/core/workspace"
 	"github.com/loveRyujin/lantern/internal/ui/session"
@@ -34,6 +35,9 @@ type Options struct {
 	CheckPrompt string
 	// CheckShot 非空时，自动提问成功后把窗口写成这张 PNG。
 	CheckShot string
+	// Python 是可信方已显式准备的运行时。非空且 Runner 为空时，窗口用场景 1 出图演示；
+	// 零值表示没有准备，只出 run_sql 的结构化图表，run_python 报环境不可用。
+	Python *pyrt.Runtime
 }
 
 // shell 是主窗口。mygo 类型只留在这个文件所在的包里。
@@ -55,6 +59,10 @@ type shell struct {
 	// hops 把恢复结果送回界面线程。没有窗口时由 view 排空，避免后台写会话状态。
 	hops  chan func()
 	trace tracePanel
+
+	analysis     *session.Analysis
+	ownsAnalysis bool
+	chartViews   map[string]*chartView
 }
 
 // Run 打开主窗口并进入事件循环。
@@ -66,6 +74,9 @@ func Run(opts Options) error {
 	s, err := newShell(ctx, opts)
 	if err != nil {
 		return err
+	}
+	if s.ownsAnalysis {
+		defer s.analysis.Close()
 	}
 	mygo.Theme.SetSource(mygo.ThemeLight)
 	errc := make(chan error, 1)
@@ -81,6 +92,10 @@ func Run(opts Options) error {
 		}
 		go func() {
 			defer mygo.App.Quit()
+			if s.analysis != nil {
+				errc <- s.autoChart(opts.CheckPrompt)
+				return
+			}
 			errc <- s.autoAsk(opts.CheckPrompt)
 		}()
 	})
@@ -124,12 +139,18 @@ func newShell(ctx context.Context, opts Options) (*shell, error) {
 	}
 	runner := opts.Runner
 	var waiter *session.Waiter
+	owns := false
 	if runner == nil {
 		if strings.TrimSpace(root) == "" {
 			return nil, errors.New("ui: 演示循环需要数据目录")
 		}
 		waiter = session.NewWaiter()
-		runner = session.NewDemoRunner(root, waiter)
+		if opts.Python != nil {
+			runner = session.NewChartDemoRunner(root, waiter, &session.Analysis{Runtime: *opts.Python})
+			owns = true
+		} else {
+			runner = session.NewDemoRunner(root, waiter)
+		}
 	}
 	s := &shell{
 		state: st, runner: runner, ctx: ctx, root: root, shot: opts.CheckShot, waiter: waiter,
@@ -141,6 +162,9 @@ func newShell(ctx context.Context, opts Options) (*shell, error) {
 	if lr, ok := runner.(*session.LoopRunner); ok && lr.Waiter != nil {
 		s.waiter = lr.Waiter
 		lr.Waiter.SetOnShow(s.showTicket)
+	}
+	if lr, ok := runner.(*session.LoopRunner); ok && lr.Analysis != nil {
+		s.analysis, s.ownsAnalysis = lr.Analysis, owns
 	}
 	if err := s.prepareWorkspaces(); err != nil {
 		return nil, err
@@ -229,7 +253,7 @@ func (s *shell) view(c *mygoui.Context) {
 
 func (s *shell) sidebar(c *mygoui.Context) {
 	t := c.Theme()
-	mygoui.Column(c).Width(220).Padding(12, 12).Gap(8).
+	mygoui.Column(c).Width(220).HeightPercent(100).Padding(12, 12).Gap(8).
 		BorderWidth(0, 1, 0, 0).BorderColor(t.Border).Children(func() {
 		mygoui.Text(c, "工作区").Bold()
 		for i, ws := range s.state.Workspaces {
@@ -239,6 +263,7 @@ func (s *shell) sidebar(c *mygoui.Context) {
 			}
 			if b.Clicked() {
 				s.state.Switch(ws.ID)
+				s.dropCharts()
 				s.mu.Lock()
 				s.notice = ""
 				s.mu.Unlock()
@@ -285,7 +310,8 @@ func (s *shell) pendingList(c *mygoui.Context) {
 func (s *shell) conversation(c *mygoui.Context) {
 	t := c.Theme()
 	th := s.state.Thread(s.state.ActiveID())
-	mygoui.Column(c).Grow(1).Children(func() {
+	// 行里的列默认按内容高度排，回答和图表一多就把提问框挤出窗口。占满行高，滚动区才会收住。
+	mygoui.Column(c).Grow(1).HeightPercent(100).Children(func() {
 		mygoui.Scroll(c).Grow(1).Padding(12, 16).Children(func() {
 			if len(th.Messages) == 0 {
 				mygoui.Text(c, "在这个工作区里提问。回答会按 token 出现。").TextColor(t.TextMuted)
@@ -340,6 +366,7 @@ func (s *shell) bubble(c *mygoui.Context, m session.Message) {
 		default:
 			markdown.Stream(c, m.Text, &s.md)
 		}
+		s.charts(c, m)
 		if m.Note != "" {
 			mygoui.Text(c, m.Note).TextColor(t.TextMuted)
 		}
@@ -374,6 +401,9 @@ func (s *shell) dialogOpen() bool {
 }
 
 func (s *shell) banner() string {
+	if lr, ok := s.runner.(*session.LoopRunner); ok && lr.Demo && lr.Analysis != nil {
+		return "演示：确定性模型按场景 1 调用本运行真实的 run_sql / run_python。柱状图来自 run_sql 结果，PNG 从分析会话取回，不联网。"
+	}
 	if lr, ok := s.runner.(*session.LoopRunner); ok && lr.Demo {
 		return "演示：确定性模型，经真实 Agent 循环。确认单来自 Core，不联网。"
 	}
