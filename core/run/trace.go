@@ -145,38 +145,52 @@ func ReadTrace(ctx context.Context, db *sql.DB, workspaceID, runID string) (Trac
 		return Trace{}, err
 	}
 
-	// 时间相同的行没有跨表的写入序号可比，按 tieRank 和这里的拼接顺序排。
-	entries := make([]TraceEntry, 0, len(transitions)+len(approvals)+len(steps.ordered)+len(events)+len(audits))
-	entries = append(entries, transitions...)
-	entries = append(entries, events...)
-	entries = append(entries, approvals...)
-	for _, st := range steps.ordered {
-		entries = append(entries, st.entry)
+	// 时间相同的行没有跨表的写入序号可比，按 tieRanks 和这里的拼接顺序排。
+	type ranked struct {
+		entry TraceEntry
+		rank  int
 	}
-	entries = append(entries, audits...)
-	sort.SliceStable(entries, func(i, j int) bool {
-		if !entries[i].At.Equal(entries[j].At) {
-			return entries[i].At.Before(entries[j].At)
+	rows := make([]ranked, 0, len(transitions)+len(approvals)+len(steps.ordered)+len(events)+len(audits))
+	for i, rank := range tieRanks(transitions) {
+		rows = append(rows, ranked{transitions[i], rank})
+	}
+	others := append(append([]TraceEntry{}, events...), approvals...)
+	for _, st := range steps.ordered {
+		others = append(others, st.entry)
+	}
+	for _, e := range append(others, audits...) {
+		rows = append(rows, ranked{e, 1})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if !rows[i].entry.At.Equal(rows[j].entry.At) {
+			return rows[i].entry.At.Before(rows[j].entry.At)
 		}
-		return tieRank(entries[i]) < tieRank(entries[j])
+		return rows[i].rank < rows[j].rank
 	})
-	tr.Entries = entries
+	tr.Entries = make([]TraceEntry, len(rows))
+	for i, r := range rows {
+		tr.Entries[i] = r.entry
+	}
 	return tr, nil
 }
 
-// tieRank 只在时间相同时使用：创建排最前，挂起和终态迁移排最后，因为它们收尾一段循环。
-func tieRank(e TraceEntry) int {
-	if e.Source != TraceTransition {
-		return 1
+// tieRanks 给按 id 排好的迁移定同一时间戳下的位置：创建排最前（0），
+// 同一时间戳里最后一条迁移若是挂起或终态则排最后（2），因为它收尾一段循环；
+// 其余与别的来源同级（1）。迁移之间因此保持 id 顺序。
+func tieRanks(transitions []TraceEntry) []int {
+	ranks := make([]int, len(transitions))
+	for i, e := range transitions {
+		last := i == len(transitions)-1 || !transitions[i+1].At.Equal(e.At)
+		switch {
+		case e.From == "":
+			ranks[i] = 0
+		case last && (e.To == StateAwaitingApproval || terminal(e.To)):
+			ranks[i] = 2
+		default:
+			ranks[i] = 1
+		}
 	}
-	switch {
-	case e.From == "":
-		return 0
-	case e.To == StateAwaitingApproval || terminal(e.To):
-		return 2
-	default:
-		return 1
-	}
+	return ranks
 }
 
 // ListRuns 只读列出最近的运行，新的在前。limit 不大于 0 时取 50。

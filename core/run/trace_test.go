@@ -202,8 +202,10 @@ func TestTraceTiesKeepLifecycleOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustExec(t, h.Runs, `INSERT INTO run_events (run_id, kind, payload, created_at) VALUES ('run-1', 'model_call', '{"summary":"最终回答 1 字"}', ?)`, ts)
-	if err := svc.Set(ctx, "run-1", run.StateCompleted); err != nil {
-		t.Fatal(err)
+	for _, st := range []string{run.StateAwaitingApproval, run.StateRunning, run.StateCompleted} {
+		if err := svc.Set(ctx, "run-1", st); err != nil {
+			t.Fatal(err)
+		}
 	}
 	tr, err := run.ReadTrace(ctx, h.Runs, "ws-1", "run-1")
 	if err != nil {
@@ -213,7 +215,7 @@ func TestTraceTiesKeepLifecycleOrder(t *testing.T) {
 	for _, e := range tr.Entries {
 		got = append(got, e.Source+":"+e.Kind)
 	}
-	if strings.Join(got, ",") != "transition:created,transition:running,model:model_call,transition:completed" {
+	if strings.Join(got, ",") != "transition:created,transition:running,transition:awaiting_approval,transition:running,model:model_call,transition:completed" {
 		t.Fatalf("同一时间戳顺序 %v", got)
 	}
 }
