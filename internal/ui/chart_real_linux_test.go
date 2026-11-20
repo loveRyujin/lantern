@@ -271,6 +271,10 @@ func assertChartDrawn(t *testing.T, h *chartHarness, tt *mygoui.Tester, ws, runI
 	if len(colors) < 8 {
 		t.Fatalf("图表区域几乎是纯色，没画出来：%d 种颜色", len(colors))
 	}
+	caption := "沙箱图片 · " + ch.Name + " · " + ch.ArtifactID
+	if cr, ok := tt.Find(caption); !ok || cr.Y < r.Y+r.H || cr.X < r.X-1 || cr.X > r.X+r.W {
+		t.Fatalf("图下没有「沙箱图片」标注 %q：%+v 图在 %+v", caption, cr, r)
+	}
 	return v.sum
 }
 

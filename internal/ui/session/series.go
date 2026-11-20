@@ -45,30 +45,31 @@ type SQLChart struct {
 // SeriesFromSQL 解析 run_sql 交给模型的同一份 JSON 结果。不能画时返回分类码和原因，不补值也不猜坐标。
 func SeriesFromSQL(content string) (*Series, string, string) {
 	var res struct {
-		Columns   []string          `json:"columns"`
-		Rows      []json.RawMessage `json:"rows"`
-		RowCount  *int              `json:"row_count"`
-		Truncated bool              `json:"truncated"`
-		Reason    string            `json:"truncate_reason"`
+		Columns   []string           `json:"columns"`
+		Rows      *[]json.RawMessage `json:"rows"`
+		RowCount  *int               `json:"row_count"`
+		Truncated bool               `json:"truncated"`
+		Reason    string             `json:"truncate_reason"`
 	}
 	dec := json.NewDecoder(bytes.NewReader([]byte(content)))
-	if err := dec.Decode(&res); err != nil || res.Columns == nil || res.RowCount == nil {
+	if err := dec.Decode(&res); err != nil || res.Columns == nil || res.Rows == nil || res.RowCount == nil || *res.RowCount < 0 {
 		return nil, CodeSeriesMissingField, "结果缺少 columns、rows 或 row_count"
 	}
-	if len(res.Rows) == 0 {
+	rowsRaw := *res.Rows
+	if len(rowsRaw) == 0 {
 		return nil, CodeSeriesEmpty, "查询结果为空"
 	}
-	if *res.RowCount != len(res.Rows) {
+	if *res.RowCount != len(rowsRaw) {
 		return nil, CodeSeriesNotPlottable, "row_count 与返回行数不一致"
 	}
-	if len(res.Rows) > MaxSeriesPoints {
-		return nil, CodeSeriesNotPlottable, fmt.Sprintf("结果有 %d 行，超过 %d 个柱", len(res.Rows), MaxSeriesPoints)
+	if len(rowsRaw) > MaxSeriesPoints {
+		return nil, CodeSeriesNotPlottable, fmt.Sprintf("结果有 %d 行，超过 %d 个柱", len(rowsRaw), MaxSeriesPoints)
 	}
 	if len(res.Columns) < 2 {
 		return nil, CodeSeriesMissingField, "结果只有一列，缺少分类列或数值列"
 	}
-	rows := make([][]any, len(res.Rows))
-	for i, raw := range res.Rows {
+	rows := make([][]any, len(rowsRaw))
+	for i, raw := range rowsRaw {
 		d := json.NewDecoder(bytes.NewReader(raw))
 		d.UseNumber()
 		if err := d.Decode(&rows[i]); err != nil || len(rows[i]) != len(res.Columns) {

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	mygoui "github.com/egoist/mygo/ui"
@@ -93,7 +94,16 @@ func (s *shell) tableCard(c *mygoui.Context, ws, runID string, tc session.SQLCha
 		s.chartViews[key] = v
 	}
 	mygoui.Column(c).Gap(6).Padding(8, 8).Radius(8).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).Children(func() {
-		if sr := tc.Series; sr == nil {
+		sr := tc.Series
+		var y chart.Linear
+		var ticks []chart.Tick
+		if sr != nil {
+			var reason string
+			if y, ticks, reason = barScale(sr.Values); reason != "" {
+				tc.Code, tc.Reason, sr = session.CodeSeriesNotPlottable, reason, nil
+			}
+		}
+		if sr == nil {
 			mygoui.Text(c, session.SeriesLine(tc)).TextColor(t.TextMuted)
 		} else {
 			mygoui.Text(c, fmt.Sprintf("%s 按 %s · run_sql %s", sr.YName, sr.XName, tc.CallID)).TextColor(t.TextMuted)
@@ -104,7 +114,7 @@ func (s *shell) tableCard(c *mygoui.Context, ws, runID string, tc session.SQLCha
 				}
 				mygoui.Text(c, fmt.Sprintf("结果已截断（%s），图只含返回的 %d 行", reason, len(sr.Values))).TextColor(t.Danger)
 			}
-			seriesPlot(c, tc.CallID, sr)
+			seriesPlot(c, tc.CallID, sr, y, ticks)
 		}
 		mygoui.Collapsible(c, "SQL · "+tc.CallID, &v.open, func() {
 			mygoui.Text(c, tc.SQL).Font("monospace").Selectable()
@@ -112,16 +122,50 @@ func (s *shell) tableCard(c *mygoui.Context, ws, runID string, tc session.SQLCha
 	})
 }
 
-func seriesPlot(c *mygoui.Context, callID string, sr *session.Series) {
-	t := c.Theme()
-	x := chart.NewBand(sr.Labels...).Padding(0.28, 0.12)
-	lo, hi := chart.Extent(sr.Values...)
+// maxTickLabel 是纵轴刻度文字的最大长度。再长，刻度会把 600 宽的绘图区挤没。
+const maxTickLabel = 24
+
+// barScale 给柱状图定纵轴：含 0，经 Nice 取整。值域溢出、柱的位置算不出有限值，
+// 或刻度文字长到挤掉绘图区时返回原因，调用方不画任何坐标。
+func barScale(values []float64) (chart.Linear, []chart.Tick, string) {
+	lo, hi := chart.Extent(values...)
 	lo, hi = min(lo, 0), max(hi, 0)
 	if lo == hi {
 		hi = lo + 1
 	}
 	y := chart.NewLinear(lo, hi).Nice(4)
+	if span := y.Hi - y.Lo; !finite(y.Lo) || !finite(y.Hi) || !finite(span) || span <= 0 {
+		return y, nil, "数值范围太大，纵轴无法取整"
+	}
+	for _, v := range values {
+		if at := float64(y.At(v)); !finite(at) || at < 0 || at > 1 {
+			return y, nil, "数值超出纵轴，柱的位置算不出来"
+		}
+	}
 	ticks := y.Ticks(4)
+	if len(ticks) < 2 {
+		return y, nil, "纵轴刻度不足"
+	}
+	for _, tk := range ticks {
+		if len(tk.Label) > maxTickLabel {
+			return y, nil, fmt.Sprintf("纵轴刻度 %d 位，绘图区放不下", len(tk.Label))
+		}
+	}
+	return y, ticks, ""
+}
+
+func seriesValues(sr *session.Series) []float64 {
+	if sr == nil {
+		return nil
+	}
+	return sr.Values
+}
+
+func finite(f float64) bool { return !math.IsNaN(f) && !math.IsInf(f, 0) }
+
+func seriesPlot(c *mygoui.Context, callID string, sr *session.Series, y chart.Linear, ticks []chart.Tick) {
+	t := c.Theme()
+	x := chart.NewBand(sr.Labels...).Padding(0.28, 0.12)
 	chart.Plot(c, chart.Axes{
 		Left:   ticks,
 		Bottom: x.Ticks(),
@@ -214,7 +258,8 @@ func (s *shell) autoChart(prompt string) error {
 			ws := s.state.ActiveID()
 			rc, _ := s.analysis.Charts(ws, m.RunID)
 			for _, tc := range rc.Tables {
-				drawn = drawn || (tc.Series != nil && s.chartViews[chartKey(ws, m.RunID, "sql\x00"+tc.CallID)] != nil)
+				_, _, refused := barScale(seriesValues(tc.Series))
+				drawn = drawn || (tc.Series != nil && refused == "" && s.chartViews[chartKey(ws, m.RunID, "sql\x00"+tc.CallID)] != nil)
 			}
 			if len(rc.Charts) > 0 {
 				drawn = false
