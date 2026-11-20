@@ -177,18 +177,30 @@ func TestStructuredChartFromRealSQLResult(t *testing.T) {
 	}
 }
 
-// findScrolled 把对话区往下滚，直到 label 整个落在窗口里，返回它的位置。
+// findScrolled 滚动对话区，直到 label 整个落在对话滚动区内，返回它的位置。
+// 滚动区下边是提问栏，被它裁掉的元素仍在窗口里，但点击会落到提问栏上。
 func findScrolled(t *testing.T, tt *mygoui.Tester, label string) mygoui.Rect {
 	t.Helper()
+	input, ok := tt.Find("提问框")
+	if !ok {
+		t.Fatal("找不到提问框")
+	}
+	const top = 48
+	bottom := input.Y - 16
 	r, found := tt.Find(label)
-	for i := 0; (!found || r.Y+r.H > 720) && i < 60; i++ {
-		tt.Wheel(600, 360, 0, 150)
+	inView := func() bool { return found && r.H > 0 && r.Y >= top && r.Y+r.H <= bottom }
+	for i := 0; !inView() && i < 120; i++ {
+		dy := float32(60)
+		if found && r.Y < top {
+			dy = -60
+		}
+		tt.Wheel(600, 360, 0, dy)
 		tt.Advance(300 * time.Millisecond)
 		tt.Frame()
 		r, found = tt.Find(label)
 	}
-	if !found || r.Y+r.H > 720 {
-		t.Fatalf("窗口里找不到 %q：%+v %q", label, r, tt.Texts())
+	if !inView() {
+		t.Fatalf("对话区里看不全 %q：%+v（可见范围 %v..%v）%q", label, r, top, bottom, tt.Texts())
 	}
 	return r
 }
