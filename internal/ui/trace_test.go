@@ -2,11 +2,16 @@ package ui
 
 import (
 	"bytes"
+	"database/sql"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	mygoui "github.com/egoist/mygo/ui"
+	"github.com/loveRyujin/lantern/core/run"
 	"github.com/loveRyujin/lantern/core/workspace"
 	"github.com/loveRyujin/lantern/internal/ui/session"
 )
@@ -75,6 +80,22 @@ func TestTraceViewShowsRealLoopRunAndRestart(t *testing.T) {
 	} {
 		if !tt.HasText(want) {
 			t.Fatalf("缺少 %q，现有 %q", want, tt.Texts())
+		}
+	}
+	// 工具步骤显示调用参数（run_steps 里已有的参数原文，转义后的纯文本）和结果摘要，
+	// 不只显示哈希。提问原文不进轨迹。
+	var params string
+	for _, text := range tt.Texts() {
+		if strings.HasPrefix(text, "参数 {") {
+			params = text
+		}
+	}
+	if !strings.Contains(params, `"object":"**不要执行**\n`+"```sql"+`\nDROP TABLE users\n`+"```"+`"`) {
+		t.Fatalf("工具参数没有显示：%q", tt.Texts())
+	}
+	for _, text := range tt.Texts() {
+		if strings.Contains(text, "导出客户") || strings.Contains(text, "再导出") {
+			t.Fatalf("轨迹里出现了提问原文：%q", text)
 		}
 	}
 	// 参数里的 Markdown 和代码块按原文显示，没有被渲染。
@@ -148,7 +169,7 @@ func TestTraceViewShowsRealLoopRunAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	cli := out.String()
-	for _, want := range append(ordered, "冻结参数哈希 "+hash, `**不要执行**\n`) {
+	for _, want := range append(ordered, "冻结参数哈希 "+hash, "    参数 {", `**不要执行**\n`, "    结果 已执行") {
 		if !strings.Contains(cli, want) {
 			t.Fatalf("命令行缺少 %q：\n%s", want, cli)
 		}
@@ -232,4 +253,139 @@ func approvalOf(t *testing.T, root, ws, runID string) (id, hash, decision string
 		t.Fatal(err)
 	}
 	return id, hash, decision
+}
+
+// 轨迹入口严格只读：窗口、会话层和命令行查看一个没升级的工作区时，只提示需升级，
+// 不补迁移、不跑 Recover，库文件逐字节不变，也不把缺表当成空记录。
+func TestTraceEntriesStayReadOnlyOnOutdatedWorkspace(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	h, err := workspace.Create(ctx, root, "星禾")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, q := range []string{
+		`INSERT INTO runs (id, state, version, context, created_at, updated_at) VALUES ('run-live', 'running', 0, '', ?1, ?1)`,
+		`INSERT INTO run_steps (id, run_id, ordinal, status, tool_name, created_at, updated_at) VALUES ('step-1', 'run-live', 0, 'executing', 'export_data', ?1, ?1)`,
+	} {
+		if _, err := h.Runs.ExecContext(ctx, q, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := newShell(ctx, Options{Root: root, Workspaces: []session.Workspace{{ID: "星禾"}}, Runner: session.ScriptedRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 窗口已经开着，再把库降回迁移 006 之前，模拟一个还没升级的工作区。
+	path := filepath.Join(root, "workspaces", "星禾", "runs.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`DROP TRIGGER runs_record_created`, `DROP TRIGGER runs_record_transition`,
+		`DROP TRIGGER run_transitions_forbid_update`, `DROP TRIGGER run_transitions_forbid_delete`,
+		`DROP TRIGGER run_events_forbid_update`, `DROP TRIGGER run_events_forbid_delete`,
+		`DROP TABLE run_transitions`, `DELETE FROM schema_migrations WHERE version = 6`,
+	} {
+		if _, err := raw.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const upgrade = "工作区 星禾 需升级后查看"
+
+	tt := traceTester(s)
+	tt.Frame()
+	if err := tt.Click("运行轨迹"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText(upgrade) || tt.HasText("还没有运行") {
+		t.Fatalf("窗口最近运行：%q", tt.Texts())
+	}
+	queryTrace(t, tt, "run-live")
+	if !tt.HasText(upgrade) || tt.HasText("没有运行 run-live") || tt.HasText("状态 运行中") {
+		t.Fatalf("窗口查询：%q", tt.Texts())
+	}
+	if _, err := session.ListRuns(ctx, root, "星禾", 10); !errors.Is(err, run.ErrTraceSchema) {
+		t.Fatalf("session.ListRuns err=%v", err)
+	}
+	var out bytes.Buffer
+	if err := WriteTrace(ctx, &out, root, "星禾", "run-live"); err == nil || !strings.Contains(err.Error(), upgrade) || out.Len() != 0 {
+		t.Fatalf("命令行 err=%v out=%q", err, out.String())
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("查看轨迹改动了 runs.db")
+	}
+	db := openRunsRO(t, root, "星禾")
+	defer db.Close()
+	var tables, version, audits int
+	var state, step string
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name = 'run_transitions'`).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT r.state, s.status FROM runs r JOIN run_steps s ON s.run_id = r.id WHERE r.id = 'run-live'`).Scan(&state, &step); err != nil {
+		t.Fatal(err)
+	}
+	if tables != 0 || version != 5 || audits != 0 || state != "running" || step != "executing" {
+		t.Fatalf("查看后被补迁移或恢复：tables=%d version=%d audits=%d state=%s step=%s", tables, version, audits, state, step)
+	}
+
+	// 目录不存在报不存在；目录在而 runs.db 不在报需升级，都不显示成空记录。
+	if err := WriteTrace(ctx, &out, root, "雪松", "run-live"); err == nil || !strings.Contains(err.Error(), "工作区 雪松 不存在") {
+		t.Fatalf("不存在的工作区 err=%v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "workspaces", "空壳"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteTrace(ctx, &out, root, "空壳", "run-live"); err == nil || !strings.Contains(err.Error(), "工作区 空壳 需升级后查看") {
+		t.Fatalf("缺 runs.db err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "workspaces", "空壳", "runs.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("查看轨迹创建了 runs.db：%v", err)
+	}
+}
+
+// 轨迹入口不经过会补迁移或恢复的路径。
+func TestTraceEntriesNeverOpenWritablePaths(t *testing.T) {
+	for _, file := range []string{"trace.go", filepath.Join("session", "trace.go")} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var code strings.Builder
+		for _, line := range strings.Split(string(src), "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "//") {
+				code.WriteString(line + "\n")
+			}
+		}
+		for _, banned := range []string{"workspace.Open", "OpenPrepared", "workspace.Create", ".Recover(", ".Resume(", "mode=rw"} {
+			if strings.Contains(code.String(), banned) {
+				t.Fatalf("%s 引用了 %s", file, banned)
+			}
+		}
+	}
 }

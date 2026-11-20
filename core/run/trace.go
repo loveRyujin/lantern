@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -41,7 +42,33 @@ var (
 	ErrTraceCorrupt = errors.New("run: 轨迹数据损坏")
 	// ErrTraceWorkspace 表示记录上的工作区与查询的工作区不一致。不会返回任何行。
 	ErrTraceWorkspace = errors.New("run: 运行记录不属于当前工作区")
+	// ErrTraceSchema 表示库还没迁移到轨迹需要的 schema。轨迹只读，不替它补迁移。
+	ErrTraceSchema = errors.New("run: 工作区需升级后查看")
 )
+
+// traceSchema 是轨迹读取依赖的表和列，缺任何一项都返回 ErrTraceSchema。
+var traceSchema = []struct{ table, column string }{
+	{"runs", "state"},
+	{"run_steps", "input_json"},
+	{"run_events", "payload"},
+	{"approvals", "risk"},
+	{"audit", "run_id"},
+	{"run_transitions", "to_state"},
+}
+
+func checkTraceSchema(ctx context.Context, db *sql.DB) error {
+	for _, c := range traceSchema {
+		var n int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, c.table, c.column).Scan(&n); err != nil {
+			return fmt.Errorf("run: 检查 schema: %w", err)
+		}
+		if n == 0 {
+			return fmt.Errorf("%w：缺少 %s.%s", ErrTraceSchema, c.table, c.column)
+		}
+	}
+	return nil
+}
 
 // Trace 是一次运行的只读轨迹。Entries 按时间排序。
 type Trace struct {
@@ -49,8 +76,8 @@ type Trace struct {
 	State     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
-	// NoTransitions 为真表示这次运行没有任何迁移记录：库里没有 run_transitions 表，
-	// 或运行早于迁移 006。此时只能显示当前状态。
+	// NoTransitions 为真表示这次运行没有任何迁移记录，即运行早于迁移 006。
+	// 此时只能显示当前状态。
 	NoTransitions bool
 	Entries       []TraceEntry
 }
@@ -102,6 +129,9 @@ func ReadTrace(ctx context.Context, db *sql.DB, workspaceID, runID string) (Trac
 	}
 	if workspaceID == "" || runID == "" {
 		return Trace{}, fmt.Errorf("run: 工作区或运行标识为空")
+	}
+	if err := checkTraceSchema(ctx, db); err != nil {
+		return Trace{}, err
 	}
 	tr := Trace{RunID: runID}
 	var created, updated string
@@ -193,6 +223,24 @@ func tieRanks(transitions []TraceEntry) []int {
 	return ranks
 }
 
+// legacyAuditRun 取出 004 之前审批审计 detail 里的运行标识。
+// 格式固定为 "id=<ticket> run=<run> from=<state> action=<action>"，取 run= 与 from= 之间的完整值；
+// 格式不符时返回空串，这一行不归属任何运行。
+func legacyAuditRun(detail string) string {
+	if !strings.HasPrefix(detail, "id=") {
+		return ""
+	}
+	_, rest, ok := strings.Cut(detail, " run=")
+	if !ok {
+		return ""
+	}
+	id, tail, ok := strings.Cut(rest, " from=")
+	if !ok || !strings.Contains(tail, " action=") {
+		return ""
+	}
+	return id
+}
+
 // ListRuns 只读列出最近的运行，新的在前。limit 不大于 0 时取 50。
 func ListRuns(ctx context.Context, db *sql.DB, limit int) ([]RunSummary, error) {
 	if err := ctx.Err(); err != nil {
@@ -203,6 +251,9 @@ func ListRuns(ctx context.Context, db *sql.DB, limit int) ([]RunSummary, error) 
 	}
 	if limit <= 0 {
 		limit = 50
+	}
+	if err := checkTraceSchema(ctx, db); err != nil {
+		return nil, err
 	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, state, created_at FROM runs
@@ -302,14 +353,6 @@ func traceApprovals(ctx context.Context, db *sql.DB, workspaceID, runID string) 
 }
 
 func traceTransitions(ctx context.Context, db *sql.DB, runID string) ([]TraceEntry, error) {
-	var n int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'run_transitions'`).Scan(&n); err != nil {
-		return nil, fmt.Errorf("run: 读取迁移表: %w", err)
-	}
-	if n == 0 {
-		return nil, nil
-	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT from_state, to_state, at FROM run_transitions
 		WHERE run_id = ?
@@ -462,12 +505,13 @@ func traceEvents(ctx context.Context, db *sql.DB, runID string, steps map[string
 	return out, nil
 }
 
-// traceAudits 读 run_id 列。004 之前审批状态机写的行 run_id 为空，按 detail 里的 run= 认领。
+// traceAudits 读 run_id 列。004 之前审批状态机写的行 run_id 为空，按 detail 里 run= 的完整值精确认领，
+// 不做前缀或模糊匹配。
 func traceAudits(ctx context.Context, db *sql.DB, runID string) ([]TraceEntry, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT at, actor, action, detail FROM audit
+		SELECT at, actor, action, detail, run_id FROM audit
 		WHERE run_id = ?
-		   OR (run_id = '' AND actor = 'approval' AND instr(detail || ' ', ?) > 0)
+		   OR (run_id = '' AND actor = 'approval' AND instr(detail, ?) > 0)
 		ORDER BY id`, runID, " run="+runID+" ")
 	if err != nil {
 		return nil, fmt.Errorf("run: 读取审计: %w", err)
@@ -476,8 +520,12 @@ func traceAudits(ctx context.Context, db *sql.DB, runID string) ([]TraceEntry, e
 	var out []TraceEntry
 	for rows.Next() {
 		var at, actor, action, detail string
-		if err := rows.Scan(&at, &actor, &action, &detail); err != nil {
+		var rowRun string
+		if err := rows.Scan(&at, &actor, &action, &detail, &rowRun); err != nil {
 			return nil, fmt.Errorf("run: 读取审计: %w", err)
+		}
+		if rowRun == "" && legacyAuditRun(detail) != runID {
+			continue
 		}
 		when, err := traceTime(at, "audit.at")
 		if err != nil {

@@ -3,7 +3,6 @@ package ui
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 
@@ -14,7 +13,7 @@ import (
 )
 
 // WriteTrace 是命令行的轨迹入口，不打开窗口。
-// 先用 OpenPrepared 把库补到当前 schema（不跑 Recover，不写审计），再只读查询。
+// 只读打开 runs.db：不补迁移、不跑 Recover、不写审计。库没升级时报"需升级后查看"。
 // 查询失败时返回的错误文案与窗口里一致，不带库里的内容。
 func WriteTrace(ctx context.Context, w io.Writer, root, workspaceID, runID string) error {
 	if strings.TrimSpace(workspaceID) == "" {
@@ -25,16 +24,6 @@ func WriteTrace(ctx context.Context, w io.Writer, root, workspaceID, runID strin
 		if root, err = workspace.DefaultRoot(); err != nil {
 			return err
 		}
-	}
-	h, err := workspace.OpenPrepared(ctx, root, workspaceID)
-	if err != nil {
-		if errors.Is(err, workspace.ErrNotFound) {
-			return fmt.Errorf("工作区 %s 不存在", session.PlainText(workspaceID))
-		}
-		return err
-	}
-	if err := h.Close(); err != nil {
-		return err
 	}
 	tr, err := session.ReadTrace(ctx, root, workspaceID, runID)
 	if err != nil {
@@ -56,6 +45,8 @@ type tracePanel struct {
 	header    []string
 	lines     []session.TraceLine
 	recent    []run.RunSummary
+	// recentErr 非空时最近运行列表读不出来，只显示原因，不显示成空列表。
+	recentErr string
 	err       string
 }
 
@@ -74,14 +65,15 @@ func (s *shell) closeTrace() {
 }
 
 func (s *shell) loadRecent() {
+	s.trace.recent = nil
+	s.trace.recentErr = ""
 	if strings.TrimSpace(s.root) == "" {
-		s.trace.recent = nil
+		s.trace.recentErr = "没有数据目录，无法读取轨迹。"
 		return
 	}
 	list, err := session.ListRuns(s.ctx, s.root, s.trace.workspace, traceRecentLimit)
 	if err != nil {
-		s.trace.recent = nil
-		s.trace.err = session.TraceError(s.trace.workspace, "", err)
+		s.trace.recentErr = session.TraceError(s.trace.workspace, "", err)
 		return
 	}
 	s.trace.recent = list
@@ -147,7 +139,10 @@ func (s *shell) traceRecent(c *mygoui.Context) {
 	mygoui.Scroll(c).Width(260).Padding(12, 12).BorderWidth(0, 1, 0, 0).BorderColor(t.Border).Children(func() {
 		mygoui.Column(c).Gap(6).Children(func() {
 			mygoui.Text(c, "最近运行").Bold()
-			if len(s.trace.recent) == 0 {
+			switch {
+			case s.trace.recentErr != "":
+				mygoui.Text(c, s.trace.recentErr).TextColor(t.Danger)
+			case len(s.trace.recent) == 0:
 				mygoui.Text(c, "还没有运行").TextColor(t.TextMuted)
 			}
 			for _, rs := range s.trace.recent {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,9 @@ import (
 
 	"github.com/loveRyujin/lantern/core/run"
 )
+
+// ErrNoWorkspace 表示工作区目录不存在。
+var ErrNoWorkspace = errors.New("session: 工作区不存在")
 
 // maxTraceInputRunes 是轨迹里参数原文的展示上限。
 const maxTraceInputRunes = 2000
@@ -26,7 +30,8 @@ type TraceLine struct {
 }
 
 // ReadTrace 只读打开工作区的 runs.db 读一次运行的轨迹。
-// 不调用 workspace.Open，因此不会跑 Recover，也不会追加审计。
+// 不调用 workspace.Open / OpenPrepared，因此不补迁移、不跑 Recover，也不追加审计。
+// 库还没迁移到轨迹需要的 schema 时返回 run.ErrTraceSchema。
 func ReadTrace(ctx context.Context, root, workspaceID, runID string) (run.Trace, error) {
 	runID = strings.TrimSpace(runID)
 	if runID == "" {
@@ -35,9 +40,6 @@ func ReadTrace(ctx context.Context, root, workspaceID, runID string) (run.Trace,
 	db, err := openRunsRO(ctx, root, workspaceID)
 	if err != nil {
 		return run.Trace{}, err
-	}
-	if db == nil {
-		return run.Trace{}, run.ErrNotFound
 	}
 	defer db.Close()
 	return run.ReadTrace(ctx, db, workspaceID, runID)
@@ -49,14 +51,12 @@ func ListRuns(ctx context.Context, root, workspaceID string, limit int) ([]run.R
 	if err != nil {
 		return nil, err
 	}
-	if db == nil {
-		return []run.RunSummary{}, nil
-	}
 	defer db.Close()
 	return run.ListRuns(ctx, db, limit)
 }
 
-// openRunsRO 在库文件不存在时返回 nil, nil。
+// openRunsRO 只读打开 runs.db。工作区目录不存在时返回 ErrNoWorkspace；
+// 目录在而库文件不在时返回 run.ErrTraceSchema，不当成空记录。
 func openRunsRO(ctx context.Context, root, workspaceID string) (*sql.DB, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -65,9 +65,15 @@ func openRunsRO(ctx context.Context, root, workspaceID string) (*sql.DB, error) 
 	if err != nil {
 		return nil, err
 	}
+	if info, err := os.Stat(filepath.Dir(path)); err != nil || !info.IsDir() {
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return nil, ErrNoWorkspace
+		}
+		return nil, err
+	}
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return nil, fmt.Errorf("%w：缺少 runs.db", run.ErrTraceSchema)
 		}
 		return nil, err
 	}
@@ -79,6 +85,10 @@ func TraceError(workspaceID, runID string, err error) string {
 	switch {
 	case err == nil:
 		return ""
+	case errors.Is(err, ErrNoWorkspace):
+		return fmt.Sprintf("工作区 %s 不存在。", PlainText(workspaceID))
+	case errors.Is(err, run.ErrTraceSchema):
+		return fmt.Sprintf("工作区 %s 需升级后查看：轨迹只读，不会替它补迁移。请先在桌面端正常打开这个工作区完成升级。", PlainText(workspaceID))
 	case errors.Is(err, run.ErrNotFound):
 		return fmt.Sprintf("工作区 %s 里没有运行 %s。", PlainText(workspaceID), PlainText(runID))
 	case errors.Is(err, run.ErrTraceWorkspace):

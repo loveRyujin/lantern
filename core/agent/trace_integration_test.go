@@ -155,6 +155,9 @@ func TestTraceOfRealLoopWithSQLAndApproval(t *testing.T) {
 	stepIDs := queryStrings(t, h.Runs, `SELECT id FROM run_steps WHERE run_id = ? ORDER BY ordinal`, r.runID)
 	var toolIDs []string
 	for _, e := range tr.Entries {
+		if strings.Contains(e.Input+e.Summary+e.Detail, "上个月导出客户联系方式") {
+			t.Fatalf("轨迹里出现了提问原文：%+v", e)
+		}
 		switch e.Source {
 		case run.TraceTool:
 			toolIDs = append(toolIDs, e.StepID)

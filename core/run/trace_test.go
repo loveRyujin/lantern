@@ -147,24 +147,70 @@ func TestTraceTransitionsComeFromEveryWriter(t *testing.T) {
 	}
 }
 
-func TestTraceClaimsLegacyApprovalAuditByDetail(t *testing.T) {
+// 004 之前的审批审计没有 run_id 列值，只能从 detail 认领。必须按完整 run_id 精确匹配：
+// 相似、前缀、后缀或格式不符的行都不能串到别的运行上。
+func TestTraceClaimsLegacyApprovalAuditByExactRunID(t *testing.T) {
 	h := openWorkspace(t)
-	insertRun(t, h.Runs, "run-1", run.StateFailed)
-	insertRun(t, h.Runs, "run-10", run.StateFailed)
-	mustExec(t, h.Runs, `INSERT INTO audit (at, actor, action, detail) VALUES (?, 'approval', 'corrupt', 'id=t run=run-1 from=pending action=corrupt')`, stamp())
-	mustExec(t, h.Runs, `INSERT INTO audit (at, actor, action, detail) VALUES (?, 'approval', 'corrupt', 'id=u run=run-10 from=pending action=corrupt')`, stamp())
-	tr, err := run.ReadTrace(t.Context(), h.Runs, "ws-1", "run-1")
-	if err != nil {
-		t.Fatal(err)
+	ids := []string{"run-1", "run-10", "run-1-x", "xrun-1", "run-"}
+	for _, id := range ids {
+		insertRun(t, h.Runs, id, run.StateFailed)
 	}
-	var details []string
-	for _, e := range tr.Entries {
-		if e.Source == run.TraceAudit {
-			details = append(details, e.Detail)
+	legacy := func(detail string) {
+		mustExec(t, h.Runs, `INSERT INTO audit (at, actor, action, detail) VALUES (?, 'approval', 'corrupt', ?)`, stamp(), detail)
+	}
+	for _, id := range ids {
+		legacy("id=t-" + id + " run=" + id + " from=pending action=corrupt")
+	}
+	// 格式不符的行不归属任何运行，哪怕里面出现了 run=run-1。
+	legacy("run=run-1 from=pending action=corrupt")
+	legacy("id=bad run=run-1")
+	legacy("note id=t run=run-1 from=pending action=corrupt")
+	mustExec(t, h.Runs, `INSERT INTO audit (at, actor, action, detail) VALUES (?, 'other', 'corrupt', 'id=o run=run-1 from=pending action=corrupt')`, stamp())
+
+	for _, id := range ids {
+		tr, err := run.ReadTrace(t.Context(), h.Runs, "ws-1", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var details []string
+		for _, e := range tr.Entries {
+			if e.Source == run.TraceAudit {
+				details = append(details, e.Detail)
+			}
+		}
+		want := "id=t-" + id + " run=" + id + " from=pending action=corrupt"
+		if len(details) != 1 || details[0] != want {
+			t.Fatalf("%s 认领了 %q，只应有 %q", id, details, want)
 		}
 	}
-	if len(details) != 1 || !strings.Contains(details[0], "id=t ") {
-		t.Fatalf("旧审计认领 %q", details)
+}
+
+// 轨迹只读：库缺表或缺列时明确报需升级，不补迁移，也不当成空记录。
+func TestTraceRequiresUpgradedSchema(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		drop []string
+	}{
+		{"缺 run_transitions", []string{
+			`DROP TRIGGER runs_record_created`, `DROP TRIGGER runs_record_transition`,
+			`DROP TRIGGER run_transitions_forbid_update`, `DROP TRIGGER run_transitions_forbid_delete`,
+			`DROP TABLE run_transitions`,
+		}},
+		{"缺 approvals.risk", []string{`ALTER TABLE approvals DROP COLUMN risk`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := openWorkspace(t)
+			insertRun(t, h.Runs, "run-1", run.StateCompleted)
+			for _, q := range tc.drop {
+				mustExec(t, h.Runs, q)
+			}
+			if _, err := run.ReadTrace(t.Context(), h.Runs, "ws-1", "run-1"); !errors.Is(err, run.ErrTraceSchema) {
+				t.Fatalf("ReadTrace err=%v", err)
+			}
+			if list, err := run.ListRuns(t.Context(), h.Runs, 10); !errors.Is(err, run.ErrTraceSchema) || list != nil {
+				t.Fatalf("ListRuns list=%v err=%v", list, err)
+			}
+		})
 	}
 }
 
@@ -223,12 +269,16 @@ func TestTraceTiesKeepLifecycleOrder(t *testing.T) {
 // 迁移 006 之前创建的运行没有迁移记录，轨迹要明说，而不是静默缺行。
 func TestTraceFlagsRunWithoutTransitions(t *testing.T) {
 	h := openWorkspace(t)
+	insertRun(t, h.Runs, "fresh", run.StateCompleted)
 	mustExec(t, h.Runs, `DROP TRIGGER runs_record_created`)
 	insertRun(t, h.Runs, "legacy", run.StateCompleted)
-	insertRun(t, h.Runs, "fresh", run.StateCompleted)
 	tr, err := run.ReadTrace(t.Context(), h.Runs, "ws-1", "legacy")
 	if err != nil || !tr.NoTransitions || tr.State != run.StateCompleted {
-		t.Fatalf("tr=%+v err=%v", tr, err)
+		t.Fatalf("legacy tr=%+v err=%v", tr, err)
+	}
+	tr, err = run.ReadTrace(t.Context(), h.Runs, "ws-1", "fresh")
+	if err != nil || tr.NoTransitions || len(tr.Entries) == 0 {
+		t.Fatalf("有迁移记录的运行不该置位：tr=%+v err=%v", tr, err)
 	}
 }
 
