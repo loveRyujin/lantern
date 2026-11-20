@@ -345,7 +345,7 @@ func TestEnterDefersSameTicketAndClickApprovesOnce(t *testing.T) {
 		t.Fatal("演示工具不是计数器")
 	}
 	tt := tester(s)
-	askState, ticketID := askUntilDialog(t, tt, s, runner, "星禾", "导出客户")
+	askState, ticketID, _ := askUntilDialog(t, tt, s, runner, "星禾", "导出客户")
 	if tool.N() != 0 {
 		t.Fatalf("弹窗出现时已经执行 %d 次", tool.N())
 	}
@@ -387,7 +387,7 @@ func TestEnterDefersSameTicketAndClickApprovesOnce(t *testing.T) {
 		t.Fatalf("拒绝后 n=%d phase=%s", tool.N(), s.state.Phase())
 	}
 	// 拒绝已经消费这张票。再开一问，显式点击批准只能执行一次。
-	askState, ticketID = askUntilDialog(t, tt, s, runner, "星禾", "再导出")
+	askState, ticketID, finished := askUntilDialog(t, tt, s, runner, "星禾", "再导出")
 	if tool.N() != 0 || tt.Focused("批准") || !tt.Focused("暂缓") {
 		t.Fatalf("第二张弹窗 n=%d focus暂缓=%v focus批准=%v", tool.N(), tt.Focused("暂缓"), tt.Focused("批准"))
 	}
@@ -405,12 +405,14 @@ func TestEnterDefersSameTicketAndClickApprovesOnce(t *testing.T) {
 	if tool.N() != 1 {
 		t.Fatalf("执行了 %d 次", tool.N())
 	}
+	// workspace.Open 会跑 Recover，必须等这趟运行写完再开。
+	<-finished
 	if n := countWorkspaceApprovals(t, root, "星禾"); n != 2 {
 		t.Fatalf("确认单数量=%d", n)
 	}
 }
 
-func askUntilDialog(t *testing.T, tt *mygoui.Tester, s *shell, runner *session.LoopRunner, ws, prompt string) (session.Ask, string) {
+func askUntilDialog(t *testing.T, tt *mygoui.Tester, s *shell, runner *session.LoopRunner, ws, prompt string) (session.Ask, string, <-chan struct{}) {
 	t.Helper()
 	askState, err := s.state.Begin(prompt)
 	if err != nil {
@@ -421,7 +423,9 @@ func askUntilDialog(t *testing.T, tt *mygoui.Tester, s *shell, runner *session.L
 		for range stream.Events() {
 		}
 	}()
+	finished := make(chan struct{})
 	go func() {
+		defer close(finished)
 		result, err := runner.Ask(s.ctx, session.Ask{
 			RunID: askState.RunID, WorkspaceID: ws, Prompt: prompt, Events: stream,
 		})
@@ -441,7 +445,7 @@ func askUntilDialog(t *testing.T, tt *mygoui.Tester, s *shell, runner *session.L
 		}
 		s.mu.Unlock()
 		if ticketID != "" && tt.HasText("将执行 export_data") && tt.HasText("**不要执行**") && tt.Focused("暂缓") {
-			return askState, ticketID
+			return askState, ticketID, finished
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("确认单没有出现：%q focused暂缓=%v", tt.Texts(), tt.Focused("暂缓"))
@@ -558,8 +562,8 @@ func TestOldSchemaStartsListsAndReopensSameTicket(t *testing.T) {
 	if !ok {
 		t.Fatal("演示工具不是计数器")
 	}
-	if !riskColumn(t, root, ws) || migrationCount(t, root, ws) != 5 {
-		t.Fatalf("启动没有补上 risk 迁移 risk=%v n=%d", riskColumn(t, root, ws), migrationCount(t, root, ws))
+	if !riskColumn(t, root, ws) || migrationCount(t, root, ws) != 6 {
+		t.Fatalf("启动没有补上 risk 与 run_transitions 迁移 risk=%v n=%d", riskColumn(t, root, ws), migrationCount(t, root, ws))
 	}
 	if !s.state.Switch(ws) {
 		t.Fatal("没有星禾")

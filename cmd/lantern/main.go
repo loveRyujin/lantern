@@ -4,6 +4,7 @@
 //
 //	CGO_ENABLED=0 go run ./cmd/lantern
 //	CGO_ENABLED=0 go run ./cmd/lantern -root /tmp/lantern-demo -check -shot /tmp/lantern-window.png
+//	CGO_ENABLED=0 go run ./cmd/lantern -root /tmp/lantern-demo -workspace 星禾 -trace ui-0123…
 //
 // -pyrt-root 是显式的可信准备：首次会建 venv 并按哈希锁安装 pandas、matplotlib。
 // 准备好后窗口改用场景 1 出图演示，工作区需要先 make seed。
@@ -28,7 +29,16 @@ func main() {
 	shot := flag.String("shot", "", "和 -check 一起用，把结束时的窗口写成 PNG")
 	pyRoot := flag.String("pyrt-root", "", "准备 Python 运行时的目录。设置后窗口演示场景 1 出图")
 	chartDemo := flag.Bool("chart-demo", false, "不准备 Python，窗口演示场景 1 的结构化图表；run_python 会报 Python 环境不可用")
+	trace := flag.String("trace", "", "只读打印这次运行的轨迹后退出，不打开窗口")
+	ws := flag.String("workspace", "", "和 -trace 一起用，运行所在的工作区")
 	flag.Parse()
+	if *trace != "" {
+		if err := ui.WriteTrace(context.Background(), os.Stdout, *root, *ws, *trace); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	opts := ui.Options{Root: *root, CheckShot: *shot}
 	if *check {
 		opts.CheckPrompt = "上个月营收是多少"

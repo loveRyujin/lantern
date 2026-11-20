@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -174,9 +175,13 @@ func (l *Loop) Run(ctx context.Context, in Input) (Outcome, error) {
 			return l.finish(runCtx, in, modelCalls, StateFailed, ErrMaxSteps)
 		}
 		stepCtx, stepCancel := context.WithTimeout(runCtx, stepTimeout)
+		started := l.clock()()
 		resp, err := l.Provider.Chat(stepCtx, llm.Request{Messages: messages, Tools: declared})
 		stepCancel()
 		modelCalls++
+		if recErr := l.recordModel(runCtx, in, resp, l.clock()().Sub(started), err); recErr != nil {
+			return l.finish(runCtx, in, modelCalls, StateFailed, recErr)
+		}
 		if err != nil {
 			if runCtx.Err() != nil {
 				return l.finish(runCtx, in, modelCalls, statusFromContext(runCtx), contextError(runCtx))
@@ -753,7 +758,41 @@ func (l *Loop) recordCallError(ctx context.Context, in Input, item *callItem, ca
 		Status:     status,
 		Code:       code,
 		TicketID:   item.ticketID,
+		StepID:     stepIdentity(item),
 	})
+}
+
+// recordModel 在取消之后也要留下这次调用，所以不跟随运行的 ctx。
+func (l *Loop) recordModel(ctx context.Context, in Input, resp llm.Response, dur time.Duration, callErr error) error {
+	if l == nil || l.Log == nil {
+		return nil
+	}
+	ev := RunEvent{
+		RunID:    in.RunID,
+		Kind:     KindModelCall,
+		Duration: dur,
+		Tokens:   resp.Usage.TotalTokens,
+		Status:   "ok",
+	}
+	switch {
+	case callErr != nil:
+		ev.Status = "failed"
+		ev.Code = "model_failed"
+		if isStreamTruncated(callErr) {
+			ev.Code = tools.CodeArgumentsIncomplete
+		}
+		ev.Summary = "模型调用失败"
+	case len(resp.Message.ToolCalls) > 0:
+		names := make([]string, len(resp.Message.ToolCalls))
+		for i, call := range resp.Message.ToolCalls {
+			names[i] = call.Name
+		}
+		ev.Summary = "请求工具 " + strings.Join(names, ", ")
+	default:
+		ev.Summary = fmt.Sprintf("最终回答 %d 字", utf8.RuneCountInString(resp.Message.Content))
+	}
+	ev.Summary = clipSummary(ev.Summary)
+	return l.Log.Append(context.WithoutCancel(ctx), ev)
 }
 
 func (l *Loop) recordCitation(ctx context.Context, in Input, status, summary string) error {
@@ -805,6 +844,8 @@ func (l *Loop) recordTool(ctx context.Context, in Input, item *callItem, tokens 
 		Summary:    item.summary,
 		Duration:   item.duration,
 		Tokens:     tokens,
+		TicketID:   item.ticketID,
+		StepID:     stepIdentity(item),
 	}
 	if l.Log != nil {
 		if err := l.Log.Append(ctx, ev); err != nil {

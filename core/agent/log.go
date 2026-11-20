@@ -12,6 +12,10 @@ import (
 
 const maxSummaryRunes = 200
 
+// KindModelCall 是 run_events 里一次模型调用的摘要。
+// 只记请求的工具名、回答字数、耗时和 token，不记提示词、回答正文或参数。
+const KindModelCall = "model_call"
+
 // RunEvent 是写入 run_events 的一条工具步骤。没有参数原文。
 type RunEvent struct {
 	RunID      string
@@ -27,6 +31,8 @@ type RunEvent struct {
 	Code string
 	// TicketID 是已经消费的确认单。失败时和结果一起留下。
 	TicketID string
+	// StepID 对应 run_steps.id。工具没有开始执行时为空。
+	StepID string
 }
 
 type eventPayload struct {
@@ -38,6 +44,7 @@ type eventPayload struct {
 	Status     string `json:"status,omitempty"`
 	Code       string `json:"code,omitempty"`
 	TicketID   string `json:"ticket_id,omitempty"`
+	StepID     string `json:"step_id,omitempty"`
 }
 
 // RunLog 追加 run_events。
@@ -95,6 +102,7 @@ func (s *SQLiteLog) Append(ctx context.Context, ev RunEvent) error {
 		Status:     ev.Status,
 		Code:       ev.Code,
 		TicketID:   ev.TicketID,
+		StepID:     ev.StepID,
 	})
 	if err != nil {
 		return err

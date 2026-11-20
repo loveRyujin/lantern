@@ -147,7 +147,7 @@ func (m *Machine) settleDuplicate(ctx context.Context, id string, decision Decis
 	}
 	detail := fmt.Sprintf("id=%s run=%s from=%s action=%s", fresh.id, fresh.runID, fresh.state, "duplicate_decision")
 	if err := m.transact(ctx, func(tx *sql.Tx) error {
-		return m.appendAudit(ctx, tx, "duplicate_decision", detail)
+		return m.appendAudit(ctx, tx, fresh.runID, "duplicate_decision", detail)
 	}); err != nil {
 		return DecideResult{}, err
 	}
@@ -351,7 +351,7 @@ func (m *Machine) finishDecide(ctx context.Context, q queryRower, rec row, decis
 		return DecideResult{}, err
 	} else if same {
 		detail := fmt.Sprintf("id=%s run=%s from=%s action=%s", rec.id, rec.runID, rec.state, "duplicate_decision")
-		if err := m.appendAudit(ctx, q, "duplicate_decision", detail); err != nil {
+		if err := m.appendAudit(ctx, q, rec.runID, "duplicate_decision", detail); err != nil {
 			return DecideResult{}, err
 		}
 		res := DecideResult{State: rec.state, Version: rec.version, Duplicate: true}
@@ -488,7 +488,7 @@ func (m *Machine) fail(ctx context.Context, q queryRower, rec row, action string
 		}
 	}
 	detail := fmt.Sprintf("id=%s run=%s from=%s action=%s", rec.id, rec.runID, rec.state, action)
-	if err := m.appendAudit(ctx, q, action, detail); err != nil {
+	if err := m.appendAudit(ctx, q, rec.runID, action, detail); err != nil {
 		return err
 	}
 	return commitError{err: cause}
@@ -505,10 +505,10 @@ func (m *Machine) markRunFailed(ctx context.Context, q queryRower, runID string)
 	return nil
 }
 
-func (m *Machine) appendAudit(ctx context.Context, q queryRower, action, detail string) error {
+func (m *Machine) appendAudit(ctx context.Context, q queryRower, runID, action, detail string) error {
 	_, err := q.ExecContext(ctx,
-		`INSERT INTO audit (at, actor, action, detail) VALUES (?, 'approval', ?, ?)`,
-		m.clock().Format(timeLayout), action, detail,
+		`INSERT INTO audit (at, actor, action, detail, run_id) VALUES (?, 'approval', ?, ?, ?)`,
+		m.clock().Format(timeLayout), action, detail, runID,
 	)
 	if err != nil {
 		return fmt.Errorf("approval: 写审计: %w", err)

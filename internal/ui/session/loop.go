@@ -120,6 +120,7 @@ func (r *LoopRunner) Ask(ctx context.Context, req Ask) (AskResult, error) {
 		Approver: r.Waiter,
 		Tickets:  approval.New(h.Runs),
 		Events:   req.Events,
+		Log:      agent.NewSQLiteLog(h.Runs),
 		Audit:    audit.NewSQLite(h.Runs),
 		Status:   status,
 		Steps:    steps,
