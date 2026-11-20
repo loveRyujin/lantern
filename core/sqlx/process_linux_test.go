@@ -328,6 +328,13 @@ func TestSQLProcessFailureClassification(t *testing.T) {
 				t.Fatalf("failed worker returned rows: %+v", res)
 			}
 			assertProcessReaped(t, stats)
+			wantFatal := ""
+			if strings.Contains(tc.script, "fatal error: out of memory") {
+				wantFatal = "fatal error: out of memory"
+			}
+			if stats.Exit == "" || stats.Fatal != wantFatal {
+				t.Fatalf("failure diagnostics: exit=%q fatal=%q want fatal %q", stats.Exit, stats.Fatal, wantFatal)
+			}
 		})
 	}
 	t.Run("executable-missing", func(t *testing.T) {
