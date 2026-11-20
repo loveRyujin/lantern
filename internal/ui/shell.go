@@ -53,7 +53,8 @@ type shell struct {
 	list   []approval.Ticket
 	notice string
 	// hops 把恢复结果送回界面线程。没有窗口时由 view 排空，避免后台写会话状态。
-	hops chan func()
+	hops  chan func()
+	trace tracePanel
 }
 
 // Run 打开主窗口并进入事件循环。
@@ -216,7 +217,11 @@ func (s *shell) view(c *mygoui.Context) {
 		})
 		mygoui.Row(c).Grow(1).Children(func() {
 			s.sidebar(c)
-			s.conversation(c)
+			if s.trace.open {
+				s.traceView(c)
+			} else {
+				s.conversation(c)
+			}
 		})
 	})
 	s.confirm(c)
@@ -247,6 +252,9 @@ func (s *shell) sidebar(c *mygoui.Context) {
 		}
 		mygoui.Text(c, "待确认").Bold()
 		s.pendingList(c)
+		if mygoui.Button(c, "运行轨迹").Clicked() {
+			s.openTrace("")
+		}
 	})
 }
 
@@ -334,6 +342,9 @@ func (s *shell) bubble(c *mygoui.Context, m session.Message) {
 		}
 		if m.Note != "" {
 			mygoui.Text(c, m.Note).TextColor(t.TextMuted)
+		}
+		if m.Done && m.RunID != "" && mygoui.Button(c, "查看轨迹").Clicked() {
+			s.openTrace(m.RunID)
 		}
 	})
 }

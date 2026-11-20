@@ -558,8 +558,8 @@ func TestOldSchemaStartsListsAndReopensSameTicket(t *testing.T) {
 	if !ok {
 		t.Fatal("演示工具不是计数器")
 	}
-	if !riskColumn(t, root, ws) || migrationCount(t, root, ws) != 5 {
-		t.Fatalf("启动没有补上 risk 迁移 risk=%v n=%d", riskColumn(t, root, ws), migrationCount(t, root, ws))
+	if !riskColumn(t, root, ws) || migrationCount(t, root, ws) != 6 {
+		t.Fatalf("启动没有补上 risk 与 run_transitions 迁移 risk=%v n=%d", riskColumn(t, root, ws), migrationCount(t, root, ws))
 	}
 	if !s.state.Switch(ws) {
 		t.Fatal("没有星禾")

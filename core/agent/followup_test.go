@@ -27,7 +27,7 @@ func TestTruncatedFinalAnswerIsRetryableAndNotAToolFailure(t *testing.T) {
 	if h.echo.n() != 0 || strings.Contains(out.Text, "不该走到这里") {
 		t.Fatalf("截断的最终回答仍继续了: exec=%d text=%q", h.echo.n(), out.Text)
 	}
-	for _, ev := range h.log.Events() {
+	for _, ev := range toolEvents(h.log.Events()) {
 		if ev.Kind != "" {
 			t.Fatalf("最终回答截断不应记成工具失败: %+v", ev)
 		}
@@ -75,7 +75,7 @@ func TestFailedAndSkippedCallsAreLogged(t *testing.T) {
 		if err != nil || out.State != StateCompleted || h.echo.n() != 0 {
 			t.Fatalf("%+v %v exec=%d", out, err, h.echo.n())
 		}
-		events := h.log.Events()
+		events := toolEvents(h.log.Events())
 		if len(events) != 1 || events[0].Kind != tools.CodeArgumentsInvalid || events[0].Status != "failed" {
 			t.Fatalf("记录 %+v", events)
 		}
@@ -93,7 +93,7 @@ func TestFailedAndSkippedCallsAreLogged(t *testing.T) {
 		if err != nil || out.State != StateCompleted || h.echo.n() != 0 {
 			t.Fatalf("%+v %v", out, err)
 		}
-		events := h.log.Events()
+		events := toolEvents(h.log.Events())
 		if len(events) != 2 {
 			t.Fatalf("记录 %+v", events)
 		}
@@ -114,7 +114,7 @@ func TestFailedAndSkippedCallsAreLogged(t *testing.T) {
 		if err != nil || out.State != StateCompleted || h.echo.n() != 1 {
 			t.Fatalf("%+v %v exec=%d", out, err, h.echo.n())
 		}
-		events := h.log.Events()
+		events := toolEvents(h.log.Events())
 		if len(events) != 1 || events[0].Kind != "tool_failed" || events[0].Status != "failed" || events[0].Code != "tool_failed" {
 			t.Fatalf("记录 %+v", events)
 		}
@@ -126,7 +126,7 @@ func TestFailedAndSkippedCallsAreLogged(t *testing.T) {
 		if err != nil || out.State != StateCompleted {
 			t.Fatalf("%+v %v", out, err)
 		}
-		events := h.log.Events()
+		events := toolEvents(h.log.Events())
 		if len(events) != 1 || events[0].Kind != tools.CodeToolNotFound || events[0].Status != "failed" {
 			t.Fatalf("记录 %+v", events)
 		}
@@ -518,10 +518,10 @@ func TestStreamTruncationWritesRunEvents(t *testing.T) {
 	if out.ModelCalls != 3 || out.State != StateFailed || !retryable(err) || errorCode(err) != tools.CodeArgumentsIncomplete {
 		t.Fatalf("%+v %v", out, err)
 	}
-	if len(mem.Events()) != 3 {
+	if len(toolEvents(mem.Events())) != 3 {
 		t.Fatalf("内存记录 %+v", mem.Events())
 	}
-	for _, ev := range mem.Events() {
+	for _, ev := range toolEvents(mem.Events()) {
 		if ev.Kind != tools.CodeArgumentsIncomplete || ev.Status != "failed" || ev.Code != tools.CodeArgumentsIncomplete {
 			t.Fatalf("记录 %+v", ev)
 		}

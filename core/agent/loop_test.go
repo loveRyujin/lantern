@@ -187,7 +187,7 @@ func TestLoopSuccessRecordsHashDurationAndTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventsLogged := mem.Events()
+	eventsLogged := toolEvents(mem.Events())
 	if len(eventsLogged) != 1 {
 		t.Fatalf("run_events %d", len(eventsLogged))
 	}
@@ -877,7 +877,7 @@ func TestToolIgnoringContextEndsOnTimeout(t *testing.T) {
 	if out.State != StateFailed || errorCode(err) != CodeTimeout || retryable(err) {
 		t.Fatalf("%+v %v", out, err)
 	}
-	if len(h.log.Events()) != 0 || strings.Contains(out.Text, "晚了") {
+	if len(toolEvents(h.log.Events())) != 0 || strings.Contains(out.Text, "晚了") {
 		t.Fatalf("超时后仍采纳了工具结果: %+v text=%q", h.log.Events(), out.Text)
 	}
 }
