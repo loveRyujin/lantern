@@ -2,8 +2,10 @@ package run
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/loveRyujin/lantern/core/approval"
 	"github.com/loveRyujin/lantern/core/tools"
@@ -135,7 +137,9 @@ func (s *Service) Resume(ctx context.Context, runID string) (ResumeResult, error
 		ArgsHash:    fresh.ParamsHash,
 	}
 	statusCtx := context.WithoutCancel(ctx)
-	_, execErr := s.execute(ctx, call)
+	started := s.clock()
+	result, execErr := s.execute(ctx, call)
+	_ = s.stepEvent(statusCtx, call, fresh.ID, result.Summary, s.clock().Sub(started), execErr)
 	if execErr != nil {
 		_ = s.Finish(statusCtx, fresh.StepID, StepError)
 		_ = s.Set(statusCtx, runID, StateFailed)
@@ -229,6 +233,48 @@ func (s *Service) forceState(ctx context.Context, runID, to string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// stepEvent 给恢复后的那一次执行补一条 run_events，格式与 Agent 循环的工具记录一致。
+// Summary 来自工具，不放参数原文。
+func (s *Service) stepEvent(ctx context.Context, call tools.Call, ticketID, summary string, dur time.Duration, execErr error) error {
+	p := tracePayload{
+		ToolName:   call.Name,
+		ParamsHash: call.Hash,
+		Summary:    clipSummary(summary),
+		DurationNS: dur.Nanoseconds(),
+		TicketID:   ticketID,
+		StepID:     call.StepID,
+	}
+	kind := "step"
+	if execErr != nil {
+		code, _ := tools.CodeOf(execErr)
+		if code == "" {
+			code = AuditToolFailed
+		}
+		kind, p.Status, p.Code, p.Summary = code, "failed", code, code
+	}
+	payload, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO run_events (run_id, kind, payload, created_at) VALUES (?, ?, ?, ?)`,
+		call.RunID, kind, string(payload), s.stamp(),
+	)
+	return err
+}
+
+func clipSummary(s string) string {
+	const max = 200
+	if s == "" {
+		return "执行完成"
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
 }
 
 func (s *Service) writeAudit(ctx context.Context, runID, action, detail string) error {
