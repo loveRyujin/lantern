@@ -96,7 +96,10 @@ func runSQLProcessCommand(ctx context.Context, req processRequest, cmd *exec.Cmd
 	if err != nil || len(body) > maxProcessInput {
 		return Result{}, stats, workerError(CodeWorkerUnavailable)
 	}
-	cmd.Env = sqlWorkerEnv()
+	// 桌面端链接了 purego，worker 启动时会经 libc 建线程。glibc 默认给每个线程预留
+	// 64–128 MiB 的 malloc arena，空闲就把 RLIMIT_AS 占到约 1 GiB，查询无处分配。
+	// 只留一个 arena；上限本身不变。
+	cmd.Env = append(sqlWorkerEnv(), "MALLOC_ARENA_MAX=1")
 	cmd.Stdin = bytes.NewReader(body)
 	stdout := &cappedBuffer{limit: maxProcessOutput}
 	stderr := &cappedBuffer{limit: 16 << 10}

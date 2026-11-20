@@ -34,6 +34,8 @@ type LoopRunner struct {
 	Demo bool
 	// Config 传给循环。零值使用循环自己的默认超时。
 	Config agent.Config
+	// Analysis 非空时，每次提问另外注册本运行的 run_sql / run_python，图表经它取回。
+	Analysis *Analysis
 }
 
 // NewDemoRunner 构造产品窗口用的演示循环。
@@ -59,7 +61,7 @@ func (r *LoopRunner) Executable() tools.Tool {
 // Ask 打开工作区，写入运行行，然后调用 agent.Loop.Run。
 // 运行标识已经存在时直接返回，不进入循环，也不开新票据。
 func (r *LoopRunner) Ask(ctx context.Context, req Ask) (AskResult, error) {
-	if r == nil || r.Waiter == nil || r.Tool == nil {
+	if r == nil || r.Waiter == nil || (r.Tool == nil && r.Analysis == nil) {
 		return AskResult{}, errors.New("session: 循环运行器未配置")
 	}
 	if strings.TrimSpace(r.Root) == "" {
@@ -93,8 +95,21 @@ func (r *LoopRunner) Ask(ctx context.Context, req Ask) (AskResult, error) {
 		return AskResult{}, errors.New("session: 没有模型")
 	}
 	reg := &tools.Registry{}
-	if err := reg.Register(r.Tool); err != nil {
-		return AskResult{}, err
+	if r.Tool != nil {
+		if err := reg.Register(r.Tool); err != nil {
+			return AskResult{}, err
+		}
+	}
+	if r.Analysis != nil {
+		extra, err := r.Analysis.open(ctx, h, req.RunID)
+		if err != nil {
+			return AskResult{}, err
+		}
+		for _, tool := range extra {
+			if err := reg.Register(tool); err != nil {
+				return AskResult{}, err
+			}
+		}
 	}
 	status, steps := agent.Persist(run.New(h.Runs))
 	loop := &agent.Loop{
