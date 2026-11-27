@@ -977,21 +977,37 @@ func TestCheckFailureStillExitsUnattended(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tool := session.NewExportCounter()
+			var gate atomic.Pointer[gateProvider]
 			r := newQuitRig(t, tool, func(runID string) llm.Provider {
-				if tc.blockAt > 0 {
-					return &gateProvider{inner: exportThenSay(runID), blockAt: tc.blockAt, entered: make(chan struct{})}
+				if tc.blockAt == 0 {
+					return exportThenSay(runID)
 				}
-				return exportThenSay(runID)
+				p := &gateProvider{inner: exportThenSay(runID), blockAt: tc.blockAt, entered: make(chan struct{})}
+				gate.Store(p)
+				return p
 			})
-			r.grace = 300 * time.Millisecond
+			r.grace = time.Second
 			r.s.grace = r.grace
 			ask(t, r.tt, "导出客户")
 			var tk approval.Ticket
 			if tc.blockAt == 0 {
 				tk = r.waitDialog()
 			} else {
-				r.pump("流式中", func() bool { return r.s.state.StreamingRun != "" })
+				// StreamingRun 在运行行落库之前就置上。要等模型调用真正堵住，失败收尾取消的才是一条已存在的运行。
+				r.pump("模型调用阻塞", func() bool {
+					p := gate.Load()
+					if p == nil {
+						return false
+					}
+					select {
+					case <-p.entered:
+						return true
+					default:
+						return false
+					}
+				})
 			}
+			ws := r.s.state.ActiveID()
 			runID := r.s.state.StreamingRun
 			if tk.ID != "" {
 				runID = tk.RunID
@@ -1004,8 +1020,20 @@ func TestCheckFailureStillExitsUnattended(t *testing.T) {
 				deliveredFirst.Store(len(errc) == 1)
 				exit()
 			}
+			start := time.Now()
 			go r.s.runCheck(errc, func() error { return want })
-			r.pump("无人值守退出", func() bool { return len(r.exited) != 0 })
+			var at time.Time
+			r.pump("无人值守退出", func() bool {
+				select {
+				case at = <-r.exited:
+					return true
+				default:
+					return false
+				}
+			})
+			if took := at.Sub(start); took >= r.grace*9/10 {
+				t.Fatalf("失败收尾用了 %v：先空等了有界等待，没有直接暂缓和取消", took)
+			}
 			if !deliveredFirst.Load() {
 				t.Fatal("退出时 -check 的结果还没送进 errc，Run 会读不到")
 			}
@@ -1018,11 +1046,11 @@ func TestCheckFailureStillExitsUnattended(t *testing.T) {
 			if !r.fire("quit") {
 				t.Fatal("收尾后的 App.Quit 被拦住")
 			}
-			if got := r.runState("星禾", runID); got != tc.want || r.running() != 0 || tool.N() != 0 {
+			if got := r.runState(ws, runID); got != tc.want || r.running() != 0 || tool.N() != 0 {
 				t.Fatalf("run=%s running=%d n=%d", got, r.running(), tool.N())
 			}
-			if tk.ID != "" && r.ticketState("星禾", tk.ID) != "pending" {
-				t.Fatalf("票据 %s", r.ticketState("星禾", tk.ID))
+			if tk.ID != "" && r.ticketState(ws, tk.ID) != "pending" {
+				t.Fatalf("票据 %s", r.ticketState(ws, tk.ID))
 			}
 		})
 	}
