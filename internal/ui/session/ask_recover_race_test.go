@@ -213,6 +213,7 @@ func TestResumeRecoverStress(t *testing.T) {
 	hit := 0
 	normal, retryable, anomalies := 0, 0, 0
 	opens, resumeTime := 0, time.Duration(0)
+	var tries, openErrs atomic.Int64
 	for i := 0; i < n; i++ {
 		r, tool, w, root := newFlow(t, "星禾")
 		runID := fmt.Sprintf("run-s%d", i)
@@ -235,9 +236,12 @@ func TestResumeRecoverStress(t *testing.T) {
 					return
 				default:
 				}
+				tries.Add(1)
 				if o, err := workspace.Open(ctx, root, "星禾"); err == nil {
 					_ = o.Close()
 					k++
+				} else {
+					openErrs.Add(1)
 				}
 			}
 		}()
@@ -287,7 +291,8 @@ func TestResumeRecoverStress(t *testing.T) {
 		}
 	}
 	t.Logf("迭代 %d 次，Resume 期间被写成 failed 的 %d 次", n, hit)
-	t.Logf("并发 workspace.Open 成功 %d 次，每趟 Resume 平均 %.1f 次；Resume 总耗时 %v", opens, float64(opens)/float64(n), resumeTime)
+	t.Logf("并发 workspace.Open 尝试 %d 次，成功 %d 次，失败 %d 次；每趟 Resume 平均成功 %.1f 次；Resume 总耗时 %v，Resume 窗口内尝试 %.0f 次/秒",
+		tries.Load(), opens, openErrs.Load(), float64(opens)/float64(n), resumeTime, float64(tries.Load())/resumeTime.Seconds())
 	t.Logf("AC3 口径：正常 %d，可重试失败 %d，异常 %d（%.3f%%）", normal, retryable, anomalies, 100*float64(anomalies)/float64(n))
 	for k, v := range patterns {
 		t.Logf("%4d  %s", v, k)
