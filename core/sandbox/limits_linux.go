@@ -211,7 +211,18 @@ func (t taskExit) String() string {
 	return fmt.Sprintf("state=%s flags=%#x exiting=%t threads=%d", t.state, t.flags, t.flags&pfExiting != 0, t.threads)
 }
 
-// taskFDPermission reports a gone or zombie task as success. A still-live task
+// tearingDown reports a task that can no longer run user code. After exit_mm
+// the kernel makes /proc/<pid>/fd root-owned while stat still says R or D, so
+// PF_EXITING is the only signal for that window. It is per thread, so it
+// counts only when the reported task is the sole thread.
+func (t taskExit) tearingDown() bool {
+	if t.state == "X" {
+		return true
+	}
+	return t.threads <= 1 && (t.state == "Z" || t.flags&pfExiting != 0)
+}
+
+// taskFDPermission reports a gone or exiting task as success. A still-live task
 // whose descriptors cannot be read stays retryable for a short window.
 func taskFDPermission(pid int, err error) error {
 	task, readErr := readTaskExit(pid)
@@ -221,7 +232,7 @@ func taskFDPermission(pid int, err error) error {
 	if readErr != nil {
 		return fmt.Errorf("%w: %v [task stat: %v]", errTaskFDNotReady, err, readErr)
 	}
-	if task.state == "Z" || task.state == "X" {
+	if task.tearingDown() {
 		return nil
 	}
 	return fmt.Errorf("%w: %v [task %v]", errTaskFDNotReady, err, task)
