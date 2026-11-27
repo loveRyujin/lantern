@@ -126,6 +126,36 @@ func (r *Runner) run(ctx context.Context, spec Spec) (Result, error) {
 	return reply.Result, nil
 }
 
+// fdInspection bounds how long the task's descriptors may stay unreadable.
+// Exit teardown may hide proc fds before Wait is delivered; a live
+// inaccessible task still fails closed rather than bypassing disk accounting.
+type fdInspection struct {
+	since, last time.Time
+	count       int
+	maxGap      time.Duration
+}
+
+func (w *fdInspection) observe(now time.Time, err error) error {
+	if err == nil {
+		*w = fdInspection{}
+		return nil
+	}
+	if !errors.Is(err, errTaskFDNotReady) {
+		return Failed(err.Error())
+	}
+	if w.since.IsZero() {
+		w.since = now
+	} else if gap := now.Sub(w.last); gap > w.maxGap {
+		w.maxGap = gap
+	}
+	w.last = now
+	w.count++
+	if elapsed := now.Sub(w.since); elapsed >= 2*samplePeriod {
+		return Failed(fmt.Sprintf("%v (observations=%d over %v, max gap %v)", err, w.count, elapsed.Round(time.Microsecond), w.maxGap.Round(time.Microsecond)))
+	}
+	return nil
+}
+
 type cappedStream struct {
 	limit    int
 	mu       sync.Mutex
@@ -273,7 +303,7 @@ func executeGuarded(req guardianRequest, parentGone <-chan struct{}) (reply guar
 	var messages []setupMessage
 	var statusReceived bool
 	var launcherCPU time.Duration
-	var inspectionSince time.Time
+	var fdWindow fdInspection
 	var usageInspectionSince time.Time
 	var untrusted bool
 	for running := true; running; {
@@ -349,22 +379,8 @@ func executeGuarded(req guardianRequest, parentGone <-chan struct{}) (reply guar
 			if out.overflow.Load() || stderr.overflow.Load() {
 				reason = Failed("stdout/stderr exceeds 64 KiB")
 			}
-			if e := checkWorkspace(root, cmd.Process.Pid); e != nil {
-				if errors.Is(e, errTaskFDNotReady) {
-					if inspectionSince.IsZero() {
-						inspectionSince = now
-					}
-					// Exit teardown may hide proc fds before Wait is delivered.
-					// Retry only a bounded observation window; a live inaccessible
-					// task still fails closed rather than bypassing disk accounting.
-					if now.Sub(inspectionSince) >= 2*samplePeriod {
-						reason = Failed(e.Error())
-					}
-				} else {
-					reason = Failed(e.Error())
-				}
-			} else {
-				inspectionSince = time.Time{}
+			if e := fdWindow.observe(now, checkWorkspace(root, cmd.Process.Pid)); e != nil {
+				reason = e
 			}
 			if reason != nil {
 				_ = cmd.Process.Kill()
