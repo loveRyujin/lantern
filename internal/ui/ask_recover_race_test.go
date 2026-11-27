@@ -188,6 +188,21 @@ func TestShellAskDuringResumeKeepsExecutingRun(t *testing.T) {
 			t.Errorf("run_transitions 出现 %s，随后又被改成 %s", tr, final.State)
 		}
 	}
+	if trs := transitions(final); len(trs) < 3 || strings.Join(trs[3:], " | ") != "awaiting_approval->running | running->completed" {
+		t.Errorf("批准后的迁移 %v", trs)
+	}
+	if final.State != run.StateCompleted {
+		t.Errorf("Resume 后 state=%s", final.State)
+	}
+	consumed := 0
+	for _, st := range approvalStages(final) {
+		if strings.HasPrefix(st, "consumed") {
+			consumed++
+		}
+	}
+	if consumed != 1 {
+		t.Errorf("票据核销 %d 次：%v", consumed, approvalStages(final))
+	}
 }
 
 func hasCurrent(w *session.Waiter, runID string) bool {

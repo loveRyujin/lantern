@@ -24,7 +24,8 @@ type activeKey struct {
 // 不把它们当成残留标为 failed。同一运行可以重复登记，全部 release 之后才算结束。
 // release 可以多次调用，只有第一次生效。
 //
-// Service.Resume 自己会登记；Agent 循环由调用方（session.LoopRunner.Ask）在写入运行行之后登记。
+// Service.Resume 自己会登记；Agent 循环由调用方（session.LoopRunner.Ask）在写入运行行之前登记。
+// 必须在第一次写这趟运行之前登记，否则 Recover 可能在登记前看到半截状态。
 // 进程重启后登记表为空，这时 Recover 就是完整的启动扫描。
 func Hold(ctx context.Context, db *sql.DB, runID string) (release func(), err error) {
 	if ctx == nil {

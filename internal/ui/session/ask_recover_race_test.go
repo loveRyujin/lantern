@@ -132,6 +132,15 @@ func TestAskDuringResumeKeepsExecutingRun(t *testing.T) {
 			t.Errorf("run_transitions 出现 %s，最终又是 %s", tr, final)
 		}
 	}
+	if got := strings.Join(trs[3:], " | "); got != "awaiting_approval->running | running->completed" {
+		t.Errorf("批准后的迁移 %s", got)
+	}
+	if got.err != nil || final != run.StateCompleted || finalStep != run.StepDone {
+		t.Errorf("Resume 收尾 err=%v state=%s step=%s", got.err, final, finalStep)
+	}
+	if ap := roStrings(t, root, "星禾", `SELECT state FROM approvals WHERE run_id = ?`, "run-a"); strings.Join(ap, ",") != "consumed" {
+		t.Errorf("approvals(run-a) %v，想要恰好一张 consumed", ap)
+	}
 }
 
 func askAndDefer(t *testing.T, ctx context.Context, r *LoopRunner, w *Waiter, ws, runID string) {
@@ -304,7 +313,7 @@ func TestResumeRecoverStress(t *testing.T) {
 
 // stressOutcome 按 Issue AC3 归类批准之后的结果。
 // normal：awaiting→running→completed，执行 1 次，票据 consumed，没有恢复类审计，Resume 无错。
-// retryable：Resume 返回 run.ErrBusy，票据没有核销，运行仍是 awaiting_approval，执行 0 次。
+// retryable：Resume 返回 run.ErrBusy，票据回到 pending（批准也随事务回滚），运行仍是 awaiting_approval，执行 0 次。
 // 其余都是异常。
 func stressOutcome(after, acts []string, executed int64, tickets []string, state string, rerr error) string {
 	recovered := false
@@ -329,7 +338,7 @@ func stressOutcome(after, acts []string, executed int64, tickets []string, state
 		strings.Join(after, " | ") == "awaiting_approval->running | running->completed" {
 		return "normal"
 	}
-	if errors.Is(rerr, run.ErrBusy) && !recovered && executed == 0 && oneTicket("pending", "approved") &&
+	if errors.Is(rerr, run.ErrBusy) && !recovered && executed == 0 && oneTicket("pending") &&
 		state == run.StateAwaitingApproval && len(after) == 0 {
 		return "retryable"
 	}
