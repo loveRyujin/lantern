@@ -37,6 +37,8 @@ type Report struct {
 	Interrupted []string
 	Illegal     []string
 	Breakpoints []string
+	// Active 是本进程里登记为活跃、这次扫描跳过的运行。
+	Active []string
 }
 
 // ResumeResult 是 Resume 之后的运行状态。Executed 为 true 表示执行器被调用了一次。
@@ -91,6 +93,10 @@ func (s *Service) SetExecutor(fn Executor) {
 }
 
 // Set 记下运行状态。运行行必须已经存在。Agent 循环用它把 awaiting_approval 落库。
+//
+// 终态保护：运行已是 completed、failed、cancelled、rejected、expired 时，改到别的状态返回
+// *TransitionError（errors.Is(err, ErrTerminal)），runs 和 run_transitions 都不变；
+// 改成同一个终态是空操作，返回 nil。条件写在 UPDATE 里，与并发写入之间没有先读后写的窗口。
 func (s *Service) Set(ctx context.Context, runID, status string) error {
 	if err := s.ready(ctx); err != nil {
 		return err
@@ -98,21 +104,32 @@ func (s *Service) Set(ctx context.Context, runID, status string) error {
 	if runID == "" || !knownState(status) {
 		return fmt.Errorf("run: 运行标识或状态不合法")
 	}
-	res, err := s.db.ExecContext(ctx, `
-		UPDATE runs SET state = ?, version = version + 1, updated_at = ? WHERE id = ?`,
-		status, s.stamp(), runID,
-	)
-	if err != nil {
-		return fmt.Errorf("run: 更新状态: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("run: 更新状态: %w", err)
-	}
-	if n != 1 {
-		return ErrNotFound
-	}
-	return nil
+	return s.writeTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE runs SET state = ?, version = version + 1, updated_at = ?
+			WHERE id = ? AND state NOT IN (?, ?, ?, ?, ?)`,
+			status, s.stamp(), runID,
+			StateCompleted, StateFailed, StateCancelled, StateRejected, StateExpired,
+		)
+		if err != nil {
+			return fmt.Errorf("run: 更新状态: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("run: 更新状态: %w", err)
+		}
+		if n == 1 {
+			return nil
+		}
+		rec, err := loadRun(ctx, tx, runID)
+		if err != nil {
+			return err
+		}
+		if rec.state == status {
+			return nil
+		}
+		return &TransitionError{RunID: runID, From: rec.state, To: status}
+	})
 }
 
 // Begin 在工具执行前把步骤落成 executing。

@@ -108,6 +108,12 @@ func (r *LoopRunner) Ask(ctx context.Context, req Ask) (AskResult, error) {
 			}
 		}
 	}
+	release, err := run.Hold(ctx, h.Runs, req.RunID)
+	if err != nil {
+		_ = r.Analysis.CloseRun(req.RunID)
+		return AskResult{}, err
+	}
+	defer release()
 	if err := insertRun(ctx, h.Runs, req.RunID); err != nil {
 		_ = r.Analysis.CloseRun(req.RunID)
 		return AskResult{}, err

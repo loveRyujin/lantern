@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,11 @@ func (s *Service) Resume(ctx context.Context, runID string) (ResumeResult, error
 	if s.machine == nil {
 		return ResumeResult{}, ErrNoDB
 	}
+	release, err := Hold(ctx, s.db, runID)
+	if err != nil {
+		return ResumeResult{}, err
+	}
+	defer release()
 
 	rec, err := loadRun(ctx, s.db, runID)
 	if err != nil {
@@ -197,42 +203,35 @@ func (s *Service) stepAlreadyThere(ctx context.Context, runID, stepID, status st
 	}
 }
 
+// failRun 把未终结的运行标成 failed 并写审计。已经终结时什么都不写，返回 nil。
 func (s *Service) failRun(ctx context.Context, runID, stepID, ticketID, action, policy string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	rec, err := loadRun(ctx, tx, runID)
-	if err != nil {
-		return err
-	}
-	if terminal(rec.state) {
-		return tx.Commit()
-	}
-	if err := s.failTx(ctx, tx, rec, stepID, ticketID, action, policy); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.writeTx(ctx, func(tx *sql.Tx) error {
+		rec, err := loadRun(ctx, tx, runID)
+		if err != nil {
+			return err
+		}
+		if terminal(rec.state) {
+			return nil
+		}
+		return s.failTx(ctx, tx, rec, stepID, ticketID, action, policy)
+	})
 }
 
+// forceState 和 Set 一样受终态保护：已终结的运行只能"改成"同一个终态（空操作）。
 func (s *Service) forceState(ctx context.Context, runID, to string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	rec, err := loadRun(ctx, tx, runID)
-	if err != nil {
-		return err
-	}
-	if rec.state == to {
-		return tx.Commit()
-	}
-	if err := casState(ctx, tx, rec.id, rec.state, to, rec.version, s.stamp()); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.writeTx(ctx, func(tx *sql.Tx) error {
+		rec, err := loadRun(ctx, tx, runID)
+		if err != nil {
+			return err
+		}
+		if rec.state == to {
+			return nil
+		}
+		if terminal(rec.state) {
+			return &TransitionError{RunID: runID, From: rec.state, To: to}
+		}
+		return casState(ctx, tx, rec.id, rec.state, to, rec.version, s.stamp())
+	})
 }
 
 // stepEvent 给恢复后的那一次执行补一条 run_events，格式与 Agent 循环的工具记录一致。
