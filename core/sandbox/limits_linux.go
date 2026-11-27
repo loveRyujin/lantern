@@ -174,18 +174,55 @@ func checkWorkspace(root string, pid int) error {
 	return nil
 }
 
+// pfExiting is PF_EXITING from include/linux/sched.h, reported in /proc/<pid>/stat.
+const pfExiting = 0x4
+
+type taskExit struct {
+	state   string
+	flags   uint64
+	threads int
+}
+
+func readTaskExit(pid int) (taskExit, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return taskExit{}, err
+	}
+	end := strings.LastIndexByte(string(data), ')')
+	if end < 0 {
+		return taskExit{}, fmt.Errorf("invalid proc stat")
+	}
+	fields := strings.Fields(string(data[end+1:]))
+	if len(fields) < 18 {
+		return taskExit{}, fmt.Errorf("short proc stat")
+	}
+	flags, err := strconv.ParseUint(fields[6], 10, 64)
+	if err != nil {
+		return taskExit{}, err
+	}
+	threads, err := strconv.Atoi(fields[17])
+	if err != nil {
+		return taskExit{}, err
+	}
+	return taskExit{state: fields[0], flags: flags, threads: threads}, nil
+}
+
+func (t taskExit) String() string {
+	return fmt.Sprintf("state=%s flags=%#x exiting=%t threads=%d", t.state, t.flags, t.flags&pfExiting != 0, t.threads)
+}
+
 // taskFDPermission reports a gone or zombie task as success. A still-live task
 // whose descriptors cannot be read stays retryable for a short window.
 func taskFDPermission(pid int, err error) error {
-	stat, readErr := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	task, readErr := readTaskExit(pid)
 	if readErr != nil && os.IsNotExist(readErr) {
 		return nil
 	}
-	if end := strings.LastIndexByte(string(stat), ')'); end >= 0 {
-		fields := strings.Fields(string(stat[end+1:]))
-		if len(fields) > 0 && (fields[0] == "Z" || fields[0] == "X") {
-			return nil
-		}
+	if readErr != nil {
+		return fmt.Errorf("%w: %v [task stat: %v]", errTaskFDNotReady, err, readErr)
 	}
-	return fmt.Errorf("%w: %v", errTaskFDNotReady, err)
+	if task.state == "Z" || task.state == "X" {
+		return nil
+	}
+	return fmt.Errorf("%w: %v [task %v]", errTaskFDNotReady, err, task)
 }
