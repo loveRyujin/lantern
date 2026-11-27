@@ -68,7 +68,26 @@ var (
 	ErrInterrupted = errors.New("run: 执行中断，已标为失败")
 	// ErrStepExists 表示这个步骤号已经落过库。
 	ErrStepExists = errors.New("run: 步骤已存在")
+	// ErrTerminal 表示运行已经终结，不能再改到别的状态。具体值是 *TransitionError。
+	ErrTerminal = errors.New("run: 运行已终结")
+	// ErrBusy 表示库一直被别的写入占着，有界重试后仍拿不到写锁。整段已经回滚：
+	// 运行仍是 awaiting_approval，确认单没有消费，工具没有执行，可以重开再试。
+	ErrBusy = errors.New("run: 库正忙，稍后重试")
 )
+
+// TransitionError 是被终态保护拒绝的一次迁移。errors.Is(err, ErrTerminal) 为真。
+// 被拒绝时 runs 和 run_transitions 都不变。
+type TransitionError struct {
+	RunID string
+	From  string
+	To    string
+}
+
+func (e *TransitionError) Error() string {
+	return "run: 运行 " + e.RunID + " 已是 " + e.From + "，不能改成 " + e.To
+}
+
+func (e *TransitionError) Is(target error) bool { return target == ErrTerminal }
 
 // hashMismatch 是执行前哈希不一致。Unwrap 到审批包的哨兵，调用方不用再写一套判断。
 type hashMismatch struct{}

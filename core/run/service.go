@@ -37,6 +37,8 @@ type Report struct {
 	Interrupted []string
 	Illegal     []string
 	Breakpoints []string
+	// Active 是本进程里登记为活跃、这次扫描跳过的运行。
+	Active []string
 }
 
 // ResumeResult 是 Resume 之后的运行状态。Executed 为 true 表示执行器被调用了一次。
@@ -91,6 +93,10 @@ func (s *Service) SetExecutor(fn Executor) {
 }
 
 // Set 记下运行状态。运行行必须已经存在。Agent 循环用它把 awaiting_approval 落库。
+//
+// 终态保护：运行已是 completed、failed、cancelled、rejected、expired 时，改到别的状态返回
+// *TransitionError（errors.Is(err, ErrTerminal)），runs 和 run_transitions 都不变；
+// 改成同一个终态是空操作，返回 nil。条件写在 UPDATE 里，与并发写入之间没有先读后写的窗口。
 func (s *Service) Set(ctx context.Context, runID, status string) error {
 	if err := s.ready(ctx); err != nil {
 		return err
@@ -98,21 +104,32 @@ func (s *Service) Set(ctx context.Context, runID, status string) error {
 	if runID == "" || !knownState(status) {
 		return fmt.Errorf("run: 运行标识或状态不合法")
 	}
-	res, err := s.db.ExecContext(ctx, `
-		UPDATE runs SET state = ?, version = version + 1, updated_at = ? WHERE id = ?`,
-		status, s.stamp(), runID,
-	)
-	if err != nil {
-		return fmt.Errorf("run: 更新状态: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("run: 更新状态: %w", err)
-	}
-	if n != 1 {
-		return ErrNotFound
-	}
-	return nil
+	return s.writeTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE runs SET state = ?, version = version + 1, updated_at = ?
+			WHERE id = ? AND state NOT IN (?, ?, ?, ?, ?)`,
+			status, s.stamp(), runID,
+			StateCompleted, StateFailed, StateCancelled, StateRejected, StateExpired,
+		)
+		if err != nil {
+			return fmt.Errorf("run: 更新状态: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("run: 更新状态: %w", err)
+		}
+		if n == 1 {
+			return nil
+		}
+		rec, err := loadRun(ctx, tx, runID)
+		if err != nil {
+			return err
+		}
+		if rec.state == status {
+			return nil
+		}
+		return &TransitionError{RunID: runID, From: rec.state, To: status}
+	})
 }
 
 // Begin 在工具执行前把步骤落成 executing。
@@ -124,14 +141,14 @@ func (s *Service) Begin(ctx context.Context, id, runID, toolName string, input [
 	if id == "" || runID == "" {
 		return fmt.Errorf("run: 步骤标识为空")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return s.writeTx(ctx, func(tx *sql.Tx) error {
+		return beginTx(ctx, tx, id, runID, toolName, input, s.stamp())
+	})
+}
 
+func beginTx(ctx context.Context, tx *sql.Tx, id, runID, toolName string, input []byte, stamp string) error {
 	var existing string
-	err = tx.QueryRowContext(ctx, `SELECT status FROM run_steps WHERE id = ?`, id).Scan(&existing)
+	err := tx.QueryRowContext(ctx, `SELECT status FROM run_steps WHERE id = ?`, id).Scan(&existing)
 	if err == nil {
 		return &stepExistsError{Status: existing}
 	}
@@ -143,7 +160,6 @@ func (s *Service) Begin(ctx context.Context, id, runID, toolName string, input [
 		SELECT COALESCE(MAX(ordinal), -1) + 1 FROM run_steps WHERE run_id = ?`, runID).Scan(&ordinal); err != nil {
 		return fmt.Errorf("run: 分配步骤序号: %w", err)
 	}
-	stamp := s.stamp()
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO run_steps (
 			id, run_id, ordinal, status, tool_name, input_json, output_json, created_at, updated_at
@@ -153,7 +169,7 @@ func (s *Service) Begin(ctx context.Context, id, runID, toolName string, input [
 	if err != nil {
 		return fmt.Errorf("run: 写入步骤: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // Finish 把 executing 的步骤收成 done 或 error。

@@ -122,7 +122,7 @@ func TraceHeader(tr run.Trace) []string {
 func TraceLines(tr run.Trace) []TraceLine {
 	out := make([]TraceLine, 0, len(tr.Entries))
 	for _, e := range tr.Entries {
-		out = append(out, traceLine(e))
+		out = append(out, traceLine(e, tr.State))
 	}
 	return out
 }
@@ -143,7 +143,9 @@ func FormatTrace(workspaceID string, tr run.Trace) string {
 	return b.String()
 }
 
-func traceLine(e run.TraceEntry) TraceLine {
+// runState 是这趟运行当前的状态。只有运行已经终结，停在 executing 的步骤才算中断；
+// 运行还在 running 时，工具可能正在本进程里执行。
+func traceLine(e run.TraceEntry, runState string) TraceLine {
 	line := TraceLine{Time: clock(e.At)}
 	add := func(label, value string) {
 		if value != "" {
@@ -169,7 +171,11 @@ func traceLine(e run.TraceEntry) TraceLine {
 		add("错误码", e.Code)
 		add("确认单", e.TicketID)
 		if e.Status == run.StepExecuting {
-			line.Body = append(line.Body, "没有结束记录：执行中断，重启后不会重跑。")
+			if traceTerminal(runState) {
+				line.Body = append(line.Body, "没有结束记录：执行中断，重启后不会重跑。")
+			} else {
+				line.Body = append(line.Body, "还没有结束记录：工具可能仍在执行。")
+			}
 		}
 	case run.TraceEvent:
 		line.Head = joinHead("工具 "+PlainText(e.Tool), resultLabel(e.Status), PlainText(e.Kind))
@@ -347,5 +353,14 @@ func decisionLabel(d string) string {
 		return "无决定"
 	default:
 		return PlainText(d)
+	}
+}
+
+func traceTerminal(state string) bool {
+	switch state {
+	case run.StateCompleted, run.StateFailed, run.StateCancelled, run.StateRejected, run.StateExpired:
+		return true
+	default:
+		return false
 	}
 }

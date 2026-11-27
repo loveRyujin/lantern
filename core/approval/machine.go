@@ -180,6 +180,29 @@ func (m *Machine) Consume(ctx context.Context, id string, cc ConsumeContext) err
 	return m.consumeCommitted(ctx, id, cc, exportScope{})
 }
 
+// ConsumeTx 在调用方的事务里核对并消费，与调用方后续的写入一起提交或回滚。
+// 返回的错误满足 Committed 时，事务里已经写了要保留的内容（审计、过期转移），
+// 调用方应当提交事务再把错误往上交；否则应当回滚。
+func (m *Machine) ConsumeTx(ctx context.Context, tx *sql.Tx, id string, cc ConsumeContext) error {
+	if tx == nil {
+		return errors.New("approval: 没有事务")
+	}
+	rec, err := load(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if rec.runID != cc.RunID || rec.stepID != cc.StepID || rec.paramsHash != cc.ArgsHash {
+		return ErrMismatch
+	}
+	return m.finishConsume(ctx, tx, rec, exportScope{})
+}
+
+// Committed 报告 DecideTx / ConsumeTx 返回的错误是否要求调用方提交事务。
+func Committed(err error) bool {
+	var c commitError
+	return errors.As(err, &c)
+}
+
 // ConsumeForExport 在消费前再核对工作区、动作和导出对象。
 func (m *Machine) ConsumeForExport(ctx context.Context, id string, cc ConsumeContext, workspaceID, object string) error {
 	return m.consumeCommitted(ctx, id, cc, exportScope{
@@ -496,7 +519,8 @@ func (m *Machine) fail(ctx context.Context, q queryRower, rec row, action string
 
 func (m *Machine) markRunFailed(ctx context.Context, q queryRower, runID string) error {
 	_, err := q.ExecContext(ctx, `
-		UPDATE runs SET state = 'failed', version = version + 1, updated_at = ? WHERE id = ?`,
+		UPDATE runs SET state = 'failed', version = version + 1, updated_at = ?
+		WHERE id = ? AND state NOT IN ('completed', 'failed', 'cancelled', 'rejected', 'expired')`,
 		m.clock().Format(timeLayout), runID,
 	)
 	if err != nil {
