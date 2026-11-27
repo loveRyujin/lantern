@@ -126,16 +126,13 @@ func Run(opts Options) error {
 			return
 		}
 		go func() {
-			defer mygo.App.Quit()
 			var err error
 			if s.analysis != nil {
 				err = s.autoChart(opts.CheckPrompt)
 			} else {
 				err = s.autoAsk(opts.CheckPrompt)
 			}
-			// 等自动提问的收尾落完再退出，-check 留下的已暂缓票不会触发拦截。
-			s.waitWork(quitGrace)
-			errc <- err
+			errc <- s.finishCheck(err)
 		}()
 	})
 	if err := mygo.App.Run(); err != nil {

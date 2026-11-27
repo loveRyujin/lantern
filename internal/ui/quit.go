@@ -20,6 +20,8 @@ const (
 	quitIdle quitPhase = iota
 	quitAsking
 	quitLeaving
+	// quitExiting：有界等待已结束，只剩 leave 自己发起的那次 Quit。之前的阶段一律拦住，不跳过等待。
+	quitExiting
 )
 
 // quitWork 是本进程内会被退出打断的工作。不按库扫描：崩溃残留的 running 行不代表这里有人在跑。
@@ -71,9 +73,9 @@ func (s *shell) allowQuit() bool {
 	phase := s.quit
 	s.mu.Unlock()
 	switch phase {
-	case quitLeaving:
+	case quitExiting:
 		return true
-	case quitAsking:
+	case quitAsking, quitLeaving:
 		return false
 	}
 	w := s.activity()
@@ -112,7 +114,7 @@ func (s *shell) quitAsked() bool {
 func (s *shell) leaving() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.quit == quitLeaving
+	return s.quit >= quitLeaving
 }
 
 // quitDialog 画拦截框。它打开时不画下面的确认框，Enter 和 Escape 只落在这里。
@@ -169,7 +171,7 @@ func quitMessage(w quitWork, active string) string {
 // 有界等待后台收尾，然后退出。超时也退出，留给下次启动扫描。
 func (s *shell) leave() {
 	s.mu.Lock()
-	if s.quit == quitLeaving {
+	if s.quit >= quitLeaving {
 		s.mu.Unlock()
 		return
 	}
@@ -177,27 +179,42 @@ func (s *shell) leave() {
 	s.mu.Unlock()
 	deferred := s.waiter.Shutdown()
 	s.stop()
-	grace := s.grace
-	if grace <= 0 {
-		grace = quitGrace
-	}
+	grace := s.graceLimit()
 	s.mu.Lock()
 	s.asking = false
 	s.notice = fmt.Sprintf("正在退出：已暂缓 %d 张确认单，最多等 %d 秒让运行落库。", len(deferred), int(grace/time.Second))
 	s.mu.Unlock()
 	go func() {
 		s.waitWork(grace)
+		s.mu.Lock()
+		s.quit = quitExiting
+		s.mu.Unlock()
 		if s.exit != nil {
 			s.exit()
 		}
 	}()
 }
 
+func (s *shell) graceLimit() time.Duration {
+	if s.grace > 0 {
+		return s.grace
+	}
+	return quitGrace
+}
+
+// finishCheck 收尾 -check：先等自动提问落完（留下的已暂缓票不会被改写），再按「仍退出」退出。
+// 自动提问失败时可能还有回答在流式或确认单在等，直接 Quit 会被拦截框拦住，无人值守的进程就挂着。
+func (s *shell) finishCheck(err error) error {
+	s.waitWork(s.graceLimit())
+	s.leave()
+	return err
+}
+
 // beginWork 记一项后台工作。退出已经开始时拒绝，保证 Add 先于 waitWork。
 func (s *shell) beginWork() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.quit == quitLeaving {
+	if s.quit >= quitLeaving {
 		return false
 	}
 	s.work.Add(1)

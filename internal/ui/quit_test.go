@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -912,6 +913,110 @@ func TestQuitGraceTimeoutStillExits(t *testing.T) {
 		t.Fatalf("仍退出到退出耗时 %v，应等满 1s 时限，且明显短于默认的 %v", waited, quitGrace)
 	}
 	assertRecoveredOnStart(t, root, mark, onlyRun(t, root))
+}
+
+// 「仍退出」后的有界等待里再关窗口或再 Quit：都拦住，不再弹框，也不跳过等待；等完只放行 leave 自己那次。
+func TestQuitAgainWhileLeavingKeepsWaiting(t *testing.T) {
+	tool := newBlockTool(true)
+	t.Cleanup(func() { close(tool.release) })
+	r := newQuitRig(t, tool, nil)
+	r.grace = 600 * time.Millisecond
+	ask(t, r.tt, "导出客户")
+	tk := r.waitDialog()
+	r.tt.Key(0, mygoui.KeyEscape)
+	r.pump("暂缓后空闲", func() bool { return r.s.state.Phase() == "等待确认" && r.idle() })
+	r.start()
+	r.click("重开 " + tk.ID)
+	r.waitDialog()
+	r.click("批准")
+	waitClosed(t, tool.entered, "工具开始执行")
+	r.interceptVia("close")
+	start := time.Now()
+	r.click("仍退出")
+	for time.Since(start) < r.grace/2 {
+		r.tt.Frame()
+		for _, kind := range []string{"close", "quit"} {
+			if r.fire(kind) {
+				t.Fatalf("有界等待中 %s 被放行，后台还没落库", kind)
+			}
+		}
+		if r.tt.HasText(quitTitle) || len(r.exited) != 0 {
+			t.Fatalf("有界等待中又弹框或提前退出：%q exited=%d", r.tt.Texts(), len(r.exited))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var at time.Time
+	r.pump("退出", func() bool {
+		select {
+		case at = <-r.exited:
+			return true
+		default:
+			return false
+		}
+	})
+	if waited := at.Sub(start); waited < r.grace*9/10 {
+		t.Fatalf("只等了 %v，有界等待是 %v", waited, r.grace)
+	}
+	if !r.fire("quit") || !r.fire("close") {
+		t.Fatal("等完后 leave 发起的 Quit 被拦住")
+	}
+	if tool.N() != 1 {
+		t.Fatalf("执行 %d 次", tool.N())
+	}
+}
+
+// -check 的自动提问失败时，回答可能还在流式、确认单可能还在等。收尾要照样退出，不能挂在拦截框上。
+func TestCheckFailureStillExitsUnattended(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		blockAt int32
+		want    string
+	}{
+		{name: "回答在流式", blockAt: 1, want: "cancelled"},
+		{name: "确认单在等", want: "awaiting_approval"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tool := session.NewExportCounter()
+			r := newQuitRig(t, tool, func(runID string) llm.Provider {
+				if tc.blockAt > 0 {
+					return &gateProvider{inner: exportThenSay(runID), blockAt: tc.blockAt, entered: make(chan struct{})}
+				}
+				return exportThenSay(runID)
+			})
+			r.grace = 300 * time.Millisecond
+			r.s.grace = r.grace
+			ask(t, r.tt, "导出客户")
+			var tk approval.Ticket
+			if tc.blockAt == 0 {
+				tk = r.waitDialog()
+			} else {
+				r.pump("流式中", func() bool { return r.s.state.StreamingRun != "" })
+			}
+			runID := r.s.state.StreamingRun
+			if tk.ID != "" {
+				runID = tk.RunID
+			}
+			want := errors.New("自动提问失败")
+			errc := make(chan error, 1)
+			go func() { errc <- r.s.finishCheck(want) }()
+			r.pump("无人值守退出", func() bool { return len(r.exited) != 0 })
+			if err := <-errc; !errors.Is(err, want) {
+				t.Fatalf("finishCheck 返回 %v", err)
+			}
+			if r.tt.HasText(quitTitle) {
+				t.Fatalf("无人值守时弹了拦截框：%q", r.tt.Texts())
+			}
+			if !r.fire("quit") {
+				t.Fatal("收尾后的 App.Quit 被拦住")
+			}
+			if got := r.runState("星禾", runID); got != tc.want || r.running() != 0 || tool.N() != 0 {
+				t.Fatalf("run=%s running=%d n=%d", got, r.running(), tool.N())
+			}
+			if tk.ID != "" && r.ticketState("星禾", tk.ID) != "pending" {
+				t.Fatalf("票据 %s", r.ticketState("星禾", tk.ID))
+			}
+		})
+	}
 }
 
 func TestStartupNoticeSeparatesInterruptedFromResidual(t *testing.T) {
