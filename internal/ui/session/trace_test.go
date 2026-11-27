@@ -115,3 +115,21 @@ func TestTraceAfterResumeShowsResultAndTransitions(t *testing.T) {
 		t.Fatalf("Resume 步骤 %+v", step)
 	}
 }
+
+func TestTraceExecutingStepLabelFollowsRunState(t *testing.T) {
+	step := run.TraceEntry{Source: run.TraceTool, Tool: "export_data", Status: run.StepExecuting, StepID: "s1"}
+	body := func(state string) string {
+		lines := TraceLines(run.Trace{State: state, Entries: []run.TraceEntry{step}})
+		return strings.Join(lines[0].Body, "\n")
+	}
+	for _, st := range []string{run.StateRunning, run.StateAwaitingApproval} {
+		if got := body(st); strings.Contains(got, "执行中断") || !strings.Contains(got, "可能仍在执行") {
+			t.Errorf("%s: %s", st, got)
+		}
+	}
+	for _, st := range []string{run.StateFailed, run.StateCompleted, run.StateCancelled} {
+		if got := body(st); !strings.Contains(got, "执行中断") {
+			t.Errorf("%s: %s", st, got)
+		}
+	}
+}

@@ -11,7 +11,7 @@ import (
 // busyBudget 是一次写事务因 SQLITE_BUSY 重试的总时长。连接上的 busy_timeout 只管等锁；
 // WAL 下事务先读后写、读快照又已过期时，SQLite 直接返回 SQLITE_BUSY，不走 busy handler，
 // 只能整段重来。
-const busyBudget = 5 * time.Second
+var busyBudget = 5 * time.Second
 
 // keep 让 fn 的写入随事务提交，同时把 err 交给调用方。
 type keep struct{ err error }

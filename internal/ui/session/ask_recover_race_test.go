@@ -212,6 +212,7 @@ func TestResumeRecoverStress(t *testing.T) {
 	patterns := map[string]int{}
 	hit := 0
 	normal, retryable, anomalies := 0, 0, 0
+	opens, resumeTime := 0, time.Duration(0)
 	for i := 0; i < n; i++ {
 		r, tool, w, root := newFlow(t, "星禾")
 		runID := fmt.Sprintf("run-s%d", i)
@@ -242,7 +243,9 @@ func TestResumeRecoverStress(t *testing.T) {
 		}()
 		resc := make(chan error, 1)
 		go func() {
+			began := time.Now()
 			_, err := w.Resume(ctx, svc, runID)
+			resumeTime += time.Since(began)
 			resc <- err
 		}()
 		tk := waitTicket(t, w, runID)
@@ -251,7 +254,7 @@ func TestResumeRecoverStress(t *testing.T) {
 		}
 		rerr := <-resc
 		close(stop)
-		<-spun
+		opens += <-spun
 		_ = h.Close()
 		trs := roTransitions(t, root, "星禾", runID)
 		key := strings.Join(trs[3:], " | ")
@@ -284,6 +287,7 @@ func TestResumeRecoverStress(t *testing.T) {
 		}
 	}
 	t.Logf("迭代 %d 次，Resume 期间被写成 failed 的 %d 次", n, hit)
+	t.Logf("并发 workspace.Open 成功 %d 次，每趟 Resume 平均 %.1f 次；Resume 总耗时 %v", opens, float64(opens)/float64(n), resumeTime)
 	t.Logf("AC3 口径：正常 %d，可重试失败 %d，异常 %d（%.3f%%）", normal, retryable, anomalies, 100*float64(anomalies)/float64(n))
 	for k, v := range patterns {
 		t.Logf("%4d  %s", v, k)
