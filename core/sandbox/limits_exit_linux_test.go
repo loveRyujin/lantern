@@ -12,32 +12,24 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
-// A non-dumpable task keeps running while the kernel makes its proc fd
-// directory root-owned: the live counterpart of the exit_mm window.
-func TestSandboxFDHelperNonDumpable(t *testing.T) {
-	if os.Getenv("LANTERN_FD_HELPER_NONDUMPABLE") != "1" {
-		return
-	}
-	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
-		os.Exit(2)
-	}
-	os.Stdout.WriteString("ready\n")
-	_, _ = io.Copy(io.Discard, os.Stdin)
-	os.Exit(0)
-}
-
-func startNonDumpable(t *testing.T) int {
+// startPython runs a single-threaded task shaped like the sandboxed Python. It
+// prints "ready" after setup and exits when stdin closes.
+func startPython(t *testing.T, setup string) (pid int, stdin io.WriteCloser, cmd *exec.Cmd) {
 	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		if os.Getenv("SANDBOX_REQUIRE_REAL") == "1" {
+			t.Fatal(err)
+		}
+		t.Skip("python3 unavailable")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses proc fd ownership checks")
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestSandboxFDHelperNonDumpable$")
-	cmd.Env = append(os.Environ(), "LANTERN_FD_HELPER_NONDUMPABLE=1")
-	stdin, err := cmd.StdinPipe()
+	cmd = exec.Command(python, "-c", "import sys,os\n"+setup+"\nsys.stdout.write('ready\\n');sys.stdout.flush()\nsys.stdin.read(1)\nos._exit(0)")
+	stdin, err = cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,18 +40,24 @@ func startNonDumpable(t *testing.T) int {
 	if err = cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { stdin.Close(); _ = cmd.Wait() })
-	line, err := bufio.NewReader(stdout).ReadString('\n')
-	if err != nil || line != "ready\n" {
-		t.Fatalf("helper not ready: %q %v", line, err)
+	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "ready\n" {
+		stdin.Close()
+		_ = cmd.Wait()
+		t.Fatalf("python not ready: %q %v", line, err)
 	}
-	return cmd.Process.Pid
+	return cmd.Process.Pid, stdin, cmd
 }
 
+// A non-dumpable task keeps running while the kernel makes its proc fd
+// directory root-owned: the live counterpart of the exit_mm window.
 func TestTaskFDLiveUnreadableFailsClosed(t *testing.T) {
-	pid := startNonDumpable(t)
+	pid, stdin, cmd := startPython(t, "import ctypes\nassert ctypes.CDLL(None).prctl(4,0,0,0,0)==0")
+	t.Cleanup(func() { stdin.Close(); _ = cmd.Wait() })
 	if _, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid)); !os.IsPermission(err) {
 		t.Fatalf("precondition: live non-dumpable task fd dir error=%v, want EACCES", err)
+	}
+	if task, err := readTaskExit(pid); err != nil || task.threads != 1 {
+		t.Fatalf("precondition: want a single-threaded live task, got %v %v", task, err)
 	}
 	root := t.TempDir()
 	var window fdInspection
@@ -80,7 +78,7 @@ func TestTaskFDLiveUnreadableFailsClosed(t *testing.T) {
 			t.Fatalf("live unreadable task was not failed within 5s (%d observations)", observations)
 		}
 	}
-	if observations < 2 || !strings.Contains(reason.Error(), "exiting=false") || !strings.Contains(reason.Error(), "task FD inspection temporarily unavailable") {
+	if observations < 2 || !strings.Contains(reason.Error(), "exiting=false threads=1") || !strings.Contains(reason.Error(), "task FD inspection temporarily unavailable") {
 		t.Fatalf("observations=%d reason=%v", observations, reason)
 	}
 	if task, err := readTaskExit(pid); err != nil || task.tearingDown() {
@@ -92,57 +90,36 @@ func TestTaskFDLiveUnreadableFailsClosed(t *testing.T) {
 // The exit_mm window grows with the address space, so a large single-threaded
 // Python makes it observable with tight polling.
 func TestTaskFDExitingTaskIsTeardown(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		if os.Getenv("SANDBOX_REQUIRE_REAL") == "1" {
-			t.Fatal(err)
-		}
-		t.Skip("python3 unavailable")
-	}
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses proc fd ownership checks")
-	}
 	root := t.TempDir()
 	for attempt := 0; attempt < 5; attempt++ {
-		cmd := exec.Command(python, "-c", "import sys,os\nb=bytearray(512<<20)\nfor i in range(0,len(b),4096): b[i]=1\nsys.stdout.write('ready\\n');sys.stdout.flush()\nsys.stdin.read(1)\nos._exit(0)")
-		stdin, err := cmd.StdinPipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
-		pid := cmd.Process.Pid
-		if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "ready\n" {
-			t.Fatalf("python not ready: %q %v", line, err)
-		}
-		if err = checkWorkspace(root, pid); err != nil {
+		pid, stdin, cmd := startPython(t, "b=bytearray(512<<20)\nfor i in range(0,len(b),4096): b[i]=1")
+		if err := checkWorkspace(root, pid); err != nil {
 			t.Fatalf("live dumpable task: %v", err)
 		}
 		stdin.Close()
-		exitingDenied := 0
+		viaExiting := 0
 		for {
 			_, rawErr := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
-			before, statErr := readTaskExit(pid)
-			if e := checkWorkspace(root, pid); e != nil {
+			e := checkWorkspace(root, pid)
+			after, statErr := readTaskExit(pid)
+			if e != nil {
 				t.Fatalf("exiting task reported %v", e)
 			}
-			if statErr != nil || before.state == "Z" {
+			if statErr != nil || after.state == "Z" || after.state == "X" {
 				break
 			}
-			if os.IsPermission(rawErr) && before.flags&pfExiting != 0 {
-				exitingDenied++
+			// Once mm is gone the fd directory stays root-owned, and the task
+			// was still not a zombie after checkWorkspace returned. Its nil
+			// therefore came from the PF_EXITING branch, not from Z or ENOENT.
+			if os.IsPermission(rawErr) && after.flags&pfExiting != 0 && after.threads == 1 {
+				viaExiting++
 			}
 		}
-		if err = cmd.Wait(); err != nil {
+		if err := cmd.Wait(); err != nil {
 			t.Fatal(err)
 		}
-		if exitingDenied > 0 {
-			t.Logf("attempt %d: %d EACCES observations of a live-state task with PF_EXITING, all treated as teardown", attempt, exitingDenied)
+		if viaExiting > 0 {
+			t.Logf("attempt %d: %d checks of a non-zombie PF_EXITING task with unreadable fds returned nil", attempt, viaExiting)
 			return
 		}
 	}
