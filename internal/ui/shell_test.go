@@ -577,8 +577,9 @@ func TestOldSchemaStartsListsAndReopensSameTicket(t *testing.T) {
 	if session.RiskLine(got[0].Risk) != session.RiskUnfrozen {
 		t.Fatalf("risk line=%s", session.RiskLine(got[0].Risk))
 	}
-	if restoredAudits(t, root, ws) != 0 || restoredAudits(t, root, other) != 0 {
-		t.Fatal("首次列出写了 approval_restored")
+	// 启动扫描（W7-D）每次进程启动给仍挂起的票追加一条 approval_restored；两次列出不再追加。
+	if restoredAudits(t, root, ws) != 1 || restoredAudits(t, root, other) != 0 {
+		t.Fatalf("首次启动后 approval_restored 星禾=%d 云杉=%d", restoredAudits(t, root, ws), restoredAudits(t, root, other))
 	}
 
 	again, err := newShell(ctx, Options{Root: root, Runner: session.NewDemoRunner(root, session.NewWaiter())})
@@ -590,7 +591,7 @@ func TestOldSchemaStartsListsAndReopensSameTicket(t *testing.T) {
 	}
 	again.reloadList()
 	second := shellList(again)
-	if len(second) != 1 || second[0].ID != ticketID || restoredAudits(t, root, ws) != 0 {
+	if len(second) != 1 || second[0].ID != ticketID || restoredAudits(t, root, ws) != 2 {
 		t.Fatalf("再次打开 list=%+v audits=%d", second, restoredAudits(t, root, ws))
 	}
 	if n := approvalCount(t, root, ws); n != 1 {
@@ -653,11 +654,11 @@ func TestOldSchemaStartsListsAndReopensSameTicket(t *testing.T) {
 	if id, risk := approvalRisk(t, root, ws); id != ticketID || risk != "" {
 		t.Fatalf("票据=%s risk=%q", id, risk)
 	}
-	if restoredAudits(t, root, ws) != 0 || restoredAudits(t, root, other) != 0 {
-		t.Fatal("重开或刷新追加了 approval_restored")
+	if restoredAudits(t, root, ws) != 2 || restoredAudits(t, root, other) != 0 {
+		t.Fatal("重开、切换或刷新追加了 approval_restored")
 	}
 	s.reloadList()
-	if left := shellList(s); len(left) != 0 || restoredAudits(t, root, ws) != 0 {
+	if left := shellList(s); len(left) != 0 || restoredAudits(t, root, ws) != 2 {
 		t.Fatalf("完成后仍待确认 %+v audits=%d", left, restoredAudits(t, root, ws))
 	}
 }
