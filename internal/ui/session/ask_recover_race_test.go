@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -210,6 +211,7 @@ func TestResumeRecoverStress(t *testing.T) {
 	ctx := t.Context()
 	patterns := map[string]int{}
 	hit := 0
+	normal, retryable, anomalies := 0, 0, 0
 	for i := 0; i < n; i++ {
 		r, tool, w, root := newFlow(t, "星禾")
 		runID := fmt.Sprintf("run-s%d", i)
@@ -270,9 +272,57 @@ func TestResumeRecoverStress(t *testing.T) {
 				break
 			}
 		}
+		tickets := roStrings(t, root, "星禾", `SELECT state FROM approvals WHERE run_id = ?`, runID)
+		state, _ := roState(t, root, "星禾", runID)
+		switch stressOutcome(trs[3:], acts, tool.N(), tickets, state, rerr) {
+		case "normal":
+			normal++
+		case "retryable":
+			retryable++
+		default:
+			anomalies++
+		}
 	}
 	t.Logf("迭代 %d 次，Resume 期间被写成 failed 的 %d 次", n, hit)
+	t.Logf("AC3 口径：正常 %d，可重试失败 %d，异常 %d（%.3f%%）", normal, retryable, anomalies, 100*float64(anomalies)/float64(n))
 	for k, v := range patterns {
 		t.Logf("%4d  %s", v, k)
 	}
+	if anomalies > 0 {
+		t.Errorf("异常 %d 次", anomalies)
+	}
+}
+
+// stressOutcome 按 Issue AC3 归类批准之后的结果。
+// normal：awaiting→running→completed，执行 1 次，票据 consumed，没有恢复类审计，Resume 无错。
+// retryable：Resume 返回 run.ErrBusy，票据没有核销，运行仍是 awaiting_approval，执行 0 次。
+// 其余都是异常。
+func stressOutcome(after, acts []string, executed int64, tickets []string, state string, rerr error) string {
+	recovered := false
+	for _, a := range acts {
+		switch a {
+		case run.AuditExecutingInterrupted, run.AuditIllegalResidual, run.AuditBreakpointHeld:
+			recovered = true
+		}
+	}
+	oneTicket := func(want ...string) bool {
+		if len(tickets) != 1 {
+			return false
+		}
+		for _, w := range want {
+			if tickets[0] == w {
+				return true
+			}
+		}
+		return false
+	}
+	if rerr == nil && !recovered && executed == 1 && oneTicket("consumed") && state == run.StateCompleted &&
+		strings.Join(after, " | ") == "awaiting_approval->running | running->completed" {
+		return "normal"
+	}
+	if errors.Is(rerr, run.ErrBusy) && !recovered && executed == 0 && oneTicket("pending", "approved") &&
+		state == run.StateAwaitingApproval && len(after) == 0 {
+		return "retryable"
+	}
+	return "anomaly"
 }

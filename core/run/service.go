@@ -141,14 +141,14 @@ func (s *Service) Begin(ctx context.Context, id, runID, toolName string, input [
 	if id == "" || runID == "" {
 		return fmt.Errorf("run: 步骤标识为空")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return s.writeTx(ctx, func(tx *sql.Tx) error {
+		return beginTx(ctx, tx, id, runID, toolName, input, s.stamp())
+	})
+}
 
+func beginTx(ctx context.Context, tx *sql.Tx, id, runID, toolName string, input []byte, stamp string) error {
 	var existing string
-	err = tx.QueryRowContext(ctx, `SELECT status FROM run_steps WHERE id = ?`, id).Scan(&existing)
+	err := tx.QueryRowContext(ctx, `SELECT status FROM run_steps WHERE id = ?`, id).Scan(&existing)
 	if err == nil {
 		return &stepExistsError{Status: existing}
 	}
@@ -160,7 +160,6 @@ func (s *Service) Begin(ctx context.Context, id, runID, toolName string, input [
 		SELECT COALESCE(MAX(ordinal), -1) + 1 FROM run_steps WHERE run_id = ?`, runID).Scan(&ordinal); err != nil {
 		return fmt.Errorf("run: 分配步骤序号: %w", err)
 	}
-	stamp := s.stamp()
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO run_steps (
 			id, run_id, ordinal, status, tool_name, input_json, output_json, created_at, updated_at
@@ -170,7 +169,7 @@ func (s *Service) Begin(ctx context.Context, id, runID, toolName string, input [
 	if err != nil {
 		return fmt.Errorf("run: 写入步骤: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // Finish 把 executing 的步骤收成 done 或 error。

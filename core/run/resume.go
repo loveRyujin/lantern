@@ -105,30 +105,23 @@ func (s *Service) Resume(ctx context.Context, runID string) (ResumeResult, error
 		return ResumeResult{State: StateAwaitingApproval}, ErrNoExecutor
 	}
 
-	if k == kindPending {
-		if _, err := s.machine.Decide(ctx, fresh.ID, approval.Decision{Action: approval.ActionApprove}); err != nil {
+	existing, err := s.claim(ctx, runID, fresh, k == kindPending)
+	if err != nil {
+		if approval.Committed(err) {
 			return s.decisionFailed(ctx, runID, err)
 		}
-	}
-	if err := s.machine.Consume(ctx, fresh.ID, approval.ConsumeContext{
-		RunID:    fresh.RunID,
-		StepID:   fresh.StepID,
-		ArgsHash: fresh.ParamsHash,
-	}); err != nil {
-		return s.decisionFailed(ctx, runID, err)
-	}
-
-	if err := s.Begin(ctx, fresh.StepID, fresh.RunID, fresh.Action, fresh.Params); err != nil {
-		var exists *stepExistsError
-		if errors.As(err, &exists) {
-			return s.stepAlreadyThere(ctx, runID, fresh.StepID, exists.Status)
+		if errors.Is(err, ErrNotAwaiting) {
+			cur, lerr := loadRun(ctx, s.db, runID)
+			if lerr != nil {
+				return ResumeResult{}, err
+			}
+			return ResumeResult{State: cur.state}, err
 		}
-		// 确认单已经消费。步骤没落成 executing 时也不能再执行。
-		_ = s.forceState(context.WithoutCancel(ctx), runID, StateFailed)
-		return ResumeResult{State: StateFailed}, err
+		// 整段已回滚：确认单没有消费，运行仍挂起，可以重开再试。
+		return ResumeResult{State: StateAwaitingApproval}, err
 	}
-	if err := s.Set(ctx, runID, StateRunning); err != nil {
-		return ResumeResult{}, err
+	if existing != "" {
+		return s.stepAlreadyThere(ctx, runID, fresh.StepID, existing)
 	}
 
 	call := tools.Call{
@@ -160,6 +153,56 @@ func (s *Service) Resume(ctx context.Context, runID string) (ResumeResult, error
 		return ResumeResult{State: StateRunning, Executed: true}, err
 	}
 	return ResumeResult{State: StateCompleted, Executed: true}, nil
+}
+
+// claim 在一个事务里依次写：批准（仍 pending 时）、消费确认单、步骤 executing、
+// 运行 awaiting_approval→running。要么全部提交，要么全部回滚，不存在
+// "确认单已消费、步骤没落库"的中间态，别的事务也读不到一半。
+//
+// 审批状态机要求保留写入的错误（过期、快照不符等）会连同它的审计一起提交，
+// 这时运行迁移没有写，错误满足 approval.Committed。
+// 步骤号已经存在时只提交消费，返回那一步的状态，由调用方按旧步骤收尾，不再执行。
+// SQLITE_BUSY 由 writeTx 有界重试，最终失败时返回包了 ErrBusy 的错误，什么都没提交。
+func (s *Service) claim(ctx context.Context, runID string, t approval.Ticket, decide bool) (existing string, err error) {
+	err = s.writeTx(ctx, func(tx *sql.Tx) error {
+		existing = ""
+		rec, err := loadRun(ctx, tx, runID)
+		if err != nil {
+			return err
+		}
+		if rec.state != StateAwaitingApproval {
+			return ErrNotAwaiting
+		}
+		if decide {
+			if err := s.machine.DecideTx(ctx, tx, t.ID, approval.Decision{Action: approval.ActionApprove}); err != nil {
+				return keepIfCommitted(err)
+			}
+		}
+		if err := s.machine.ConsumeTx(ctx, tx, t.ID, approval.ConsumeContext{
+			RunID:    t.RunID,
+			StepID:   t.StepID,
+			ArgsHash: t.ParamsHash,
+		}); err != nil {
+			return keepIfCommitted(err)
+		}
+		if err := beginTx(ctx, tx, t.StepID, t.RunID, t.Action, t.Params, s.stamp()); err != nil {
+			var exists *stepExistsError
+			if errors.As(err, &exists) {
+				existing = exists.Status
+				return nil
+			}
+			return err
+		}
+		return casState(ctx, tx, rec.id, rec.state, StateRunning, rec.version, s.stamp())
+	})
+	return existing, err
+}
+
+func keepIfCommitted(err error) error {
+	if approval.Committed(err) {
+		return keep{err: err}
+	}
+	return err
 }
 
 func (s *Service) decisionFailed(ctx context.Context, runID string, err error) (ResumeResult, error) {
