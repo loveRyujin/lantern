@@ -234,7 +234,7 @@ func (s *shell) recoverAtStart() error {
 	if strings.TrimSpace(s.root) == "" || s.state == nil {
 		return nil
 	}
-	failed := 0
+	interrupted, illegal := 0, 0
 	for _, ws := range s.state.Workspaces {
 		h, err := workspace.OpenPrepared(s.ctx, s.root, ws.ID)
 		if err != nil {
@@ -248,12 +248,26 @@ func (s *shell) recoverAtStart() error {
 		if cerr != nil {
 			return cerr
 		}
-		failed += len(rep.Interrupted) + len(rep.Illegal)
+		interrupted += len(rep.Interrupted)
+		illegal += len(rep.Illegal)
 	}
-	if failed > 0 {
-		s.notice = fmt.Sprintf("启动扫描：%d 个中断的运行已标为失败，不会重跑。", failed)
-	}
+	s.notice = startupNotice(interrupted, illegal)
 	return nil
+}
+
+// startupNotice 把执行中断和无法恢复的残留分开说：前者是工具跑到一半，后者是没有可恢复的断点或确认单。
+func startupNotice(interrupted, illegal int) string {
+	var parts []string
+	if interrupted > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个中断的运行", interrupted))
+	}
+	if illegal > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个无法恢复的残留运行", illegal))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "启动扫描：" + strings.Join(parts, "、") + "已标为失败，不会重跑。"
 }
 
 func loadWorkspaces(ctx context.Context, root string) ([]session.Workspace, error) {
@@ -753,7 +767,7 @@ func (s *shell) showTicket(tk approval.Ticket) {
 		s.asking = true
 		s.mu.Unlock()
 	}
-	if s.win == nil {
+	if s.win == nil && s.post == nil {
 		apply()
 		return
 	}

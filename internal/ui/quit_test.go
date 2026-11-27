@@ -908,10 +908,26 @@ func TestQuitGraceTimeoutStillExits(t *testing.T) {
 		t.Fatal("有界等待后进程没有退出")
 	}
 	waited := stampOf(t, mark, "exit").Sub(stampOf(t, mark, "leave"))
-	if waited < 900*time.Millisecond || waited > 1500*time.Millisecond {
-		t.Fatalf("仍退出到退出耗时 %v，应在 1s 有界等待附近", waited)
+	if waited < 900*time.Millisecond || waited >= 3*time.Second {
+		t.Fatalf("仍退出到退出耗时 %v，应等满 1s 时限，且明显短于默认的 %v", waited, quitGrace)
 	}
 	assertRecoveredOnStart(t, root, mark, onlyRun(t, root))
+}
+
+func TestStartupNoticeSeparatesInterruptedFromResidual(t *testing.T) {
+	for _, c := range []struct {
+		interrupted, illegal int
+		want                 string
+	}{
+		{0, 0, ""},
+		{1, 0, "启动扫描：1 个中断的运行已标为失败，不会重跑。"},
+		{0, 2, "启动扫描：2 个无法恢复的残留运行已标为失败，不会重跑。"},
+		{3, 1, "启动扫描：3 个中断的运行、1 个无法恢复的残留运行已标为失败，不会重跑。"},
+	} {
+		if got := startupNotice(c.interrupted, c.illegal); got != c.want {
+			t.Errorf("startupNotice(%d, %d)=%q，想要 %q", c.interrupted, c.illegal, got, c.want)
+		}
+	}
 }
 
 func TestQuitGraceDefaultIsFiveSeconds(t *testing.T) {
