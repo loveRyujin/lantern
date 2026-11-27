@@ -998,10 +998,19 @@ func TestCheckFailureStillExitsUnattended(t *testing.T) {
 			}
 			want := errors.New("自动提问失败")
 			errc := make(chan error, 1)
-			go func() { errc <- r.s.finishCheck(want) }()
+			var deliveredFirst atomic.Bool
+			exit := r.s.exit
+			r.s.exit = func() {
+				deliveredFirst.Store(len(errc) == 1)
+				exit()
+			}
+			go r.s.runCheck(errc, func() error { return want })
 			r.pump("无人值守退出", func() bool { return len(r.exited) != 0 })
+			if !deliveredFirst.Load() {
+				t.Fatal("退出时 -check 的结果还没送进 errc，Run 会读不到")
+			}
 			if err := <-errc; !errors.Is(err, want) {
-				t.Fatalf("finishCheck 返回 %v", err)
+				t.Fatalf("-check 结果 %v", err)
 			}
 			if r.tt.HasText(quitTitle) {
 				t.Fatalf("无人值守时弹了拦截框：%q", r.tt.Texts())

@@ -202,12 +202,13 @@ func (s *shell) graceLimit() time.Duration {
 	return quitGrace
 }
 
-// finishCheck 收尾 -check：先等自动提问落完（留下的已暂缓票不会被改写），再按「仍退出」退出。
+// runCheck 跑 -check：结果先进 errc，再收尾退出。Run 在 App.Run 返回后才读 errc，
+// 先送达才不会和退出抢先后。收尾先等自动提问落完（留下的已暂缓票不会被改写），再按「仍退出」退出：
 // 自动提问失败时可能还有回答在流式或确认单在等，直接 Quit 会被拦截框拦住，无人值守的进程就挂着。
-func (s *shell) finishCheck(err error) error {
+func (s *shell) runCheck(errc chan<- error, check func() error) {
+	errc <- check()
 	s.waitWork(s.graceLimit())
 	s.leave()
-	return err
 }
 
 // beginWork 记一项后台工作。退出已经开始时拒绝，保证 Add 先于 waitWork。

@@ -125,15 +125,12 @@ func Run(opts Options) error {
 		if opts.CheckPrompt == "" {
 			return
 		}
-		go func() {
-			var err error
+		go s.runCheck(errc, func() error {
 			if s.analysis != nil {
-				err = s.autoChart(opts.CheckPrompt)
-			} else {
-				err = s.autoAsk(opts.CheckPrompt)
+				return s.autoChart(opts.CheckPrompt)
 			}
-			errc <- s.finishCheck(err)
-		}()
+			return s.autoAsk(opts.CheckPrompt)
+		})
 	})
 	if err := mygo.App.Run(); err != nil {
 		return err
