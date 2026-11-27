@@ -18,6 +18,8 @@ var (
 	ErrNoWait = errors.New("session: 没有等待中的确认单")
 	// ErrParamsLocked 表示界面试图替换冻结参数。
 	ErrParamsLocked = errors.New("session: 界面不能修改冻结参数")
+	// ErrClosed 表示应用正在退出，不再开始新的 Resume。
+	ErrClosed = errors.New("session: 正在退出")
 )
 
 // Waiter 实现 Approver。它只把决定交回调用方，不写状态机，也不执行工具。
@@ -28,6 +30,7 @@ type Waiter struct {
 	byTicket map[string]*hold
 	resuming map[string]struct{}
 	onShow   func(approval.Ticket)
+	closed   bool
 }
 
 type hold struct {
@@ -65,6 +68,10 @@ func (w *Waiter) Request(ctx context.Context, ticket approval.Ticket) (approval.
 	}
 	h := &hold{ticket: cloneTicket(ticket), ch: make(chan approval.Decision, 1)}
 	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return approval.Decision{Action: approval.ActionDefer}, nil
+	}
 	if _, exists := w.live[ticket.RunID]; exists {
 		w.mu.Unlock()
 		return approval.Decision{}, ErrBusy
@@ -78,18 +85,24 @@ func (w *Waiter) Request(ctx context.Context, ticket approval.Ticket) (approval.
 	}
 	defer w.clear(ticket.RunID, ticket.ID, h)
 
+	var d approval.Decision
 	select {
+	case d = <-h.ch:
 	case <-ctx.Done():
-		return approval.Decision{}, ctx.Err()
-	case d := <-h.ch:
-		if err := d.Validate(); err != nil {
-			return approval.Decision{}, err
+		// 退出时先送暂缓再取消 ctx。两者同时就绪时 select 随机挑，这里补收一次，暂缓不会丢。
+		select {
+		case d = <-h.ch:
+		default:
+			return approval.Decision{}, ctx.Err()
 		}
-		if len(d.Params) > 0 {
-			return approval.Decision{}, ErrParamsLocked
-		}
-		return d, nil
 	}
+	if err := d.Validate(); err != nil {
+		return approval.Decision{}, err
+	}
+	if len(d.Params) > 0 {
+		return approval.Decision{}, ErrParamsLocked
+	}
+	return d, nil
 }
 
 // Deliver 把一次决定交给正在等待的确认单。第二次送出会失败，通道里仍只有第一次。
@@ -114,9 +127,53 @@ func (w *Waiter) Deliver(ticketID string, d approval.Decision) error {
 		return ErrDecided
 	}
 	h.sent = true
-	w.mu.Unlock()
 	h.ch <- d
+	w.mu.Unlock()
 	return nil
+}
+
+// Shutdown 在退出时调用。正在等待的确认单都收到暂缓，之后到达的 Request 也直接暂缓。
+// 返回收到暂缓的票据，覆盖所有工作区。调用方随后才能取消 ctx。
+func (w *Waiter) Shutdown() []approval.Ticket {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.closed = true
+	var out []approval.Ticket
+	for _, h := range w.live {
+		if h.sent {
+			continue
+		}
+		h.sent = true
+		h.ch <- approval.Decision{Action: approval.ActionDefer}
+		out = append(out, cloneTicket(h.ticket))
+	}
+	return out
+}
+
+// Activity 是等待器里本进程的活跃工作：等决定的确认单（不分工作区）和进行中的 Resume。
+type Activity struct {
+	Waiting  []approval.Ticket
+	Resuming []string
+}
+
+// Activity 返回当前快照。已暂缓、库里仍是 awaiting_approval 但没人在等的运行不在其中。
+func (w *Waiter) Activity() Activity {
+	if w == nil {
+		return Activity{}
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var a Activity
+	for _, h := range w.live {
+		a.Waiting = append(a.Waiting, cloneTicket(h.ticket))
+	}
+	for id := range w.resuming {
+		a.Resuming = append(a.Resuming, id)
+	}
+	return a
 }
 
 // Busy 报告这趟运行是否还卡在确认或 Resume 里。
@@ -154,6 +211,10 @@ func (w *Waiter) Resume(ctx context.Context, svc *run.Service, runID string) (ru
 		return run.ResumeResult{}, ErrNoWait
 	}
 	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return run.ResumeResult{}, ErrClosed
+	}
 	if _, ok := w.live[runID]; ok {
 		w.mu.Unlock()
 		return run.ResumeResult{}, ErrBusy

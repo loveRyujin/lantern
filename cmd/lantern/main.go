@@ -6,6 +6,9 @@
 //	CGO_ENABLED=0 go run ./cmd/lantern -root /tmp/lantern-demo -check -shot /tmp/lantern-window.png
 //	CGO_ENABLED=0 go run ./cmd/lantern -root /tmp/lantern-demo -workspace 星禾 -trace ui-0123…
 //
+// 每次启动先对每个工作区跑一次 Recover（启动扫描）。有提问、确认单或恢复执行在进行时，
+// 关窗口或第一个 SIGINT/SIGTERM 会弹拦截框；第二个信号直接退出，留给下次启动扫描。
+//
 // -pyrt-root 是显式的可信准备：首次会建 venv 并按哈希锁安装 pandas、matplotlib。
 // 准备好后窗口改用场景 1 出图演示，工作区需要先 make seed。
 //
@@ -31,6 +34,7 @@ func main() {
 	chartDemo := flag.Bool("chart-demo", false, "不准备 Python，窗口演示场景 1 的结构化图表；run_python 会报 Python 环境不可用")
 	trace := flag.String("trace", "", "只读打印这次运行的轨迹后退出，不打开窗口")
 	ws := flag.String("workspace", "", "和 -trace 一起用，运行所在的工作区")
+	toolDelay := flag.Duration("demo-tool-delay", 0, "演示 export_data 批准后先等这么久再执行，用来验证工具执行中退出")
 	flag.Parse()
 	if *trace != "" {
 		if err := ui.WriteTrace(context.Background(), os.Stdout, *root, *ws, *trace); err != nil {
@@ -39,7 +43,7 @@ func main() {
 		}
 		return
 	}
-	opts := ui.Options{Root: *root, CheckShot: *shot}
+	opts := ui.Options{Root: *root, CheckShot: *shot, DemoToolDelay: *toolDelay}
 	if *check {
 		opts.CheckPrompt = "上个月营收是多少"
 	}

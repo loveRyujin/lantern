@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/loveRyujin/lantern/core/events"
 	"github.com/loveRyujin/lantern/core/pyrt"
 	"github.com/loveRyujin/lantern/core/run"
+	"github.com/loveRyujin/lantern/core/tools"
 	"github.com/loveRyujin/lantern/core/workspace"
 	"github.com/loveRyujin/lantern/internal/ui/session"
 )
@@ -38,6 +40,9 @@ type Options struct {
 	// Python 是可信方已显式准备的运行时。非空且 Runner 为空时，窗口用场景 1 出图演示；
 	// 零值表示没有准备，只出 run_sql 的结构化图表，run_python 报环境不可用。
 	Python *pyrt.Runtime
+	// DemoToolDelay 大于零时，演示循环的 export_data 在 Execute 里先等这么久（理会 ctx）再计数执行。
+	// 给真实窗口里「工具执行中」退出和硬杀的验证用，默认零。
+	DemoToolDelay time.Duration
 }
 
 // shell 是主窗口。mygo 类型只留在这个文件所在的包里。
@@ -63,7 +68,32 @@ type shell struct {
 	analysis     *session.Analysis
 	ownsAnalysis bool
 	chartViews   map[string]*chartView
+
+	// runCtx 只给提问和 Resume 用，「仍退出」时取消。读列表和轨迹仍用 ctx。
+	runCtx   context.Context
+	stopRuns context.CancelFunc
+	// post 把函数排到界面线程。有窗口时用 Window.Update；无窗口测试可以接到 hops 上，让提问在后台跑。
+	post func(func())
+	// asks 和 resumes 是本进程里还没收尾的提问和重开，由 mu 保护。work 计同一批后台 goroutine。
+	asks     map[string]struct{}
+	resumes  map[string]struct{}
+	work     sync.WaitGroup
+	quit     quitPhase
+	quitWork quitWork
+	// grace 为零时用 quitGrace。exit 在有界等待之后调用，产品窗口里是 App.Quit。
+	grace time.Duration
+	exit  func()
+	// overlay 是上一帧画的弹窗，只在界面线程读写。
+	overlay overlayKind
 }
+
+type overlayKind int
+
+const (
+	overlayNone overlayKind = iota
+	overlayConfirm
+	overlayQuit
+)
 
 // Run 打开主窗口并进入事件循环。
 // 侧边栏切换工作区，对话区用 markdown.Stream 显示 token。
@@ -79,24 +109,33 @@ func Run(opts Options) error {
 		defer s.analysis.Close()
 	}
 	mygo.Theme.SetSource(mygo.ThemeLight)
+	s.exit = mygo.App.Quit
 	errc := make(chan error, 1)
 	mygo.App.WhenReady(func() {
+		// 关窗口先到 OnClose，再进 Quit 流程到 OnBeforeQuit；Cmd+Q、App.Quit 和第一个 SIGINT/SIGTERM 只到后者。
+		// 第二个信号由 mygo 直接 os.Exit，不经过这里，留给启动扫描。
+		mygo.App.OnBeforeQuit(s.onBeforeQuit)
 		s.win = mygo.NewWindow(mygo.WindowOptions{
 			Title:   "lantern",
 			Width:   1080,
 			Height:  720,
 			Content: mygoui.View(s.view),
 		})
+		s.win.OnClose(s.onClose)
 		if opts.CheckPrompt == "" {
 			return
 		}
 		go func() {
 			defer mygo.App.Quit()
+			var err error
 			if s.analysis != nil {
-				errc <- s.autoChart(opts.CheckPrompt)
-				return
+				err = s.autoChart(opts.CheckPrompt)
+			} else {
+				err = s.autoAsk(opts.CheckPrompt)
 			}
-			errc <- s.autoAsk(opts.CheckPrompt)
+			// 等自动提问的收尾落完再退出，-check 留下的已暂缓票不会触发拦截。
+			s.waitWork(quitGrace)
+			errc <- err
 		}()
 	})
 	if err := mygo.App.Run(); err != nil {
@@ -149,13 +188,19 @@ func newShell(ctx context.Context, opts Options) (*shell, error) {
 			runner = session.NewChartDemoRunner(root, waiter, &session.Analysis{Runtime: *opts.Python})
 			owns = true
 		} else {
-			runner = session.NewDemoRunner(root, waiter)
+			lr := session.NewDemoRunner(root, waiter)
+			if opts.DemoToolDelay > 0 {
+				lr.Tool = delayTool{Tool: lr.Tool, delay: opts.DemoToolDelay}
+			}
+			runner = lr
 		}
 	}
 	s := &shell{
 		state: st, runner: runner, ctx: ctx, root: root, shot: opts.CheckShot, waiter: waiter,
 		hops: make(chan func(), 8),
+		asks: map[string]struct{}{}, resumes: map[string]struct{}{},
 	}
+	s.runCtx, s.stopRuns = context.WithCancel(ctx)
 	// AtOnce 让每个 token 在下一帧就出现。负的 Fade 关掉淡入，测试帧才稳定。
 	s.md.Reveal = &markdown.Reveal{Unit: markdown.AtOnce, Fade: -1}
 	s.md.WrapCode = true
@@ -166,27 +211,47 @@ func newShell(ctx context.Context, opts Options) (*shell, error) {
 	if lr, ok := runner.(*session.LoopRunner); ok && lr.Analysis != nil {
 		s.analysis, s.ownsAnalysis = lr.Analysis, owns
 	}
-	if err := s.prepareWorkspaces(); err != nil {
+	if err := s.recoverAtStart(); err != nil {
+		s.stopRuns()
 		return nil, err
 	}
 	s.reloadList()
 	return s, nil
 }
 
-// prepareWorkspaces 在第一次读取待确认列表前，把已有工作区补到当前 schema。
-// 这里不调用 workspace.Open，因此不会跑 Recover，也不会追加 approval_restored。
-func (s *shell) prepareWorkspaces() error {
+func (s *shell) stop() {
+	if s.stopRuns != nil {
+		s.stopRuns()
+	}
+}
+
+// recoverAtStart 是桌面启动扫描（FR-SM-5）：第一次读待确认列表前，把每个已有工作区补到当前 schema，
+// 再跑一次 Recover。停在 executing 的运行标 failed 并写 executing_interrupted，仍挂起的确认单追加
+// approval_restored。Run 只建一个 shell，所以每次进程启动只扫一次；之后的列表刷新、切换工作区、
+// 重开票据和轨迹查看仍然只读，不追加恢复审计。
+// 这时本进程还没有任何活跃运行，不需要跳过谁。
+func (s *shell) recoverAtStart() error {
 	if strings.TrimSpace(s.root) == "" || s.state == nil {
 		return nil
 	}
+	failed := 0
 	for _, ws := range s.state.Workspaces {
 		h, err := workspace.OpenPrepared(s.ctx, s.root, ws.ID)
 		if err != nil {
 			return err
 		}
-		if err := h.Close(); err != nil {
-			return err
+		rep, err := run.New(h.Runs).Recover(s.ctx)
+		cerr := h.Close()
+		if err != nil {
+			return fmt.Errorf("ui: 启动扫描 %s: %w", ws.ID, err)
 		}
+		if cerr != nil {
+			return cerr
+		}
+		failed += len(rep.Interrupted) + len(rep.Illegal)
+	}
+	if failed > 0 {
+		s.notice = fmt.Sprintf("启动扫描：%d 个中断的运行已标为失败，不会重跑。", failed)
 	}
 	return nil
 }
@@ -248,7 +313,34 @@ func (s *shell) view(c *mygoui.Context) {
 			}
 		})
 	})
-	s.confirm(c)
+	s.dialogs(c)
+}
+
+// dialogs 每帧最多画一个弹窗：拦截框打开时不画确认框。
+// mygo 按位置给弹层节点编号，AutoFocus 只在节点诞生那一帧生效。两种弹窗直接互换会复用节点，
+// Enter 默认项就可能落到「批准」上。所以换弹窗时空出一帧不画弹层，让新弹窗的节点重新诞生。
+func (s *shell) dialogs(c *mygoui.Context) {
+	want := overlayNone
+	switch {
+	case s.quitAsked():
+		want = overlayQuit
+	case !s.leaving() && s.dialogOpen():
+		want = overlayConfirm
+	}
+	if want != overlayNone && s.overlay != overlayNone && want != s.overlay {
+		s.overlay = overlayNone
+		if s.win != nil {
+			s.win.Invalidate()
+		}
+		return
+	}
+	s.overlay = want
+	switch want {
+	case overlayQuit:
+		s.quitDialog(c)
+	case overlayConfirm:
+		s.confirm(c)
+	}
 }
 
 func (s *shell) sidebar(c *mygoui.Context) {
@@ -326,7 +418,7 @@ func (s *shell) conversation(c *mygoui.Context) {
 		mygoui.Row(c).Padding(12, 16).Gap(8).AlignItems(mygoui.Center).
 			BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Children(func() {
 			in := mygoui.TextInput(c, &s.state.Draft).Placeholder("在这里提问").Label("提问框").Grow(1)
-			busy := s.state.StreamingRun != ""
+			busy := s.state.StreamingRun != "" || s.leaving()
 			if busy {
 				mygoui.Button(c, "发送").Disabled(true)
 				return
@@ -439,25 +531,40 @@ func (s *shell) dialogFor(runID string) (approval.Ticket, bool) {
 }
 
 func (s *shell) submit() {
-	ask, err := s.state.Begin(s.state.Draft)
-	if err != nil {
+	if !s.beginWork() {
 		return
 	}
+	ask, err := s.state.Begin(s.state.Draft)
+	if err != nil {
+		s.work.Done()
+		return
+	}
+	s.mu.Lock()
+	s.asks[ask.RunID] = struct{}{}
+	s.mu.Unlock()
 	// 没有窗口时不能把主线程堵在 Window.Update 上，测试就在当前调用里走完事件流。
-	// 有窗口时放到后台，每个事件再回到主线程。
-	if s.win == nil {
+	// 有窗口（或测试接了 post）时放到后台，每个事件再回到界面线程。
+	if s.win == nil && s.post == nil {
 		_ = s.consume(ask, true)
 		return
 	}
 	go s.consume(ask, false)
 }
 
+func (s *shell) dropAsk(runID string) {
+	s.mu.Lock()
+	delete(s.asks, runID)
+	s.mu.Unlock()
+}
+
 // consume 让 Runner 写入 core/events.Stream，再把读到的事件交给会话状态。
 func (s *shell) consume(ask session.Ask, sync bool) error {
+	defer s.work.Done()
+	defer s.dropAsk(ask.RunID)
 	stream := events.NewStream(8)
 	errc := make(chan askDone, 1)
 	go func() {
-		result, err := s.runner.Ask(s.ctx, session.Ask{
+		result, err := s.runner.Ask(s.runCtx, session.Ask{
 			RunID:       ask.RunID,
 			WorkspaceID: ask.WorkspaceID,
 			Prompt:      ask.Prompt,
@@ -481,6 +588,7 @@ func (s *shell) consume(ask session.Ask, sync bool) error {
 	}
 	got := <-errc
 	finish := func() {
+		s.dropAsk(ask.RunID)
 		s.state.FinishResult(ask.RunID, got.err, got.result.RunState)
 		s.reloadList()
 	}
@@ -500,12 +608,16 @@ type askDone struct {
 }
 
 func (s *shell) deliver(fn func()) error {
-	if s.win == nil {
+	post := s.post
+	if s.win != nil {
+		post = s.win.Update
+	}
+	if post == nil {
 		fn()
 		return nil
 	}
 	done := make(chan struct{})
-	s.win.Update(func() {
+	post(func() {
 		fn()
 		close(done)
 	})
@@ -678,7 +790,15 @@ func (s *shell) reopen(tk approval.Ticket) {
 		return
 	}
 	tool := lr.Executable()
+	if !s.beginWork() {
+		return
+	}
+	s.mu.Lock()
+	s.resumes[tk.RunID] = struct{}{}
+	s.mu.Unlock()
 	go func() {
+		defer s.work.Done()
+		defer s.dropResume(tk.RunID)
 		h, err := workspace.OpenPrepared(s.ctx, s.root, tk.WorkspaceID)
 		if err != nil {
 			s.setNotice(err.Error())
@@ -688,13 +808,23 @@ func (s *shell) reopen(tk approval.Ticket) {
 		svc := run.New(h.Runs)
 		svc.SetApprover(s.waiter)
 		svc.SetExecutor(tool.Execute)
-		res, err := s.waiter.Resume(s.ctx, svc, tk.RunID)
+		res, err := s.waiter.Resume(s.runCtx, svc, tk.RunID)
 		s.afterResume(tk.RunID, res, err)
 	}()
 }
 
+func (s *shell) dropResume(runID string) {
+	s.mu.Lock()
+	delete(s.resumes, runID)
+	s.mu.Unlock()
+}
+
 func (s *shell) afterResume(runID string, res run.ResumeResult, err error) {
 	fn := func() {
+		s.dropResume(runID)
+		if s.leaving() {
+			return
+		}
 		switch {
 		case errors.Is(err, session.ErrBusy):
 			s.notice = "这张确认单正在等待决定。"
@@ -720,7 +850,7 @@ func (s *shell) setNotice(text string) {
 }
 
 func (s *shell) onUI(fn func()) {
-	if s.win != nil {
+	if s.win != nil || s.post != nil {
 		_ = s.deliver(fn)
 		return
 	}
@@ -753,4 +883,21 @@ func latestAssistant(st *session.State) *session.Message {
 		}
 	}
 	return nil
+}
+
+// delayTool 在内层工具执行前等 delay，ctx 结束就不再执行。
+type delayTool struct {
+	tools.Tool
+	delay time.Duration
+}
+
+func (d delayTool) Execute(ctx context.Context, call tools.Call) (tools.Result, error) {
+	timer := time.NewTimer(d.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return tools.Result{}, ctx.Err()
+	case <-timer.C:
+	}
+	return d.Tool.Execute(ctx, call)
 }

@@ -264,6 +264,18 @@ func TestTraceEntriesStayReadOnlyOnOutdatedWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// 窗口先起来，启动扫描在这时跑完；之后才出现的运行不归启动扫描管。
+	s, err := newShell(ctx, Options{Root: root, Workspaces: []session.Workspace{{ID: "星禾"}}, Runner: session.ScriptedRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err = workspace.OpenPrepared(ctx, root, "星禾")
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, q := range []string{
 		`INSERT INTO runs (id, state, version, context, created_at, updated_at) VALUES ('run-live', 'running', 0, '', ?1, ?1)`,
@@ -274,10 +286,6 @@ func TestTraceEntriesStayReadOnlyOnOutdatedWorkspace(t *testing.T) {
 		}
 	}
 	if err := h.Close(); err != nil {
-		t.Fatal(err)
-	}
-	s, err := newShell(ctx, Options{Root: root, Workspaces: []session.Workspace{{ID: "星禾"}}, Runner: session.ScriptedRunner{}})
-	if err != nil {
 		t.Fatal(err)
 	}
 
